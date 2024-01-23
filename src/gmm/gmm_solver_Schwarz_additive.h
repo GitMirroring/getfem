@@ -41,8 +41,10 @@
 #include "gmm_kernel.h"
 #if defined(GMM_USES_SUPERLU)
 #include "gmm_superlu_interface.h"
-#else
+#elif defined(GMM_USES_MUMPS)
 #include "gmm_MUMPS_interface.h"
+#else //defined(GMM_USES_UMFPACK)
+#include "gmm_UMFPACK_interface.h"
 #endif
 #include "gmm_solver_cg.h"
 #include "gmm_solver_gmres.h"
@@ -575,8 +577,10 @@ namespace gmm {
 #if defined(GMM_USES_SUPERLU)
       double rcond;
       gmm::SuperLU_solve(M.vMloc[i], x, w, rcond);
-#else
+#elif defined(GMM_USES_MUMPS)
       gmm::MUMPS_solve(M.vMloc[i], x, w);
+#else // defined(GMM_USES_UMFPACK)
+      gmm::UMFPACK_solve(M.vMloc[i], x, w);
 #endif
       // gmm::iteration iter(1E-10, 0, 100000);
       //gmm::gmres(M.vMloc[i], x, w, gmm::identity_matrix(), 50, iter);

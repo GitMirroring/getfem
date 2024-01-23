@@ -35,8 +35,10 @@ int main(int argc, char *argv[]) {
 
 #if defined(GMM_USES_MUMPS)
   std::string lsolver("mumps");
-#else
+#elif defined(GMM_USES_SUPERLU)
   std::string lsolver("superlu");
+#else
+  std::string lsolver("umfpack");
 #endif
 
   gmm::set_traces_level(1);

@@ -958,9 +958,98 @@ fi
 dnl ---------------------------END OF MUMPS TEST--------------------------
 
 
+dnl ------------------------------UMFPACK TEST----------------------------
+require_umfpack="auto"
+AC_ARG_ENABLE(umfpack,
+  [AS_HELP_STRING([--enable-umfpack], [Enable UMFPACK support])],
+  [require_umfpack=$enableval],
+  [require_umfpack="auto"])
 
-if test "x$found_superlu" = "xno" -a "x$found_mumps" = "xno"; then
-  AC_MSG_ERROR([Neither MUMPS nor SuperLU was enabled. At least one linear solver is required.])
+UMFPACK_LIBS="-lumfpack"
+# the user can override these defaults using --with-umfpack=
+AC_ARG_WITH(umfpack,
+ [AS_HELP_STRING([--with-umfpack=<lib>],[use UMFPACK library <lib>])],
+ [case $with_umfpack in
+   yes | "")
+     if test "x$require_umfpack" = "xno"; then
+       AC_MSG_ERROR([Contradicting arguments between --enable-umfpack and --with-umfpack.])
+     elif test "x$require_umfpack" = "xauto"; then
+       require_umfpack="yes"
+     fi;;
+   no)
+     if test "x$require_umfpack" = "xyes"; then
+       AC_MSG_ERROR([Contradicting arguments between --enable-umfpack and --with-umfpack.])
+     elif test "x$require_umfpack" = "xauto"; then
+       require_umfpack="no"
+     fi;;
+   -* | */* | *.a | *.so | *.so.* | *.o| builtin) UMFPACK_LIBS="$with_umfpack";;
+   *) UMFPACK_LIBS=`echo $with_umfpack | sed -e 's/^/-l/g;s/ \+/ -l/g'`;;
+  esac]
+)
+
+UMFPACKINC=""
+AC_ARG_WITH(umfpack-include-dir,
+ [AS_HELP_STRING([--with-umfpack-include-dir],[directory in which the umfpack.h headers can be found])],
+ [ if test x$require_umfpack = xno; then
+     AC_MSG_ERROR([Inconsistent options for --enable-umfpack, --with-umfpack and --with-umfpack-include-dir.]);
+   else
+     require_umfpack="yes"
+     case $withval in
+       -I* ) UMFPACKINC="$withval";;
+       * ) UMFPACKINC="-I$withval";;
+     esac
+   fi;],
+)
+CPPFLAGS="$CPPFLAGS $UMFPACKINC"
+
+if test "x$require_umfpack" = "xno"; then
+  UMFPACK_LIBS=""
+  found_umfpack="no"
+  echo "Building with UMFPACK explicitly disabled";
+else
+  AC_CHECK_HEADERS(
+    [umfpack.h],
+    [found_umfpack="yes"],
+    [ if test "x$require_umfpack" = "xyes"; then
+        AC_MSG_ERROR([Header files of UMFPACK not found.]);
+      else
+        found_umfpack="no"
+      fi;
+    ])
+  if test x$found_umfpack = xyes; then
+    save_LIBS="$LIBS";
+    AC_CHECK_LIB([umfpack], [umfpack_di_solve],
+                 [AC_DEFINE(GMM_USES_UMFPACK,,[defined if GMM is linked to the umfpack library])],
+                 [if test "x$require_umfpack" = "xyes"; then
+                    AC_MSG_ERROR([UMFPACK library not found]);
+                  else
+                    found_umfpack="no"
+                  fi;])
+    if test "x$found_umfpack" = "xyes"; then
+      echo "Building with UMFPACK (use --enable-umfpack=no to disable it)"
+      LIBS="$UMFPACK_LIBS $save_LIBS"
+    else
+      UMFPACK_LIBS=""
+      LIBS="$save_LIBS"
+    fi
+  elif test "x$require_umfpack" = "xyes"; then
+    AC_MSG_ERROR([UMFPACK header files not found but required by the user. Aborting configure...]);
+  else
+    echo "UMFPACK header files not found, building without UMFPACK"
+    UMPFPACK_LIBS=""
+  fi
+fi
+
+AM_CONDITIONAL(UMFPACK, test x$found_umfpack = xyes)
+AC_SUBST([UMFPACK_LIBS])
+if test "x$found_umfpack" = "xyes"; then
+  echo "Configuration of UMFPACK done"
+fi
+dnl ---------------------------END OF UMFPACK TEST------------------------
+
+
+if test "x$found_superlu" = "xno" -a "x$found_mumps" = "xno" -a "x$found_umfpack" = "xno"; then
+  AC_MSG_ERROR([Neither MUMPS, SuperLU, nor UMFPACK was enabled. At least one external direct linear solver is required.])
   exit 1
 fi
 
@@ -1273,12 +1362,22 @@ else
 fi;
 
 if test "x$found_mumps" = "xyes"; then
-  echo "- Mumps found. A direct solver for large sparse linear systems."
+  echo "- MUMPS found. A direct solver for large sparse linear systems."
 else
   if test "x$require_mumps" = "xno"; then
     echo "- Not using the MUMPS library for large sparse linear systems."
   else
-    echo "- Mumps not found. Not using the MUMPS library for large sparse linear systems."
+    echo "- MUMPS not found. Not using the MUMPS library for large sparse linear systems."
+  fi
+fi;
+
+if test "x$found_umfpack" = "xyes"; then
+  echo "- UMFPACK found. A direct solver for large sparse linear systems."
+else
+  if test "x$require_umfpack" = "xno"; then
+    echo "- Not using the UMFPACK library for large sparse linear systems."
+  else
+    echo "- UMFPACK not found. Not using the UMFPACK library for large sparse linear systems."
   fi
 fi;
 

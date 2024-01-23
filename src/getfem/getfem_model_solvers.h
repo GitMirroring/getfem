@@ -42,6 +42,7 @@
 #include "getfem_models.h"
 #include "gmm/gmm_superlu_interface.h"
 #include "gmm/gmm_MUMPS_interface.h"
+#include "gmm/gmm_UMFPACK_interface.h"
 #include "gmm/gmm_iter.h"
 #include "gmm/gmm_iter_solvers.h"
 #include "gmm/gmm_dense_qr.h"
@@ -185,6 +186,17 @@ namespace getfem {
     void operator ()(const MAT &M, VECT &x, const VECT &b,
                      gmm::iteration &iter) const {
       bool ok = gmm::MUMPS_solve(M, x, b, true);
+      iter.enforce_converged(ok);
+    }
+  };
+#endif
+
+#if defined(GMM_USES_UMFPACK)
+  template <typename MAT, typename VECT>
+  struct linear_solver_umfpack : public abstract_linear_solver<MAT, VECT> {
+    void operator ()(const MAT &M, VECT &x, const VECT &b,
+                     gmm::iteration &iter) const {
+      bool ok = gmm::UMFPACK_solve(M, x, b);
       iter.enforce_converged(ok);
     }
   };
@@ -645,6 +657,8 @@ namespace getfem {
         return std::make_shared<linear_solver_mumps<MATRIX, VECTOR>>();
 # elif defined(GMM_USES_SUPERLU)
       return std::make_shared<linear_solver_superlu<MATRIX, VECTOR>>();
+# elif defined(GMM_USES_UMFPACK)
+      return std::make_shared<linear_solver_umfpack<MATRIX, VECTOR>>();
 # else
       static_assert(false,
                     "At least one direct solver (MUMPS or SuperLU) is required");
@@ -690,6 +704,13 @@ namespace getfem {
 # endif
 #else
       GMM_ASSERT1(false, "Mumps is not interfaced");
+#endif
+    }
+    else if (bgeot::casecmp(name, "umfpack") == 0) {
+#if defined(GMM_USES_UMFPACK)
+      return std::make_shared<linear_solver_umfpack<MATRIX, VECTOR>>();
+#else
+      GMM_ASSERT1(false, "UMFPACK is not interfaced");
 #endif
     }
     else if (bgeot::casecmp(name, "cg/ildlt") == 0)

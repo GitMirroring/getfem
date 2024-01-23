@@ -19,6 +19,9 @@
 /* defined if GMM is linked to the superlu library */
 #cmakedefine GMM_USES_SUPERLU
 
+/* defined if GMM is linked to the umfpack library */
+#cmakedefine GMM_USES_UMFPACK
+
 /* Use blas with 64 bits integers */
 #cmakedefine GMM_USE_BLAS64_INTERFACE
 

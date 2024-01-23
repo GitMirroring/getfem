@@ -18,6 +18,9 @@
 /* defined if GMM is linked to the superlu library */
 #undef GMM_USES_SUPERLU
 
+/* defined if GMM is linked to the umfpack library */
+#undef GMM_USES_UMFPACK
+
 /* Use blas with 64 bits integers */
 #undef GMM_USE_BLAS64_INTERFACE
 

@@ -322,6 +322,7 @@ set(HEADERS
     src/gmm/gmm_superlu_interface.h
     src/gmm/gmm_transposed.h
     src/gmm/gmm_tri_solve.h
+    src/gmm/gmm_UMFPACK_interface.h
     src/gmm/gmm_vector.h
     src/gmm/gmm_vector_to_matrix.h
     src/getfem/bgeot_comma_init.h
