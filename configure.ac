@@ -1275,7 +1275,7 @@ fi;
 if test "x$found_mumps" = "xyes"; then
   echo "- Mumps found. A direct solver for large sparse linear systems."
 else
-  if test "x$require_superlu" = "xno"; then
+  if test "x$require_mumps" = "xno"; then
     echo "- Not using the MUMPS library for large sparse linear systems."
   else
     echo "- Mumps not found. Not using the MUMPS library for large sparse linear systems."
