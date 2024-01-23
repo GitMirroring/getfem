@@ -117,21 +117,21 @@ struct wave_equation_problem {
   std::string datafilename;
   bgeot::md_param PARAM;
 
-  bool solve(void);
-  void init(void);
+  bool solve();
+  void init();
   void compute_error();
-  wave_equation_problem(void) : mim(mesh), mf_u(mesh), mf_rhs(mesh) {}
+  wave_equation_problem() : mim(mesh), mf_u(mesh), mf_rhs(mesh) {}
 };
 
 /* Read parameters from the .param file, build the mesh, set finite element
  * and integration methods and selects the boundaries.
  */
-void wave_equation_problem::init(void) {
+void wave_equation_problem::init() {
   
   std::string MESH_TYPE = PARAM.string_value("MESH_TYPE","Mesh type ");
   std::string FEM_TYPE  = PARAM.string_value("FEM_TYPE","FEM name");
   std::string INTEGRATION = PARAM.string_value("INTEGRATION",
-					       "Name of integration method");
+                                               "Name of integration method");
   cout << "MESH_TYPE=" << MESH_TYPE << "\n";
   cout << "FEM_TYPE="  << FEM_TYPE << "\n";
   cout << "INTEGRATION=" << INTEGRATION << "\n";
@@ -142,9 +142,9 @@ void wave_equation_problem::init(void) {
   N = pgt->dim();
   std::vector<size_type> nsubdiv(N);
   std::fill(nsubdiv.begin(),nsubdiv.end(),
-	    PARAM.int_value("NX", "Nomber of space steps "));
+            PARAM.int_value("NX", "Nomber of space steps "));
   getfem::regular_unit_mesh(mesh, nsubdiv, pgt,
-			    PARAM.int_value("MESH_NOISED") != 0);
+                            PARAM.int_value("MESH_NOISED") != 0);
   
   bgeot::base_matrix M(N,N);
   for (size_type i=0; i < N; ++i) {
@@ -167,11 +167,11 @@ void wave_equation_problem::init(void) {
   sol_c = PARAM.real_value("C", "Diffusion coefficient");
   residual = PARAM.real_value("RESIDUAL");
   dirichlet_version = PARAM.int_value("DIRICHLET_VERSION",
-				      "Type of Dirichlet contion");
+                                      "Type of Dirichlet contion");
   if (dirichlet_version == 1)
     dirichlet_coefficient = PARAM.real_value("DIRICHLET_COEFFICIENT",
-					     "Penalization coefficient for "
-					     "Dirichlet condition");
+                                             "Penalization coefficient for "
+                                             "Dirichlet condition");
   if (residual == 0.) residual = 1e-10;
   sol_K.resize(N);
   for (size_type j = 0; j < N; j++)
@@ -190,12 +190,12 @@ void wave_equation_problem::init(void) {
   std::string data_fem_name = PARAM.string_value("DATA_FEM_TYPE");
   if (data_fem_name.size() == 0) {
     GMM_ASSERT1(pf_u->is_lagrange(), "You are using a non-lagrange FEM. "
-		<< "In that case you need to set "
-		<< "DATA_FEM_TYPE in the .param file");
+                << "In that case you need to set "
+                << "DATA_FEM_TYPE in the .param file");
     mf_rhs.set_finite_element(mesh.convex_index(), pf_u);
   } else {
     mf_rhs.set_finite_element(mesh.convex_index(), 
-			      getfem::fem_descriptor(data_fem_name));
+                              getfem::fem_descriptor(data_fem_name));
   }
   
   /* set boundary conditions
@@ -216,7 +216,7 @@ void wave_equation_problem::init(void) {
   }
 }
 
-bool wave_equation_problem::solve(void) {
+bool wave_equation_problem::solve() {
 
   dal::bit_vector transient_bricks;
 
@@ -245,7 +245,7 @@ bool wave_equation_problem::solve(void) {
   gmm::copy(F, model.set_real_variable("NeumannData", 0));
   gmm::copy(F, model.set_real_variable("NeumannData", 1));
   transient_bricks.add(getfem::add_normal_source_term_brick
-  		       (model, mim, "u", "NeumannData", NEUMANN_BOUNDARY_NUM));
+                         (model, mim, "u", "NeumannData", NEUMANN_BOUNDARY_NUM));
 
   // Dirichlet condition.
   gmm::resize(F, mf_rhs.nb_dof());
@@ -270,7 +270,7 @@ bool wave_equation_problem::solve(void) {
   case 1 : // Theta-method
     model.add_initialized_scalar_data("theta", theta);
     ibddt = getfem::add_basic_d2_on_dt2_brick(model, mim, "u", "v",
-					      "dt", "theta");
+                                              "dt", "theta");
     getfem::add_theta_method_dispatcher(model, transient_bricks, "theta");
     alpha = theta;
     break;
@@ -278,7 +278,7 @@ bool wave_equation_problem::solve(void) {
     model.add_initialized_scalar_data("alpha", 0.5);
     alpha = 0.5;
     ibddt = getfem::add_basic_d2_on_dt2_brick(model, mim, "u", "v",
-					      "dt", "alpha");
+                                              "dt", "alpha");
     getfem::add_midpoint_dispatcher(model, transient_bricks);
     break;
   case 3 : // Newmark
@@ -286,7 +286,7 @@ bool wave_equation_problem::solve(void) {
     model.add_initialized_scalar_data("twobeta", alpha);
     model.add_initialized_scalar_data("gamma", gamma);
     ibddt = getfem::add_basic_d2_on_dt2_brick(model, mim, "u", "v",
-					      "dt", "twobeta");
+                                              "dt", "twobeta");
     getfem::add_theta_method_dispatcher(model, transient_bricks, "twobeta");
     break;
   default : GMM_ASSERT1(false, "Unvalid time integration scheme");
@@ -318,15 +318,15 @@ bool wave_equation_problem::solve(void) {
     switch (scheme) {
     case 1 : // Theta-method
       getfem::velocity_update_for_order_two_theta_method
-	(model, "u", "v", "dt", "theta");
+        (model, "u", "v", "dt", "theta");
       break;
     case 2 : // Midpoint 
       getfem::velocity_update_for_order_two_theta_method
-	(model, "u", "v", "dt", "alpha");
+        (model, "u", "v", "dt", "alpha");
       break;
     case 3 : // Newmark
       getfem::velocity_update_for_Newmark_scheme
-      	(model, ibddt, "u", "v", "dt", "twobeta", "gamma");
+        (model, ibddt, "u", "v", "dt", "twobeta", "gamma");
     break;
     }
 
@@ -342,10 +342,10 @@ bool wave_equation_problem::solve(void) {
       gmm::copy(model.real_variable("v"), V);
       gmm::sub_interval Iu = model.interval_of_variable("u");
       scalar_type J
-	= gmm::vect_sp(gmm::sub_matrix(model.linear_real_matrix_term(iblap, 0),
+        = gmm::vect_sp(gmm::sub_matrix(model.linear_real_matrix_term(iblap, 0),
                                        Iu, Iu), U, U) * 0.5
-	+ gmm::vect_sp(model.linear_real_matrix_term(ibddt, 0), V, V)
-	* 0.5 * dt*dt*alpha;
+        + gmm::vect_sp(model.linear_real_matrix_term(ibddt, 0), V, V)
+        * 0.5 * dt*dt*alpha;
       cout << "Energy : " << J << endl;
     }
 
