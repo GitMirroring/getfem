@@ -60,7 +60,11 @@
                                          (K=5,9,11)
    - "IM_TETRAHEDRON(K)"               : Gauss methods on tetrahedrons
                                          (K=1, 2, 3, 5, 6, or 8)
-   - "IM_SIMPLEX4D(3)"                 : Gauss method on a 4-dimensional
+   - "IM_SIMPLEX4D(K)"                 : Gauss method on a 4-dimensional
+                                         simplex (K=1, 3).
+   - "IM_SIMPLEX5D(1)"                 : Gauss method on a 5-dimensional
+                                         simplex.
+   - "IM_SIMPLEX6D(1)"                 : Gauss method on a 6-dimensional
                                          simplex.
    - "IM_CUBE4D(K)"                    : Gauss method on a 4-dimensional cube
                                          (K=5,9).

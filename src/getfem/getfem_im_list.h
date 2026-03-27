@@ -2,7 +2,7 @@
 
 /*===========================================================================
 
- Copyright (C) 2002-2024 Yves Renard
+ Copyright (C) 2002-2026 Yves Renard
 
  This file is a part of GetFEM++
 
@@ -48,7 +48,7 @@ namespace getfem {
   };
 
 
-  static const int NB_IM=132;
+  static const int NB_IM=135;
 
   static im_desc im_desc_tab[NB_IM] = {
     {"IM_CUBE4D(5)", "GT_QK(4,1)", 2, 0, 0, 0},
@@ -163,29 +163,32 @@ namespace getfem {
     {"IM_QUAD(5)", "GT_QK(2,1)", 3, 2789, 246, 1362},
     {"IM_QUAD(7)", "GT_QK(2,1)", 3, 2798, 250, 1365},
     {"IM_QUAD(9)", "GT_QK(2,1)", 6, 2807, 254, 1368},
-    {"IM_SIMPLEX4D(3)", "GT_PK(4,1)", 2, 2825, 258, 1374},
-    {"IM_TETRAHEDRON(1)", "GT_PK(3,1)", 1, 2835, 263, 1376},
-    {"IM_TETRAHEDRON(2)", "GT_PK(3,1)", 1, 2839, 267, 1377},
-    {"IM_TETRAHEDRON(3)", "GT_PK(3,1)", 2, 2843, 271, 1378},
-    {"IM_TETRAHEDRON(5)", "GT_PK(3,1)", 4, 2851, 275, 1380},
-    {"IM_TETRAHEDRON(6)", "GT_PK(3,1)", 4, 2867, 279, 1384},
-    {"IM_TETRAHEDRON(8)", "GT_PK(3,1)", 7, 2883, 283, 1388},
-    {"IM_TRIANGLE(10)", "GT_PK(2,1)", 6, 2911, 287, 1395},
-    {"IM_TRIANGLE(13)", "GT_PK(2,1)", 37, 2929, 290, 1401},
-    {"IM_TRIANGLE(17)", "GT_PK(2,1)", 61, 3040, 293, 1438},
-    {"IM_TRIANGLE(19)", "GT_PK(2,1)", 73, 3223, 296, 1499},
-    {"IM_TRIANGLE(1)", "GT_PK(2,1)", 1, 3442, 299, 1572},
-    {"IM_TRIANGLE(2)", "GT_PK(2,1)", 1, 3445, 302, 1573},
-    {"IM_TRIANGLE(3)", "GT_PK(2,1)", 2, 3448, 305, 1574},
-    {"IM_TRIANGLE(4)", "GT_PK(2,1)", 2, 3454, 308, 1576},
-    {"IM_TRIANGLE(5)", "GT_PK(2,1)", 3, 3460, 311, 1578},
-    {"IM_TRIANGLE(6)", "GT_PK(2,1)", 3, 3469, 314, 1581},
-    {"IM_TRIANGLE(7)", "GT_PK(2,1)", 4, 3478, 317, 1584},
-    {"IM_TRIANGLE(8)", "GT_PK(2,1)", 5, 3490, 320, 1588},
-    {"IM_TRIANGLE(9)", "GT_PK(2,1)", 6, 3505, 323, 1593},
+    {"IM_SIMPLEX4D(1)", "GT_PK(4,1)", 1, 2825, 258, 1374},
+    {"IM_SIMPLEX4D(3)", "GT_PK(4,1)", 2, 2830, 263, 1375},
+    {"IM_SIMPLEX5D(1)", "GT_PK(5,1)", 1, 2840, 268, 1377},
+    {"IM_SIMPLEX6D(1)", "GT_PK(6,1)", 1, 2846, 274, 1378},
+    {"IM_TETRAHEDRON(1)", "GT_PK(3,1)", 1, 2853, 281, 1379},
+    {"IM_TETRAHEDRON(2)", "GT_PK(3,1)", 1, 2857, 285, 1380},
+    {"IM_TETRAHEDRON(3)", "GT_PK(3,1)", 2, 2861, 289, 1381},
+    {"IM_TETRAHEDRON(5)", "GT_PK(3,1)", 4, 2869, 293, 1383},
+    {"IM_TETRAHEDRON(6)", "GT_PK(3,1)", 4, 2885, 297, 1387},
+    {"IM_TETRAHEDRON(8)", "GT_PK(3,1)", 7, 2901, 301, 1391},
+    {"IM_TRIANGLE(10)", "GT_PK(2,1)", 6, 2929, 305, 1398},
+    {"IM_TRIANGLE(13)", "GT_PK(2,1)", 37, 2947, 308, 1404},
+    {"IM_TRIANGLE(17)", "GT_PK(2,1)", 61, 3058, 311, 1441},
+    {"IM_TRIANGLE(19)", "GT_PK(2,1)", 73, 3241, 314, 1502},
+    {"IM_TRIANGLE(1)", "GT_PK(2,1)", 1, 3460, 317, 1575},
+    {"IM_TRIANGLE(2)", "GT_PK(2,1)", 1, 3463, 320, 1576},
+    {"IM_TRIANGLE(3)", "GT_PK(2,1)", 2, 3466, 323, 1577},
+    {"IM_TRIANGLE(4)", "GT_PK(2,1)", 2, 3472, 326, 1579},
+    {"IM_TRIANGLE(5)", "GT_PK(2,1)", 3, 3478, 329, 1581},
+    {"IM_TRIANGLE(6)", "GT_PK(2,1)", 3, 3487, 332, 1584},
+    {"IM_TRIANGLE(7)", "GT_PK(2,1)", 4, 3496, 335, 1587},
+    {"IM_TRIANGLE(8)", "GT_PK(2,1)", 5, 3508, 338, 1591},
+    {"IM_TRIANGLE(9)", "GT_PK(2,1)", 6, 3523, 341, 1596},
   };
 
-  static const int NB_IMR=3523; 
+  static const int NB_IMR=3541; 
 
   static const char * im_desc_real[NB_IMR] = {
     // IM_CUBE4D(5)
@@ -3237,6 +3240,13 @@ namespace getfem {
   ".9183551625119944870476731455760975",
   ".7536883868373065026387420172469580",
   ".0539389509089832197392431685659745",
+    // IM_SIMPLEX4D(1)
+
+  "0.2",
+  "0.2",
+  "0.2",
+  "0.2",
+  "0.041666666666666666666666666666",
     // IM_SIMPLEX4D(3)
 
   "0.2",
@@ -3249,6 +3259,23 @@ namespace getfem {
   "0.142857142857142857142857142857142",
   "0.142857142857142857142857142857142",
   "0.0170138888888888888888888888888888",
+    // IM_SIMPLEX5D(1)
+
+  "0.166666666666666666666666666",
+  "0.166666666666666666666666666",
+  "0.166666666666666666666666666",
+  "0.166666666666666666666666666",
+  "0.166666666666666666666666666",
+  "0.008333333333333333333333333333333",
+    // IM_SIMPLEX6D(1)
+
+  "0.1428571428571428",
+  "0.1428571428571428",
+  "0.1428571428571428",
+  "0.1428571428571428",
+  "0.1428571428571428",
+  "0.1428571428571428",
+  "0.001388888888888888888888888888",
     // IM_TETRAHEDRON(1)
 
   "0.25",
@@ -3977,7 +4004,7 @@ namespace getfem {
   "0.0216417696886446886446886446886446",
   };
 
-  static const int NB_IMF=326; 
+  static const int NB_IMF=344; 
 
   static const char * im_desc_face_meth[NB_IMF] = {
     // IM_CUBE4D(5)
@@ -4313,9 +4340,18 @@ namespace getfem {
     // IM_QUAD(9)
 
     "IM_GAUSS1D(9)","IM_GAUSS1D(9)","IM_GAUSS1D(9)","IM_GAUSS1D(9)",
+    // IM_SIMPLEX4D(1)
+
+    "IM_TETRAHEDRON(1)","IM_TETRAHEDRON(1)","IM_TETRAHEDRON(1)","IM_TETRAHEDRON(1)","IM_TETRAHEDRON(1)",
     // IM_SIMPLEX4D(3)
 
     "IM_TETRAHEDRON(3)","IM_TETRAHEDRON(3)","IM_TETRAHEDRON(3)","IM_TETRAHEDRON(3)","IM_TETRAHEDRON(3)",
+    // IM_SIMPLEX5D(1)
+
+    "IM_SIMPLEX4D(1)","IM_SIMPLEX4D(1)","IM_SIMPLEX4D(1)","IM_SIMPLEX4D(1)","IM_SIMPLEX4D(1)","IM_SIMPLEX4D(1)",
+    // IM_SIMPLEX6D(1)
+
+    "IM_SIMPLEX5D(1)","IM_SIMPLEX5D(1)","IM_SIMPLEX5D(1)","IM_SIMPLEX5D(1)","IM_SIMPLEX5D(1)","IM_SIMPLEX5D(1)","IM_SIMPLEX5D(1)",
     // IM_TETRAHEDRON(1)
 
     "IM_TRIANGLE(1)","IM_TRIANGLE(1)","IM_TRIANGLE(1)","IM_TRIANGLE(1)",
@@ -4375,7 +4411,7 @@ namespace getfem {
     "IM_GAUSS1D(9)","IM_GAUSS1D(9)","IM_GAUSS1D(9)",
   };
 
-  static const int NB_IMN=1599; 
+  static const int NB_IMN=1602; 
 
   static size_type im_desc_node_type[NB_IMN] = {
     2, 2,  // IM_CUBE4D(5)
@@ -4602,7 +4638,13 @@ namespace getfem {
 
     2, 2, 2, 2, 2, 2,  // IM_QUAD(9)
 
+    0,  // IM_SIMPLEX4D(1)
+
     1, 1,  // IM_SIMPLEX4D(3)
+
+    0,  // IM_SIMPLEX5D(1)
+
+    0,  // IM_SIMPLEX6D(1)
 
     0,  // IM_TETRAHEDRON(1)
 

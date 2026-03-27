@@ -635,9 +635,21 @@ Others methods are:
        - tetrahedron
        - 43
 
+     * - ``"IM_SIMPLEX4D(1)"``
+       - 4D simplex
+       - 1
+
      * - ``"IM_SIMPLEX4D(3)"``
        - 4D simplex
        - 6
+
+     * - ``"IM_SIMPLEX5D(1)"``
+       - 5D simplex
+       - 1
+
+     * - ``"IM_SIMPLEX6D(1)"``
+       - 6D simplex
+       - 1
 
      * - ``"IM_HEXAHEDRON(5)"``
        - 3D hexahedron

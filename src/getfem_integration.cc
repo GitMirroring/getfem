@@ -1261,6 +1261,8 @@ namespace getfem {
       case 2: name << "IM_TRIANGLE"; break;
       case 3: name << "IM_TETRAHEDRON"; break;
       case 4: name << "IM_SIMPLEX4D"; break;
+      case 5: name << "IM_SIMPLEX5D"; break;
+      case 6: name << "IM_SIMPLEX6D"; break;
       default: GMM_ASSERT1(false, "no approximate integration method "
                            "for simplexes of dimension " << n);
       }

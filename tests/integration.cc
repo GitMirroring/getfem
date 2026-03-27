@@ -170,32 +170,42 @@ static void check_im_order(const std::string& s/*, size_type expected_pk=size_ty
   cout << "\n";
 }
 
-const std::vector<size_type>& TRIANGLE_D() { 
+const std::vector<size_type>& TRIANGLE_D() {
   static std::vector<size_type> i_d;
   if (i_d.size() == 0) bgeot::sc(i_d) += 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 13, 17, 19;
   return i_d;
 }
-const std::vector<size_type>& TETRA_D() { 
+const std::vector<size_type>& TETRA_D() {
   static std::vector<size_type> i_d;
   if (i_d.size() == 0) bgeot::sc(i_d) += 1, 2, 3, 5, 6, 8;
   return i_d;
 }
-const std::vector<size_type>& SIMPLEX4_D() { 
+const std::vector<size_type>& SIMPLEX4_D() {
   static std::vector<size_type> i_d;
-  if (i_d.size() == 0) bgeot::sc(i_d) += 3;
+  if (i_d.size() == 0) bgeot::sc(i_d) += 1, 3;
   return i_d;
 }
-const std::vector<size_type>& QUAD_D() { 
+const std::vector<size_type>& SIMPLEX5_D() {
+  static std::vector<size_type> i_d;
+  if (i_d.size() == 0) bgeot::sc(i_d) += 1;
+  return i_d;
+}
+const std::vector<size_type>& SIMPLEX6_D() {
+  static std::vector<size_type> i_d;
+  if (i_d.size() == 0) bgeot::sc(i_d) += 1;
+  return i_d;
+}
+const std::vector<size_type>& QUAD_D() {
   static std::vector<size_type> i_d;
   if (i_d.size() == 0) bgeot::sc(i_d) += 2, 3, 5, 7, 9, 17;
   return i_d;
 }
-const std::vector<size_type>& HEXA_D() { 
+const std::vector<size_type>& HEXA_D() {
   static std::vector<size_type> i_d;
   if (i_d.size() == 0) bgeot::sc(i_d) += 5,9,11;
   return i_d;
 }
-const std::vector<size_type>& CUBE4D_D() { 
+const std::vector<size_type>& CUBE4D_D() {
   static std::vector<size_type> i_d;
   if (i_d.size() == 0) bgeot::sc(i_d) += 5,9;
   return i_d;
@@ -221,6 +231,12 @@ static void check_orders() {
   }
   for (std::vector<size_type>::const_iterator it = SIMPLEX4_D().begin(); it != SIMPLEX4_D().end(); ++it) {
     snprintf(s,511, "IM_SIMPLEX4D(%d)",int(*it)); check_im_order(s);
+  }
+  for (std::vector<size_type>::const_iterator it = SIMPLEX5_D().begin(); it != SIMPLEX5_D().end(); ++it) {
+    snprintf(s,511, "IM_SIMPLEX5D(%d)",int(*it)); check_im_order(s);
+  }
+  for (std::vector<size_type>::const_iterator it = SIMPLEX6_D().begin(); it != SIMPLEX6_D().end(); ++it) {
+    snprintf(s,511, "IM_SIMPLEX6D(%d)",int(*it)); check_im_order(s);
   }
   for (std::vector<size_type>::const_iterator it = HEXA_D().begin(); it != HEXA_D().end(); ++it) {
     snprintf(s,511, "IM_HEXAHEDRON(%d)",int(*it)); check_im_order(s);
@@ -268,14 +284,26 @@ static void check_methods() {
   }
   for (std::vector<size_type>::const_iterator it = TETRA_D().begin(); it != TETRA_D().end(); ++it) {
     snprintf(s,511,"IM_TETRAHEDRON(%d)",int(*it)); ppi = getfem::int_method_descriptor(s);
-    for (size_type k=1; k <= *it; ++k) { 
+    for (size_type k=1; k <= *it; ++k) {
       check_method(s,ppi,k,bgeot::simplex_geotrans(3,1));
     }
   }
   for (std::vector<size_type>::const_iterator it = SIMPLEX4_D().begin(); it != SIMPLEX4_D().end(); ++it) {
     snprintf(s,511,"IM_SIMPLEX4D(%d)",int(*it)); ppi = getfem::int_method_descriptor(s);
-    for (size_type k=1; k <= *it; ++k) { 
+    for (size_type k=1; k <= *it; ++k) {
       check_method(s,ppi,k,bgeot::simplex_geotrans(4,1));
+    }
+  }
+  for (std::vector<size_type>::const_iterator it = SIMPLEX5_D().begin(); it != SIMPLEX5_D().end(); ++it) {
+    snprintf(s,511,"IM_SIMPLEX5D(%d)",int(*it)); ppi = getfem::int_method_descriptor(s);
+    for (size_type k=1; k <= *it; ++k) {
+      check_method(s,ppi,k,bgeot::simplex_geotrans(5,1));
+    }
+  }
+  for (std::vector<size_type>::const_iterator it = SIMPLEX6_D().begin(); it != SIMPLEX6_D().end(); ++it) {
+    snprintf(s,511,"IM_SIMPLEX6D(%d)",int(*it)); ppi = getfem::int_method_descriptor(s);
+    for (size_type k=1; k <= *it; ++k) {
+      check_method(s,ppi,k,bgeot::simplex_geotrans(6,1));
     }
   }
   
