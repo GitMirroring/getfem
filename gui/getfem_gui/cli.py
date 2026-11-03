@@ -126,5 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         if res.script:
             print(f"script: {res.script}", file=sys.stderr)
         return 1
+    for warning in res.results.get("warnings", []):
+        print(f"warning: {warning}", file=sys.stderr)
     print(json.dumps(res.results, indent=2, ensure_ascii=False))
     return 0

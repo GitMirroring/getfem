@@ -56,8 +56,9 @@ python -m getfem_gui migrate old_v1.json -o new.json
 | `getfem_gui/codegen.py` | GetFEM solve script (loads the prepared mesh) |
 | `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
 | `getfem_gui/cli.py` | command line interface |
-| `tests/test_heat.py` | 16 validation cases (one of them requires Gmsh) |
-| `examples/` | heated plate (box), plate with a hole (CSG, two meshes) |
+| `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
+| `tests/test_elasticity.py` | 11 linear elasticity cases |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry) |
 
 ## Geometry, selections, meshes
 
@@ -104,11 +105,38 @@ source file change (SHA-256 hash). Changing the physics does not remesh.
 - CAD units: Gmsh/OpenCASCADE keeps the units of the STEP file (often mm);
   a scaling option will be needed.
 
+## Physics
+
+| Physics | Properties | Boundary conditions | GWFL macros |
+|---|---|---|---|
+| `heat_stationary` | `k` | `temperature`, `heat_flux`, `convection` | `q` (heat flux) |
+| `linear_elasticity` | `E`, `nu` (option `plane`: `strain` / `stress` in 2D) | `fixed`, `displacement`, `roller`, `traction`, `pressure` | `eps`, `sigma`, `von_mises`, `mu_L`, `lambda_L` |
+
+Values may be numbers or GWFL expressions; vector values (displacement,
+traction, body force) are lists of components or a GWFL vector expression
+such as `"[0, -9.81*rho]"`, where `rho` is any extra material property. The
+macros can be used in derived quantities: `(sigma*Normal)(1)` integrated on a
+boundary gives the x component of the reaction force.
+
+`roller` imposes `u.n = 0` with Nitsche's method (GetFEM's
+`add_normal_Dirichlet_condition_with_Nitsche_method`), without additional
+unknowns. A first version with multipliers made the system singular as soon
+as a roller shared a node with a `fixed` or `displacement` condition
+(simplified Dirichlet), e.g. a clamped edge next to a symmetry plane.
+
+**Solve check.** On a singular system, the direct solver only prints a
+warning and may leave a zero solution. Every solve script therefore checks
+the relative residual `|K U - F| / |F|` and stops with an explicit error if
+it exceeds 1e-6. A singular but compatible system (e.g. a rigid motion left
+free but not loaded) is solved, with a warning in `results["warnings"]`.
+
 ## Adding a physics
 
-Write two functions in `codegen.py` (GWFL terms, post-processing), register
-them in `PHYSICS`, and add the allowed boundary conditions to
-`model.validate`. Linear elasticity is the natural next candidate.
+Add a declarative entry to `model.PHYSICS_SPECS` (field kind, properties,
+options, boundary conditions and their fields, anchoring conditions, macro
+names): validation uses it, and a GUI can build its forms from it. Then write
+two functions in `codegen.py` (GWFL terms, post-processing) and register them
+in `PHYSICS`.
 
 ## Open topics
 

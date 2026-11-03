@@ -93,7 +93,28 @@ User selections: {"kind": "domain" | "boundary", "criteria": {...}} with
 - {"type": "union", "of": ["name1", "name2", ...]}       union of selections of the same kind
 Criteria are evaluated on the mesh, so they survive remeshing.
 
-Numerical values may be numbers or GWFL expressions.
+Physics
+-------
+The available physics, their material properties, options and boundary
+conditions are described declaratively in PHYSICS_SPECS (a GUI can build its
+forms from it):
+
+- heat_stationary   : -div(k grad T) = f
+                      properties k; sources: heat source (scalar)
+                      BCs: temperature {value}, heat_flux {value} (incoming),
+                           convection {h, T_ext}
+                      GWFL macro: q = -k*Grad_T (heat flux vector)
+- linear_elasticity : -div sigma(u) = f, small strains, isotropic material
+                      properties E, nu; option "plane": "strain" | "stress" (2D only)
+                      sources: body force (vector)
+                      BCs: fixed {}, displacement {value: vector}, roller {} (u.n = 0),
+                           traction {value: vector}, pressure {value} (on the outward normal)
+                      GWFL macros: eps, sigma, von_mises, mu_L, lambda_L
+
+Numerical values may be numbers or GWFL expressions. Vector values are a list
+of such values (one per space dimension) or a GWFL vector expression such as
+"[0, -9.81*rho]". The macros of the physics may be used in the expressions of
+the derived quantities, e.g. "(sigma*Normal)(1)" for a reaction force.
 """
 
 from __future__ import annotations
@@ -128,6 +149,49 @@ CRITERIA = {
     "union": (BOUNDARY, DOMAIN),
 }
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
+
+SCALAR = "scalar"
+VECTOR = "vector"
+
+# Declarative description of the physics. Value kinds are SCALAR or VECTOR.
+PHYSICS_SPECS = {
+    "heat_stationary": {
+        "label": "Heat transfer (stationary)",
+        "field": SCALAR,
+        "variable": "T",
+        "properties": {"k": "thermal conductivity"},
+        "options": {},
+        "source": SCALAR,
+        "boundary_conditions": {
+            "temperature": {"value": SCALAR},
+            "heat_flux": {"value": SCALAR},
+            "convection": {"h": SCALAR, "T_ext": SCALAR},
+        },
+        "anchoring": ("temperature", "convection"),
+        "anchoring_message": "without imposed temperature or convection, "
+                             "the temperature is only defined up to a constant",
+        "macros": ("q",),
+    },
+    "linear_elasticity": {
+        "label": "Linear elasticity",
+        "field": VECTOR,
+        "variable": "u",
+        "properties": {"E": "Young's modulus", "nu": "Poisson's ratio"},
+        "options": {"plane": ("strain", "stress")},
+        "source": VECTOR,
+        "boundary_conditions": {
+            "fixed": {},
+            "displacement": {"value": VECTOR},
+            "roller": {},
+            "traction": {"value": VECTOR},
+            "pressure": {"value": SCALAR},
+        },
+        "anchoring": ("fixed", "displacement", "roller"),
+        "anchoring_message": "without any displacement constraint, "
+                             "rigid body motions are not prevented",
+        "macros": ("eps", "sigma", "sigma_zz", "von_mises", "mu_L", "lambda_L", "nitsche_gamma0"),
+    },
+}
 
 
 # ------------------------------------------------------------------ utilities
@@ -280,11 +344,24 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
 
 # ------------------------------------------------------------------ validation
 
-def _check_value(v, where: str, errors: list[str]) -> None:
+def _check_value(v, where: str, errors: list[str], kind: str = SCALAR,
+                 dim: int | None = None) -> None:
+    """Check a scalar value (number or GWFL expression) or a vector value
+    (list of scalar values, one per dimension, or GWFL vector expression)."""
+    if kind == VECTOR and isinstance(v, list):
+        if dim is not None and len(v) != dim:
+            errors.append(f"{where}: {dim} components expected, got {len(v)}")
+        for i, c in enumerate(v):
+            _check_value(c, f"{where}[{i}]", errors)
+        return
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
-        errors.append(f"{where}: value expected (number or GWFL expression), got {v!r}")
+        what = "list of components or GWFL expression" if kind == VECTOR \
+            else "number or GWFL expression"
+        errors.append(f"{where}: value expected ({what}), got {v!r}")
     elif isinstance(v, str) and not v.strip():
         errors.append(f"{where}: empty expression")
+    elif kind == VECTOR and not isinstance(v, str):
+        errors.append(f"{where}: vector expected, got the number {v!r}")
 
 
 def _check_vec(v, n, where, errors, positive=False):
@@ -483,6 +560,18 @@ def validate(model: dict) -> list[str]:
             what = "a domain" if kind == DOMAIN else "a boundary"
             errors.append(f"{where}: {name!r} is not {what}")
 
+    # --- Physics type
+    ptype = phys.get("type")
+    spec = PHYSICS_SPECS.get(ptype)
+    if spec is None:
+        errors.append(f"physics.type: {', '.join(PHYSICS_SPECS)} expected, got {ptype!r}")
+        return errors
+    dim = geometry_dim(model, geom)
+    var = phys.get("variable", spec["variable"])
+    if not _IDENT.match(str(var)):
+        errors.append(f"physics.variable: identifier expected, got {var!r}")
+    reserved = set(spec["macros"]) | {str(var)}
+
     # --- Materials
     materials = model.get("materials", [])
     if not materials:
@@ -498,38 +587,49 @@ def validate(model: dict) -> list[str]:
         seen.add(name)
         check_sel(mat.get("selection", ALL), DOMAIN, f"{where}.selection")
         props = mat.get("properties", {})
-        if "k" not in props:
-            errors.append(f"{where}.properties.k: missing thermal conductivity")
+        for prop, label in spec["properties"].items():
+            if prop not in props:
+                errors.append(f"{where}.properties.{prop}: missing {label}")
         for prop, v in props.items():
             if not _IDENT.match(prop):
                 errors.append(f"{where}.properties: invalid name {prop!r}")
+            elif prop in reserved:
+                errors.append(f"{where}.properties: {prop!r} is a reserved name for this physics")
             _check_value(v, f"{where}.properties.{prop}", errors)
 
-    # --- Physics
-    if phys.get("type") != "heat_stationary":
-        errors.append(f"physics.type: only 'heat_stationary' is available, got {phys.get('type')!r}")
-    var = phys.get("variable", "T")
-    if not _IDENT.match(str(var)):
-        errors.append(f"physics.variable: identifier expected, got {var!r}")
+    # --- Options
+    for opt, value in phys.items():
+        if opt in ("type", "mesh", "variable", "sources", "boundary_conditions"):
+            continue
+        if opt not in spec["options"]:
+            errors.append(f"physics.{opt}: unknown option for {ptype!r}")
+        elif value not in spec["options"][opt]:
+            errors.append(f"physics.{opt}: {', '.join(spec['options'][opt])} expected, got {value!r}")
+        elif opt == "plane" and dim is not None and dim != 2:
+            errors.append("physics.plane: only meaningful in 2D")
+
+    # --- Sources and boundary conditions
     for i, src in enumerate(phys.get("sources", [])):
         check_sel(src.get("selection", ALL), DOMAIN, f"physics.sources[{i}].selection")
-        _check_value(src.get("value"), f"physics.sources[{i}].value", errors)
+        _check_value(src.get("value"), f"physics.sources[{i}].value", errors, spec["source"], dim)
 
-    required = {"temperature": ["value"], "heat_flux": ["value"], "convection": ["h", "T_ext"]}
-    has_dirichlet = False
+    bc_specs = spec["boundary_conditions"]
+    anchored = False
     for i, bc in enumerate(phys.get("boundary_conditions", [])):
         where = f"physics.boundary_conditions[{i}]"
         btype = bc.get("type")
-        if btype not in required:
-            errors.append(f"{where}.type: {', '.join(required)} expected, got {btype!r}")
+        if btype not in bc_specs:
+            errors.append(f"{where}.type: {', '.join(bc_specs)} expected, got {btype!r}")
             continue
         check_sel(bc.get("selection"), BOUNDARY, f"{where}.selection")
-        for key in required[btype]:
-            _check_value(bc.get(key), f"{where}.{key}", errors)
-        has_dirichlet |= btype in ("temperature", "convection")
-    if not has_dirichlet and not errors:
-        errors.append("physics.boundary_conditions: without imposed temperature or convection, "
-                      "the temperature is only defined up to a constant")
+        for key, kind in bc_specs[btype].items():
+            _check_value(bc.get(key), f"{where}.{key}", errors, kind, dim)
+        for key in bc:
+            if key not in ("type", "selection") and key not in bc_specs[btype]:
+                errors.append(f"{where}.{key}: unknown field for a {btype!r} condition")
+        anchored |= btype in spec["anchoring"]
+    if not anchored and not errors:
+        errors.append(f"physics.boundary_conditions: {spec['anchoring_message']}")
 
     # --- Outputs
     for i, q in enumerate(model.get("outputs", {}).get("quantities", [])):
@@ -557,7 +657,8 @@ def with_defaults(model: dict) -> dict:
             mesh.setdefault("order", 1)
     phys = m.setdefault("physics", {})
     phys.setdefault("mesh", m["meshes"][0]["name"] if m.get("meshes") else None)
-    phys.setdefault("variable", "T")
+    spec = PHYSICS_SPECS.get(phys.get("type"), {})
+    phys.setdefault("variable", spec.get("variable", "u"))
     phys.setdefault("sources", [])
     phys.setdefault("boundary_conditions", [])
     for mat in m.get("materials", []):

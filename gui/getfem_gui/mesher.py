@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -313,6 +314,25 @@ def cache_key(model: dict, mesh: dict) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def error_line(stderr: str) -> str:
+    """Most useful line of a subprocess error output, to be shown to the user.
+
+    That is the Python exception line (e.g. "RuntimeError: ..."), which is not
+    always the last line: GetFEM may print warnings to stderr after it.
+    """
+    lines = [l.strip() for l in stderr.strip().splitlines() if l.strip()]
+    for i in range(len(lines) - 1, -1, -1):
+        if _EXCEPTION_LINE.match(lines[i]):
+            # keep the continuation of multi-line messages, not GetFEM's noise
+            rest = [l for l in lines[i + 1:] if not _NOISE_LINE.match(l)]
+            return " ".join([lines[i]] + rest)
+    return lines[-1] if lines else ""
+
+
+_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(Error|Exception|Interrupt)\b.*:")
+_NOISE_LINE = re.compile(r"^(Level \d+ Warning|Trace \d+ in)\b")
+
+
 @dataclass
 class MeshResult:
     ok: bool
@@ -323,8 +343,7 @@ class MeshResult:
 
     @property
     def error(self) -> str:
-        lines = [l for l in self.stderr.strip().splitlines() if l.strip()]
-        return lines[-1] if lines else ""
+        return error_line(self.stderr)
 
 
 def ensure_mesh(model: dict, mesh_name: str, workdir: str | Path,

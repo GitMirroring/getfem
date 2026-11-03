@@ -1,0 +1,158 @@
+{
+  "format_version": 2,
+  "name": "Plate with a hole in tension (quarter, symmetry)",
+  "geometries": [
+    {
+      "name": "quarter_plate",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "difference",
+          "of": [
+            {
+              "type": "rectangle",
+              "min": [
+                0.0,
+                0.0
+              ],
+              "max": [
+                0.1,
+                0.05
+              ]
+            },
+            {
+              "type": "ball",
+              "center": [
+                0.0,
+                0.0
+              ],
+              "radius": 0.01
+            }
+          ]
+        }
+      },
+      "selections": {
+        "symmetry_x": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0.0,
+              0.0
+            ],
+            "normal": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "symmetry_y": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0.0,
+              0.0
+            ],
+            "normal": [
+              0.0,
+              1.0
+            ]
+          }
+        },
+        "loaded_edge": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0.1,
+              0.0
+            ],
+            "normal": [
+              1.0,
+              0.0
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "coarse",
+      "geometry": "quarter_plate",
+      "mesher": "getfem",
+      "h": 0.004,
+      "order": 2
+    },
+    {
+      "name": "fine",
+      "geometry": "quarter_plate",
+      "mesher": "gmsh",
+      "size": 0.001,
+      "order": 2
+    }
+  ],
+  "discretization": {
+    "degree": 2
+  },
+  "materials": [
+    {
+      "name": "steel",
+      "selection": "all",
+      "properties": {
+        "E": 210000000000.0,
+        "nu": 0.3
+      }
+    }
+  ],
+  "physics": {
+    "type": "linear_elasticity",
+    "mesh": "coarse",
+    "variable": "u",
+    "plane": "stress",
+    "sources": [],
+    "boundary_conditions": [
+      {
+        "type": "roller",
+        "selection": "symmetry_x"
+      },
+      {
+        "type": "roller",
+        "selection": "symmetry_y"
+      },
+      {
+        "type": "traction",
+        "selection": "loaded_edge",
+        "value": [
+          100000000.0,
+          0.0
+        ]
+      }
+    ]
+  },
+  "study": {
+    "type": "stationary"
+  },
+  "outputs": {
+    "vtu": "plate_hole_tension.vtu",
+    "quantities": [
+      {
+        "name": "applied_force",
+        "expr": "(sigma*Normal)(1)",
+        "selection": "loaded_edge"
+      },
+      {
+        "name": "reaction_symmetry_x",
+        "expr": "(sigma*Normal)(1)",
+        "selection": "symmetry_x"
+      },
+      {
+        "name": "area",
+        "expr": "1",
+        "selection": "all"
+      }
+    ]
+  }
+}

@@ -21,7 +21,8 @@ script only loads it. The script does not depend on getfem_gui: it can be
 read, modified and run again by hand.
 
 Each physics is a pair of functions registered in PHYSICS, which write their
-terms in GWFL. Adding a physics amounts to adding such a pair.
+terms in GWFL, plus a declarative entry in model.PHYSICS_SPECS (properties,
+options, boundary conditions) used for validation.
 """
 
 from __future__ import annotations
@@ -52,6 +53,13 @@ def gwfl(value) -> str:
     if isinstance(value, (int, float)):
         return repr(float(value))
     return f"({value.strip()})"
+
+
+def gwfl_vec(value, dim: int) -> str:
+    """Vector model value (list of components or GWFL expression) -> GWFL vector."""
+    if isinstance(value, list):
+        return "[" + ", ".join(gwfl(c) for c in value) + "]"
+    return gwfl(value)
 
 
 def _rg(name: str) -> str:
@@ -91,11 +99,18 @@ def _materials(model: dict, w: ScriptWriter) -> None:
 
 
 # ---------------------------------------------------------------- physics
+#
+# Each physics provides two functions writing script lines:
+#   setup(model, w, dim) : variable, macros, terms and boundary conditions
+#   post(model, w, dim)  : results entries and the `fields` exported to VTU
+# The finite element method `mf` is created beforehand, scalar or vector
+# according to M.PHYSICS_SPECS[type]["field"].
 
-def _heat_stationary(model: dict, w: ScriptWriter) -> None:
+def _heat_stationary(model: dict, w: ScriptWriter, dim: int) -> None:
     phys = model["physics"]
     u = phys["variable"]
     w(f"md.add_fem_variable({u!r}, mf)")
+    w(f"md.add_macro('q', '-k*Grad_{u}')  # heat flux vector")
     w(f"# -div(k grad {u}) = f")
     w(f"md.add_linear_term(mim, 'k*Grad_{u}.Grad_Test_{u}')")
     for src in phys["sources"]:
@@ -119,18 +134,91 @@ def _heat_stationary(model: dict, w: ScriptWriter) -> None:
             w(f"md.add_source_term(mim, {h + '*' + text + '*Test_' + u!r}, {rg})")
 
 
-def _heat_post(model: dict, w: ScriptWriter) -> None:
+def _heat_post(model: dict, w: ScriptWriter, dim: int) -> None:
     u = model["physics"]["variable"]
     w(f"{u} = md.variable({u!r})")
     w(f"results['min_{u}'] = float({u}.min())")
     w(f"results['max_{u}'] = float({u}.max())")
     w("mf_flux = gf.MeshFem(m, m.dim())")
     w("mf_flux.set_classical_discontinuous_fem(max(degree - 1, 0))")
-    w(f"flux = md.interpolation('-k*Grad_{u}', mf_flux)")
+    w("flux = md.interpolation('q', mf_flux)")
     w(f"fields = [mf, {u}, {u!r}, mf_flux, flux, 'heat_flux']")
 
 
-PHYSICS = {"heat_stationary": (_heat_stationary, _heat_post)}
+def _linear_elasticity(model: dict, w: ScriptWriter, dim: int) -> None:
+    phys = model["physics"]
+    u = phys["variable"]
+    plane = phys.get("plane", "strain")
+    w(f"md.add_fem_variable({u!r}, mf)")
+    w("")
+    w("# Lame coefficients from E and nu")
+    w("md.add_macro('mu_L', 'E/(2*(1+nu))')")
+    if dim == 2 and plane == "stress":
+        w("md.add_macro('lambda_L', 'E*nu/(1-sqr(nu))')  # plane stress")
+    else:
+        w(f"md.add_macro('lambda_L', 'E*nu/((1+nu)*(1-2*nu))')"
+          f"{'  # plane strain' if dim == 2 else ''}")
+    w(f"md.add_macro('eps', 'Sym(Grad_{u})')")
+    w("md.add_macro('sigma', 'lambda_L*Trace(eps)*Id(meshdim) + 2*mu_L*eps')")
+    if dim == 3:
+        w("md.add_macro('von_mises', 'sqrt(3/2)*Norm(Deviator(sigma))')")
+    elif dim == 2:
+        szz = "0" if plane == "stress" else "lambda_L*Trace(eps)"
+        w(f"md.add_macro('sigma_zz', {szz!r})  # out-of-plane stress")
+        w("md.add_macro('von_mises', 'sqrt(0.5*(sqr(sigma(1,1)-sigma(2,2)) + sqr(sigma(2,2)-sigma_zz)"
+          " + sqr(sigma_zz-sigma(1,1))) + 3*sqr(sigma(1,2)))')")
+    else:
+        w("md.add_macro('von_mises', 'abs(sigma(1,1))')")
+    w("")
+    w(f"# -div sigma({u}) = f")
+    w(f"md.add_linear_term(mim, 'sigma:Grad_Test_{u}')")
+    for src in phys["sources"]:
+        w(f"md.add_source_term(mim, {gwfl_vec(src['value'], dim) + '.Test_' + u!r}, "
+          f"{_rg(src['selection'])})")
+
+    if any(bc["type"] == "roller" for bc in phys["boundary_conditions"]):
+        w("# Roller conditions use Nitsche's method: no extra unknown, so they can share")
+        w("# nodes with other displacement conditions. GetFEM's penalty is 1/(gamma0*h).")
+        w("md.add_initialized_data('nitsche_gamma0', [1e-2 / np.max(np.abs(E))])")
+    for i, bc in enumerate(phys["boundary_conditions"], start=1):
+        rg = _rg(bc["selection"])
+        w("")
+        if bc["type"] == "fixed":
+            w(f"# Fixed on {bc['selection']}: {u} = 0")
+            w(f"md.add_Dirichlet_condition_with_simplification({u!r}, {rg})")
+        elif bc["type"] == "displacement":
+            data = f"{u}_D{i}"
+            w(f"# Imposed displacement on {bc['selection']}")
+            w(f"md.add_initialized_fem_data({data!r}, mf, "
+              f"md.interpolation({gwfl_vec(bc['value'], dim)!r}, mf))")
+            w(f"md.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+        elif bc["type"] == "roller":
+            w(f"# Roller on {bc['selection']}: {u}.n = 0, free tangential displacement")
+            w(f"md.add_normal_Dirichlet_condition_with_Nitsche_method(mim, {u!r}, 'sigma*Normal', "
+              f"'nitsche_gamma0', {rg}, 1.0)")
+        elif bc["type"] == "traction":
+            w(f"# Surface traction on {bc['selection']}: sigma.n = g")
+            w(f"md.add_source_term(mim, {gwfl_vec(bc['value'], dim) + '.Test_' + u!r}, {rg})")
+        elif bc["type"] == "pressure":
+            w(f"# Pressure on {bc['selection']}: sigma.n = -p n")
+            w(f"md.add_source_term(mim, {'-' + gwfl(bc['value']) + '*(Normal.Test_' + u + ')'!r}, {rg})")
+
+
+def _elasticity_post(model: dict, w: ScriptWriter, dim: int) -> None:
+    u = model["physics"]["variable"]
+    w(f"{u} = md.variable({u!r})")
+    w(f"results['max_displacement'] = float(np.max(np.linalg.norm({u}.reshape(-1, m.dim()), axis=1)))")
+    w("mf_vm = gf.MeshFem(m, 1)")
+    w("mf_vm.set_classical_discontinuous_fem(max(degree - 1, 0))")
+    w("von_mises = md.interpolation('von_mises', mf_vm)")
+    w("results['max_von_mises'] = float(von_mises.max())")
+    w(f"fields = [mf, {u}, 'displacement', mf_vm, von_mises, 'von_mises']")
+
+
+PHYSICS = {
+    "heat_stationary": (_heat_stationary, _heat_post),
+    "linear_elasticity": (_linear_elasticity, _elasticity_post),
+}
 
 
 # ---------------------------------------------------------------- script
@@ -145,7 +233,10 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
         raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
     model = M.with_defaults(model)
     out = model["outputs"]
-    physics, post = PHYSICS[model["physics"]["type"]]
+    ptype = model["physics"]["type"]
+    physics, post = PHYSICS[ptype]
+    dim = int(mesh_info["dim"])
+    vector = M.PHYSICS_SPECS[ptype]["field"] == M.VECTOR
 
     w = ScriptWriter()
     w("#!/usr/bin/env python3")
@@ -168,7 +259,7 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w("results['mesh'] = {'name': %r, 'nb_elements': int(m.nbcvs())}" % mesh_info.get("mesh", ""))
 
     w.section("Discretization")
-    w("mf = gf.MeshFem(m, 1)")
+    w(f"mf = gf.MeshFem(m, {'m.dim()' if vector else '1'})")
     w("mf.set_classical_fem(degree)")
     w("mim = gf.MeshIm(m, 2 * degree)")
     w("md = gf.Model('real')")
@@ -176,15 +267,24 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w.section("Materials")
     _materials(model, w)
 
-    w.section(f"Physics: {model['physics']['type']}")
-    physics(model, w)
+    w.section(f"Physics: {ptype}")
+    physics(model, w, dim)
 
     w.section("Solve")
     w("md.solve()")
     w("results['nb_dofs'] = int(md.nbdof())")
+    w("# Check that the linear system was actually solved: on a singular system the")
+    w("# direct solver only emits a warning and leaves a zero solution.")
+    w("md.assembly('build_all')")
+    w("K, F, U = md.tangent_matrix(), md.rhs(), md.from_variables()")
+    w("residual = np.linalg.norm(K.mult(U) - F) / max(np.linalg.norm(F), 1e-300)")
+    w("results['relative_residual'] = float(residual)")
+    w("if not residual < 1e-6:")
+    w("    raise RuntimeError(f'linear solve failed (relative residual {residual:.1e}): '")
+    w("                       'the system is probably singular, check the boundary conditions')")
 
     w.section("Post-processing")
-    post(model, w)
+    post(model, w, dim)
     if out["quantities"]:
         w("quantities = {}")
         for q in out["quantities"]:
