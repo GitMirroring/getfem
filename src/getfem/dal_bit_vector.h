@@ -49,32 +49,74 @@
 
 #include "dal_basic.h"
 #include <limits.h>
+#include <atomic>
 #include <bitset>
+#include <cstdint>
 #include <iterator>
 #include <algorithm>
+#include <vector>
 
 namespace dal {
 
-  typedef unsigned int bit_support;
+  typedef std::uint64_t bit_support;
   static const bit_support WD_BIT = bit_support(CHAR_BIT*sizeof(bit_support));
   static const bit_support WD_MASK = WD_BIT - 1;
-  typedef dynamic_array<bit_support, 4> bit_container;
+
+  /* Word level operations (std::popcount and friends need c++20). */
+#if defined(__GNUC__) || defined(__clang__)
+  /// number of non-zero bits of x
+  inline unsigned bit_count(bit_support x)
+  { return unsigned(__builtin_popcountll(x)); }
+  /// index of the lowest non-zero bit of x (x should not be zero)
+  inline unsigned bit_lowest(bit_support x)
+  { return unsigned(__builtin_ctzll(x)); }
+  /// index of the highest non-zero bit of x (x should not be zero)
+  inline unsigned bit_highest(bit_support x)
+  { return unsigned(WD_MASK) - unsigned(__builtin_clzll(x)); }
+#else
+  inline unsigned bit_count(bit_support x) {
+    x -= (x >> 1) & 0x5555555555555555ULL;
+    x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
+    x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
+    return unsigned((x * 0x0101010101010101ULL) >> 56);
+  }
+  inline unsigned bit_lowest(bit_support x)
+  { return bit_count((x & (~x + 1)) - 1); }
+  inline unsigned bit_highest(bit_support x) {
+    x |= x >> 1; x |= x >> 2; x |= x >> 4;
+    x |= x >> 8; x |= x >> 16; x |= x >> 32;
+    return bit_count(x) - 1;
+  }
+#endif
 
   class bit_vector;
+  class bv_visitor;
+
+  /* Bound on the true or false bits, tightened by the const member functions
+     of bit_vector. Relaxed atomic operations are sufficient: any value left
+     by concurrent readers is a valid bound. */
+  class cached_index {
+    std::atomic<size_t> v;
+  public :
+    cached_index(size_t i = 0) : v(i) {}
+    cached_index(const cached_index &o) : v(size_t(o)) {}
+    cached_index &operator =(const cached_index &o)
+    { return *this = size_t(o); }
+    cached_index &operator =(size_t i)
+    { v.store(i, std::memory_order_relaxed); return *this; }
+    operator size_t(void) const { return v.load(std::memory_order_relaxed); }
+  };
 
   struct APIDECL bit_reference {
     typedef size_t  size_type;
 
-    bit_support* p;
-    bit_support mask;
-    size_type ind;
     bit_vector* bv;
-    
-    bit_reference(bit_support* x, bit_support m, size_type y, bit_vector* z)
-    { p = x; ind = y; bv = z; mask = m; }
+    size_type ind;
+
+    bit_reference(bit_vector* b, size_type i) : bv(b), ind(i) {}
     bit_reference(void) {}
-    operator bool(void) const { return (*p & mask) != 0; }
-    bit_reference& operator = (bool x);
+    inline operator bool(void) const;
+    inline bit_reference& operator = (bool x);
     bit_reference& operator=(const bit_reference& x)
     { return *this = bool(x); }
     bool operator==(const bit_reference& x) const
@@ -97,28 +139,19 @@ namespace dal {
     typedef std::random_access_iterator_tag iterator_category;
 
     size_type ind;
-    bit_support mask;
-    bit_container::iterator p;
     bit_vector* bv;
-    
-    inline void bump_up()
-    { ind++; if (!(mask <<= 1)) { ++p; mask = 1;} }
-    inline void bump_down()
-    { ind--; if (!(mask >>= 1)) { --p; mask = 1; mask <<= WD_MASK; } }
-    
+
     bit_iterator(void) {}
-    bit_iterator(bit_vector &b, size_type i);
-    reference operator*() const
-    { return reference(&(*p), mask, ind, bv); }
-    bit_iterator& operator++() { bump_up(); return *this; }
+    bit_iterator(bit_vector &b, size_type i) : ind(i), bv(&b) {}
+    reference operator*() const { return reference(bv, ind); }
+    bit_iterator& operator++() { ++ind; return *this; }
     bit_iterator operator++(int)
-    { bit_iterator tmp=*this; bump_up(); return tmp; }
-    bit_iterator& operator--() { bump_down(); return *this; }
+    { bit_iterator tmp=*this; ++ind; return tmp; }
+    bit_iterator& operator--() { --ind; return *this; }
     bit_iterator operator--(int)
-    { bit_iterator tmp = *this; bump_down(); return tmp; }
-    bit_iterator& operator+=(difference_type i);
-    bit_iterator& operator-=(difference_type i)
-    { *this += -i; return *this; }
+    { bit_iterator tmp = *this; --ind; return tmp; }
+    bit_iterator& operator+=(difference_type i) { ind += i; return *this; }
+    bit_iterator& operator-=(difference_type i) { ind -= i; return *this; }
     bit_iterator operator+(difference_type i) const
     { bit_iterator tmp = *this; return tmp += i; }
     bit_iterator operator-(difference_type i) const
@@ -141,31 +174,24 @@ namespace dal {
     typedef size_t           size_type;
     typedef ptrdiff_t        difference_type;
     typedef std::random_access_iterator_tag iterator_category;
-    
+
     size_type ind;
-    bit_support mask;
-    bit_container::const_iterator p;
     const bit_vector* bv;
-    
-    inline void bump_up()
-    { ind++; if (!(mask <<= 1)) { ++p; mask = 1;} }
-    inline void bump_down()
-    { ind--; if (!(mask >>= 1)) { --p; mask = 1; mask <<= WD_MASK; } }
-    
+
     bit_const_iterator() {}
-    bit_const_iterator(const bit_vector &b, size_type i);
-    bit_const_iterator(const bit_iterator& x)
-      : ind(x.ind),  mask(x.mask), p(x.p), bv(x.bv) {}
-    reference operator*() const { return (*p & mask) != 0; }
-    bit_const_iterator& operator++() { bump_up();  return *this; }
+    bit_const_iterator(const bit_vector &b, size_type i) : ind(i), bv(&b) {}
+    bit_const_iterator(const bit_iterator& x) : ind(x.ind), bv(x.bv) {}
+    inline reference operator*() const;
+    bit_const_iterator& operator++() { ++ind;  return *this; }
     bit_const_iterator operator++(int)
-    { bit_const_iterator tmp = *this; bump_up(); return tmp; }
-    bit_const_iterator& operator--() { bump_down(); return *this; }
+    { bit_const_iterator tmp = *this; ++ind; return tmp; }
+    bit_const_iterator& operator--() { --ind; return *this; }
     bit_const_iterator operator--(int)
-    { bit_const_iterator tmp = *this; bump_down(); return tmp; }
-    bit_const_iterator& operator+=(difference_type i);
+    { bit_const_iterator tmp = *this; --ind; return tmp; }
+    bit_const_iterator& operator+=(difference_type i)
+    { ind += i; return *this; }
     bit_const_iterator& operator-=(difference_type i)
-    { *this += -i; return *this; }
+    { ind -= i; return *this; }
     bit_const_iterator operator+(difference_type i) const
     { bit_const_iterator tmp = *this; return tmp += i; }
     bit_const_iterator operator-(difference_type i) const
@@ -181,8 +207,9 @@ namespace dal {
     bool operator>=(bit_const_iterator x) const { return ind >= x.ind; }
   };
 
-  ///Dynamic bit container. 
-  class APIDECL bit_vector : public bit_container {
+  /** Dynamic bit container. Concurrent calls of const member functions are
+      safe, provided that no thread modifies the bit_vector. */
+  class APIDECL bit_vector {
   public :
     
     typedef bool         value_type;
@@ -197,29 +224,40 @@ namespace dal {
     
   protected :
     
-    mutable size_type ifirst_true, ilast_true;
-    mutable size_type ifirst_false, ilast_false;
-    mutable size_type icard;
-    mutable bool icard_valid;
+    friend class bv_visitor;
+    friend struct bit_reference;
+    friend struct bit_const_iterator;
+
+    /* Never empty. All the bits of index >= size() are false. */
+    std::vector<bit_support> words;
+    mutable cached_index ifirst_true, ilast_true;
+    mutable cached_index ifirst_false, ilast_false;
+    size_type icard;
     
     void fill_false(size_type i1, size_type i2);
+    /* index of the first bit >= i (resp. of the last bit <= i) such that
+       bit ^ flip is true, size_type(-1) if there is no such bit. */
+    size_type next_bit(size_type i, bit_support flip) const;
+    size_type prev_bit(size_type i, bit_support flip) const;
+    void update_card(void);
  
   public : 
     
     void change_for_true(size_type i) {
-      ifirst_true = std::min(ifirst_true, i);
-      ilast_true = std::max(ilast_true, i);
+      ifirst_true = std::min(size_type(ifirst_true), i);
+      ilast_true = std::max(size_type(ilast_true), i);
       ++icard;
     }
     void change_for_false(size_type i) {
-      ifirst_false = std::min(ifirst_false, i);
-      ilast_false = std::max(ilast_false, i);
+      ifirst_false = std::min(size_type(ifirst_false), i);
+      ilast_false = std::max(size_type(ilast_false), i);
       --icard;
     }
     
     typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
     typedef std::reverse_iterator<iterator> reverse_iterator;
-    size_type size(void) const { return std::max(ilast_true, ilast_false)+1;}
+    size_type size(void) const
+    { return std::max(size_type(ilast_true), size_type(ilast_false))+1;}
     
     iterator begin(void) { return iterator(*this, 0); }
     const_iterator begin(void) const { return const_iterator(*this, 0); }
@@ -233,30 +271,26 @@ namespace dal {
     const_reverse_iterator rend(void) const
     { return const_reverse_iterator(begin()); }
     
-    size_type capacity(void) const
-    { return bit_container::capacity() * WD_BIT; }
+    size_type capacity(void) const { return words.capacity() * WD_BIT; }
     size_type max_size(void) const { return (size_type(-1)); }
-    /// true if no index is in the set (hides dynamic_array::empty)
-    bool empty(void) const { return card() == 0; }
+    /// true if no index is in the set
+    bool empty(void) const { return icard == 0; }
     reference front(void) { return *begin(); }
     const_reference front(void) const { return *begin(); }
     reference back(void) { return *(end() - 1); }
     const_reference back(void) const { return *(end() - 1); }
     
     
-    const_reference operator [](size_type ii) const
-    { return (ii >= size()) ? false : *const_iterator(*this, ii); }
+    const_reference operator [](size_type ii) const { return is_in(ii); }
     reference operator [](size_type ii)
-    { if (ii >= size()) fill_false(size(),ii); return *iterator(*this, ii);}
+    { if (ii >= size()) fill_false(size(),ii); return reference(this, ii); }
     
     void swap(bit_vector &da);
     
     void clear(void) {
-      icard = 0; icard_valid = true;
-      ifirst_false = ilast_false = ifirst_true = ilast_true = 0;
-      // no stale word should remain: &= and == work on the whole storage
-      bit_container::clear();
-      fill_false(0,0); 
+      icard = 0;
+      ifirst_false = 0; ilast_false = 0; ifirst_true = 0; ilast_true = 0;
+      words.assign(1, bit_support(0));
     }
     void swap(size_type i1, size_type i2) {
       if (i1 != i2) {
@@ -264,11 +298,9 @@ namespace dal {
 	bool tmp = r1; r1 = r2; r2 = tmp;
       }
     }
-    size_type memsize(void) const {
-      return bit_container::memsize() + sizeof(bit_vector) 
-	- sizeof(bit_container);
-    }
-    size_type card(void) const;
+    size_type memsize(void) const
+    { return sizeof(bit_vector) + words.capacity() * sizeof(bit_support); }
+    size_type card(void) const { return icard; }
     /// index of first non-zero entry (size_type(-1) for an empty bit_vector)
     size_type first_true(void) const;
     /// index of first zero entry (size_type(0) for an empty bit_vector)
@@ -290,9 +322,14 @@ namespace dal {
     bool operator !=(const bit_vector &bv) const
     { return !((*this) == bv); }
     
-    bit_vector(void) { clear(); }
-    template <size_t N> bit_vector(const std::bitset<N> &bs) {
-      clear();
+    bit_vector(void) : words(1, bit_support(0)), icard(0) {}
+    bit_vector(const bit_vector &) = default;
+    bit_vector &operator =(const bit_vector &) = default;
+    /* The moved-from object has to remain a valid (empty) bit_vector. */
+    bit_vector(bit_vector &&bv) : bit_vector() { swap(bv); }
+    bit_vector &operator =(bit_vector &&bv)
+    { if (this != &bv) { clear(); swap(bv); } return *this; }
+    template <size_t N> bit_vector(const std::bitset<N> &bs) : bit_vector() {
       for (size_type i=0; i < bs.size(); ++i) { if (bs[i]) add(i); }
     }
     
@@ -314,10 +351,10 @@ namespace dal {
     
   public : 
     /// return true if (*this)[i] == true
-    bool is_in(size_type i) const { 
-      if (i < ifirst_true || i > ilast_true) return false;
-      else return (((*(const bit_container*)(this))[i / WD_BIT]) & 
-		   (bit_support(1) << (i & WD_MASK))) ? true : false; }
+    bool is_in(size_type i) const {
+      size_type iw = i / WD_BIT;
+      return iw < words.size() && ((words[iw] >> (i & WD_MASK)) & 1);
+    }
     void add(size_type i) { (*this)[i] = true; }
     /** set the interval [i .. i+nb-1] to true */
     void add(size_type i, size_type nb);
@@ -333,6 +370,19 @@ namespace dal {
     inline int take_last(void)
     { int res = last(); if (res >= 0) sup(res); return res; }
   };
+
+  inline bit_reference::operator bool(void) const { return bv->is_in(ind); }
+
+  inline bit_reference& bit_reference::operator = (bool x) {
+    bit_support &w = bv->words[ind / WD_BIT];
+    bit_support mask = bit_support(1) << (ind & WD_MASK);
+    if (x) { if (!(w & mask)) { w |= mask; bv->change_for_true(ind); } }
+    else   { if (w & mask) { w &= ~mask; bv->change_for_false(ind); } }
+    return *this;
+  }
+
+  inline bit_const_iterator::reference
+  bit_const_iterator::operator*() const { return bv->is_in(ind); }
 
   /**
      if you are only interested in indexes of true values of a bit_vector
@@ -351,17 +401,29 @@ namespace dal {
   */
   class APIDECL bv_visitor {
     typedef dal::bit_vector::size_type size_type;
-    bit_container::const_iterator it;
-    size_type ilast,ind;
-    bit_support v;
+    const bit_vector *bv;
+    size_type iw, ilast, ind;
+    bit_support v; // bits of the word iw which remain to be visited
   public:
-    bv_visitor(const dal::bit_vector& b) : 
-      it(((const bit_container&)b).begin()+b.first()/WD_BIT),
-      ilast(b.last()+1), ind(b.first()), v(0) {
-      if (ind < ilast) { v = *it; v >>= (ind&WD_MASK); }
+    bv_visitor(const dal::bit_vector& b)
+      : bv(&b), iw(0), ilast(0), ind(0), v(0) {
+      if (!b.empty()) {
+        ind = b.first_true(); ilast = b.last_true() + 1; iw = ind / WD_BIT;
+        v = b.words[iw] & (~bit_support(0) << (ind & WD_MASK));
+        v &= v - 1;
+      }
     }
     bool finished() const { return ind >= ilast; }
-    bool operator++();
+    bool operator++() {
+      while (!v) {
+        if (++iw >= bv->words.size() || iw * WD_BIT >= ilast)
+          { ind = ilast; return false; }
+        v = bv->words[iw];
+      }
+      ind = iw * WD_BIT + bit_lowest(v);
+      v &= v - 1;
+      return ind < ilast;
+    }
     operator size_type() const { return ind; }
   };
 

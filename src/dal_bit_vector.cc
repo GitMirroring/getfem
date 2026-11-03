@@ -23,160 +23,167 @@
 
 namespace dal {
 
-  bit_reference& bit_reference::operator = (bool x) {
-    if (x) { if (!(*p & mask)) { *p |= mask; bv->change_for_true(ind); } }
-    else  { if (*p & mask) { *p &= ~mask; bv->change_for_false(ind); } }
-    return *this;
-  }
-
-  bit_iterator::bit_iterator(bit_vector &b, size_type i) : p(b, i / WD_BIT)
-  { ind = i; bv = &b, mask = bit_support(1) << (i & WD_MASK); }
-
-  bit_iterator& bit_iterator::operator+=(difference_type i) {
-    ind+=i; mask = bit_support(1) << (ind & WD_MASK);
-    p=bit_container::iterator(*bv, ind/WD_BIT);
-    return *this;
-  }
-
-  bit_const_iterator::bit_const_iterator(const bit_vector &b, size_type i)
-    : p(b, i / WD_BIT)
-  { ind = i; bv = &b, mask = bit_support(1) << (i & WD_MASK); }
-
-  bit_const_iterator&
-  bit_const_iterator::operator+=(difference_type i) {
-    ind += i; mask = bit_support(1) << (ind & WD_MASK);
-    p = bit_container::const_iterator(*bv, ind/WD_BIT);
-    return *this;
-  }
-
-  void bit_vector::fill_false(size_type i1, size_type i2) {
-    size_type f = i1 / WD_BIT, r = i1 & (WD_BIT-1), l = i2 / WD_BIT;
-    (*((bit_container *)(this)))[l];
-    if (r != 0) f++;
-    l++;
-    if (f < l) std::fill(dal::bit_container::begin()+f,
-                         dal::bit_container::begin()+l, 0);
+  void bit_vector::fill_false(size_type, size_type i2) {
+    size_type nw = i2 / WD_BIT + 1;
+    if (nw > words.size()) words.resize(nw, bit_support(0));
     ilast_false = i2;
   }
 
+  void bit_vector::update_card(void) {
+    icard = 0;
+    for (bit_support w : words) icard += bit_count(w);
+  }
+
   void bit_vector::swap(bit_vector &da) {
-    ((bit_container *)(this))->swap(da);
+    words.swap(da.words);
     std::swap(ifirst_true, da.ifirst_true);
     std::swap(ifirst_false, da.ifirst_false);
     std::swap(ilast_true, da.ilast_true);
     std::swap(ilast_false, da.ilast_false);
     std::swap(icard, da.icard);
-    std::swap(icard_valid, da.icard_valid);
   }
 
-  bit_vector::size_type bit_vector::card() const {
-    if (!icard_valid) {
-//       bit_container::const_iterator itb = bit_container::begin()
-//         + ifirst_true/WD_BIT, ite = bit_container::end();
-//       bit_support x;
-      icard = 0;
-//       for (; itb != ite; ++itb) {
-//         if ((x = *itb)) // fast count of the nb of bits
-//                         // of an integer (faster than shifts)
-//           do icard++; while ((x &= x-1));
-//       }
-//       icard_valid = true;
-
-      const_iterator itb = begin(), ite = end();
-      icard = 0;
-      while (itb != ite) { if (*itb) ++icard; ++itb; }
-      icard_valid = true;
+  bit_vector::size_type
+  bit_vector::next_bit(size_type i, bit_support flip) const {
+    size_type iw = i / WD_BIT;
+    if (iw >= words.size()) return size_type(-1);
+    bit_support x = (words[iw] ^ flip) & (~bit_support(0) << (i & WD_MASK));
+    while (!x) {
+      if (++iw == words.size()) return size_type(-1);
+      x = words[iw] ^ flip;
     }
-    return icard;
+    return iw * WD_BIT + bit_lowest(x);
+  }
+
+  bit_vector::size_type
+  bit_vector::prev_bit(size_type i, bit_support flip) const {
+    size_type iw = i / WD_BIT;
+    bit_support x = (words[iw] ^ flip)
+      & (~bit_support(0) >> (WD_MASK - (i & WD_MASK)));
+    while (!x) {
+      if (iw == 0) return size_type(-1);
+      x = words[--iw] ^ flip;
+    }
+    return iw * WD_BIT + bit_highest(x);
   }
 
   bit_vector::size_type bit_vector::first_true(void) const {
-    if (card() == 0) { ifirst_true = ilast_true = 0; return size_type(-1); }
-    const_iterator itx = begin(), ite = end(); itx += ifirst_true;
-    while (itx != ite && !*itx ) { ++itx; ++(ifirst_true); }
-    if (is_in(ifirst_true)) return ifirst_true;
-    else { ifirst_true = ilast_true = 0; return size_type(-1); }
+    if (empty()) { ifirst_true = 0; ilast_true = 0; return size_type(-1); }
+    size_type i = next_bit(ifirst_true, bit_support(0));
+    ifirst_true = i;
+    return i;
   }
 
   bit_vector::size_type bit_vector::first_false(void) const {
-    const_iterator itx = begin(), ite = end(); itx += ifirst_false;
-    while (itx != ite && *itx) { ++itx; ++(ifirst_false); }
-    if (!is_in(ifirst_false)) return ifirst_false;
-    else { ifirst_false = ilast_false = size()-1; return size_type(-1); }
+    size_type i = next_bit(ifirst_false, ~bit_support(0));
+    if (i == size_type(-1)) // all the stored bits are true
+      i = std::max(size_type(ifirst_false), words.size() * WD_BIT);
+    ifirst_false = i;
+    return i;
   }
 
   bit_vector::size_type bit_vector::last_true(void) const {
-    const_iterator itb = begin(), itx = itb; itx += ilast_true;
-    while (itx != itb && !*itx) { --itx; --(ilast_true); }
-    if (is_in(ilast_true)) return ilast_true;
-    else return size_type(-1);
+    if (empty()) { ilast_true = 0; return size_type(-1); }
+    size_type i = prev_bit(ilast_true, bit_support(0));
+    ilast_true = i;
+    return i;
   }
 
   bit_vector::size_type bit_vector::last_false(void) const {
-    const_iterator itb = begin(), itx = itb; itx += ilast_false;
-    while (itx != itb && *itx) { --itx; --(ilast_false); }
-    return ilast_false;
+    size_type i = prev_bit(ilast_false, ~bit_support(0));
+    if (i == size_type(-1)) i = 0;
+    ilast_false = i;
+    return i;
   }
 
   bit_vector &bit_vector::setminus(const bit_vector& b) {
-    for (bv_visitor i(b); !i.finished(); ++i) del(i);
+    if (b.empty()) return *this;
+    size_type last = b.last_true(), first = b.first_true();
+    if (last >= size()) fill_false(size(), last);
+    size_type nw = std::min(words.size(), b.words.size());
+    for (size_type i = 0; i < nw; ++i) words[i] &= ~b.words[i];
+    update_card();
+    ifirst_false = std::min(size_type(ifirst_false), first);
+    ilast_false = std::max(size_type(ilast_false), last);
     return *this;
   }
 
-  bit_vector &bit_vector::operator |=(const bit_vector &bv) {
-    for (bv_visitor i(bv); !i.finished(); ++i) add(i);
+  bit_vector &bit_vector::operator |=(const bit_vector &b) {
+    if (b.empty()) return *this;
+    size_type last = b.last_true(), first = b.first_true();
+    if (last >= size()) fill_false(size(), last);
+    size_type nw = std::min(words.size(), b.words.size());
+    for (size_type i = 0; i < nw; ++i) words[i] |= b.words[i];
+    update_card();
+    ifirst_true = std::min(size_type(ifirst_true), first);
+    ilast_true = std::max(size_type(ilast_true), last);
     return *this;
   }
 
-  bit_vector &bit_vector::operator &=(const bit_vector &bv) {
-    bit_container::iterator it1b = bit_container::begin();
-    bit_container::iterator it1e = bit_container::end();
-    bit_container::const_iterator it2b = bv.bit_container::begin();
-    bit_container::const_iterator it2e = bv.bit_container::end();
-
-    while (it1b != it1e && it2b != it2e) { *it1b++ &= *it2b++; }
-    while (it1b != it1e) { *it1b++ = 0; }
-    icard_valid = false;
-    ifirst_true = std::max(ifirst_true, bv.ifirst_true);
-    ilast_true = std::min(ilast_true, bv.ilast_true);
-    if (ifirst_true > ilast_true) clear();
-    else {
-      ilast_false = std::min(size()-1, std::max(ilast_false,bv.ilast_false));
-      ifirst_false = std::min(ifirst_false, bv.ifirst_false);
-    }
+  bit_vector &bit_vector::operator &=(const bit_vector &b) {
+    size_type nw = std::min(words.size(), b.words.size());
+    for (size_type i = 0; i < nw; ++i) words[i] &= b.words[i];
+    std::fill(words.begin() + nw, words.end(), bit_support(0));
+    update_card();
+    ifirst_true = std::max(size_type(ifirst_true), size_type(b.ifirst_true));
+    ilast_true = std::min(size_type(ilast_true), size_type(b.ilast_true));
+    if (ifirst_true > ilast_true) { clear(); return *this; }
+    ilast_false = std::min(size()-1, std::max(size_type(ilast_false),
+                                              size_type(b.ilast_false)));
+    ifirst_false = std::min(size_type(ifirst_false),
+                            size_type(b.ifirst_false));
     return *this;
   }
 
-  bool bit_vector::operator ==(const bit_vector &bv) const {
-    bit_container::const_iterator it1b = bit_container::begin();
-    bit_container::const_iterator it1e = bit_container::end();
-    bit_container::const_iterator it2b = bv.bit_container::begin();
-    bit_container::const_iterator it2e = bv.bit_container::end();
-
-    while (it1b!=it1e && it2b!=it2e) if (*it1b++ != *it2b++) return false;
-    while (it1b != it1e) if (*it1b++ != 0) return false;
-    while (it2b != it2e) if (*it2b++ != 0) return false;
+  bool bit_vector::operator ==(const bit_vector &b) const {
+    size_type nw = std::min(words.size(), b.words.size());
+    for (size_type i = 0; i < nw; ++i)
+      if (words[i] != b.words[i]) return false;
+    for (size_type i = nw; i < words.size(); ++i)
+      if (words[i]) return false;
+    for (size_type i = nw; i < b.words.size(); ++i)
+      if (b.words[i]) return false;
     return true;
   }
 
   void bit_vector::add(size_type i, size_type nb) {
-    if (nb)
-      { add(i+nb-1); std::fill(this->begin()+i, this->begin()+(i+nb), true); }
-  }
-
-  void bit_vector::sup(size_type i, size_type nb) {
-    if (nb)
-      { del(i+nb-1); std::fill(this->begin()+i, this->begin()+(i+nb), false); }
+    if (!nb) return;
+    size_type l = i + nb - 1, il = l / WD_BIT, ifw = i / WD_BIT;
+    if (l >= size()) fill_false(size(), l);
+    for (size_type iw = ifw; iw <= il; ++iw) {
+      bit_support m = ~bit_support(0);
+      if (iw == ifw) m &= ~bit_support(0) << (i & WD_MASK);
+      if (iw == il) m &= ~bit_support(0) >> (WD_MASK - (l & WD_MASK));
+      icard += bit_count(m & ~words[iw]);
+      words[iw] |= m;
+    }
+    ifirst_true = std::min(size_type(ifirst_true), i);
+    ilast_true = std::max(size_type(ilast_true), l);
   }
 
   void bit_vector::del(size_type i, size_type nb) {
-    if (nb)
-      { del(i+nb-1); std::fill(this->begin()+i, this->begin()+(i+nb), false); }
+    if (!nb) return;
+    size_type l = i + nb - 1, il = l / WD_BIT, ifw = i / WD_BIT;
+    if (l >= size()) fill_false(size(), l);
+    for (size_type iw = ifw; iw <= il; ++iw) {
+      bit_support m = ~bit_support(0);
+      if (iw == ifw) m &= ~bit_support(0) << (i & WD_MASK);
+      if (iw == il) m &= ~bit_support(0) >> (WD_MASK - (l & WD_MASK));
+      icard -= bit_count(m & words[iw]);
+      words[iw] &= ~m;
+    }
+    ifirst_false = std::min(size_type(ifirst_false), i);
+    ilast_false = std::max(size_type(ilast_false), l);
   }
 
+  void bit_vector::sup(size_type i, size_type nb) { del(i, nb); }
+
   bool bit_vector::contains(const dal::bit_vector& other) const {
-    for (dal::bv_visitor i(other); !i.finished(); ++i)
-      if (!this->is_in(i)) return false;
+    size_type nw = std::min(words.size(), other.words.size());
+    for (size_type i = 0; i < nw; ++i)
+      if (other.words[i] & ~words[i]) return false;
+    for (size_type i = nw; i < other.words.size(); ++i)
+      if (other.words[i]) return false;
     return true;
   }
 
@@ -190,20 +197,6 @@ namespace dal {
     }
     o << "]";
     return o;
-  }
-
-  bool bv_visitor::operator++() {
-    while (1) {
-      size_type ind_b = (ind&(~WD_MASK));
-      while (v) {
-        ++ind; v >>= 1;
-        if (v&1) return true;
-      }
-      ind = ind_b + WD_BIT;
-      if (ind >= ilast) return false;
-      v = *(++it);
-      if (v&1) return true;
-    }
   }
 
   const_bv_iterator<bv_iterable> bv_iterable::begin() const{
