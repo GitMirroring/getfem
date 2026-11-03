@@ -19,6 +19,9 @@
 /* defined if GMM is linked to the superlu library */
 #cmakedefine GMM_USES_SUPERLU
 
+/* defined if SuperLU headers are not in a superlu subdirectory */
+#cmakedefine GMM_NO_SUPERLU_INCLUDE_SUBDIR
+
 /* Use blas with 64 bits integers */
 #cmakedefine GMM_USE_BLAS64_INTERFACE
 

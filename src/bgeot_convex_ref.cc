@@ -32,8 +32,9 @@ namespace bgeot {
 # if !defined(GETFEM_HAVE_LIBQHULL_R_QHULL_RA_H)
   void qhull_delaunay(const std::vector<base_node> &,
                 gmm::dense_matrix<size_type>&) {
-    GMM_ASSERT1(false, "Qhull header files not installed. "
-                "Install qhull library and reinstall GetFEM library.");
+    GMM_ASSERT1(false, "GetFEM was built without Qhull support, which is "
+                "needed here (Delaunay triangulation, used e.g. by the "
+                "mesher). Install the Qhull library and rebuild GetFEM.");
   }
 # else
 

@@ -1,0 +1,153 @@
+{
+  "format_version": 2,
+  "name": "Plaque trouée : trou chauffé, bords refroidis",
+  "geometries": [
+    {
+      "name": "plaque_trouee",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "difference",
+          "of": [
+            {
+              "type": "rectangle",
+              "min": [
+                0.0,
+                0.0
+              ],
+              "max": [
+                0.2,
+                0.1
+              ]
+            },
+            {
+              "type": "ball",
+              "center": [
+                0.07,
+                0.05
+              ],
+              "radius": 0.02
+            }
+          ]
+        }
+      },
+      "selections": {
+        "trou": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "in_ball",
+            "center": [
+              0.07,
+              0.05
+            ],
+            "radius": 0.025
+          }
+        },
+        "gauche": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0.0,
+              0.0
+            ],
+            "normal": [
+              1.0,
+              0.0
+            ]
+          }
+        },
+        "droite": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0.2,
+              0.0
+            ],
+            "normal": [
+              1.0,
+              0.0
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "grossier",
+      "geometry": "plaque_trouee",
+      "mesher": "getfem",
+      "h": 0.01,
+      "order": 2
+    },
+    {
+      "name": "fin",
+      "geometry": "plaque_trouee",
+      "mesher": "gmsh",
+      "size": 0.003,
+      "order": 2
+    }
+  ],
+  "discretization": {
+    "degree": 2
+  },
+  "materials": [
+    {
+      "name": "acier",
+      "selection": "all",
+      "properties": {
+        "k": 50.0
+      }
+    }
+  ],
+  "physics": {
+    "type": "heat_stationary",
+    "mesh": "grossier",
+    "variable": "T",
+    "sources": [],
+    "boundary_conditions": [
+      {
+        "type": "heat_flux",
+        "selection": "trou",
+        "value": 20000.0
+      },
+      {
+        "type": "temperature",
+        "selection": "gauche",
+        "value": 20.0
+      },
+      {
+        "type": "convection",
+        "selection": "droite",
+        "h": 50.0,
+        "T_ext": 20.0
+      }
+    ]
+  },
+  "study": {
+    "type": "stationary"
+  },
+  "outputs": {
+    "vtu": "plaque_trouee.vtu",
+    "quantities": [
+      {
+        "name": "puissance_trou",
+        "expr": "k*Grad_T.Normal",
+        "selection": "trou"
+      },
+      {
+        "name": "flux_gauche",
+        "expr": "-k*Grad_T.Normal",
+        "selection": "gauche"
+      },
+      {
+        "name": "flux_droite",
+        "expr": "-k*Grad_T.Normal",
+        "selection": "droite"
+      }
+    ]
+  }
+}

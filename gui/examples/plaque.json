@@ -1,0 +1,108 @@
+{
+  "format_version": 2,
+  "name": "Plaque chauffée refroidie par convection",
+  "geometries": [
+    {
+      "name": "plaque",
+      "source": {
+        "type": "box",
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "size": [
+          0.2,
+          0.1
+        ]
+      },
+      "selections": {
+        "bords_convectifs": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "union",
+            "of": [
+              "xmax",
+              "ymax"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "maillage",
+      "geometry": "plaque",
+      "mesher": "structured",
+      "divisions": [
+        40,
+        20
+      ],
+      "element": "simplex"
+    }
+  ],
+  "discretization": {
+    "degree": 2
+  },
+  "materials": [
+    {
+      "name": "aluminium",
+      "selection": "all",
+      "properties": {
+        "k": 237.0
+      }
+    }
+  ],
+  "physics": {
+    "type": "heat_stationary",
+    "mesh": "maillage",
+    "variable": "T",
+    "sources": [
+      {
+        "selection": "all",
+        "value": "5e5 * exp(-(sqr(X(1)-0.1) + sqr(X(2)-0.05)) / 1e-4)"
+      }
+    ],
+    "boundary_conditions": [
+      {
+        "type": "temperature",
+        "selection": "xmin",
+        "value": 20.0
+      },
+      {
+        "type": "convection",
+        "selection": "bords_convectifs",
+        "h": 25.0,
+        "T_ext": 20.0
+      }
+    ]
+  },
+  "study": {
+    "type": "stationary"
+  },
+  "outputs": {
+    "vtu": "plaque.vtu",
+    "quantities": [
+      {
+        "name": "puissance_injectee",
+        "expr": "5e5 * exp(-(sqr(X(1)-0.1) + sqr(X(2)-0.05)) / 1e-4)",
+        "selection": "all"
+      },
+      {
+        "name": "flux_sortant_xmin",
+        "expr": "-k*Grad_T.Normal",
+        "selection": "xmin"
+      },
+      {
+        "name": "flux_sortant_convection",
+        "expr": "-k*Grad_T.Normal",
+        "selection": "bords_convectifs"
+      },
+      {
+        "name": "temperature_moyenne",
+        "expr": "T / 0.02",
+        "selection": "all"
+      }
+    ]
+  }
+}
