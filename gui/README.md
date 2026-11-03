@@ -1,117 +1,118 @@
-# getfem_gui — le cœur sans interface
+# getfem_gui — the core, without an interface yet
 
-Socle d'une future interface graphique pour GetFEM. Il n'y a pas encore de
-GUI : un modèle décrit en JSON est maillé puis traduit en un script Python
-GetFEM lisible, chaque étape s'exécutant dans un processus séparé.
+Foundation of a future graphical user interface for GetFEM. There is no GUI
+yet: a model described in JSON is meshed, then translated into a readable
+GetFEM Python script, each step running in a separate process.
 
-Ce répertoire est un paquet Python pur, indépendant du build de GetFEM : il
-n'est ni compilé ni installé par `make` / CMake. Il demande Python 3 (testé avec 3.13),
-NumPy et le module `getfem` ; Gmsh (`pip install gmsh`) est optionnel.
+This directory is a pure Python package, independent of the GetFEM build: it
+is neither compiled nor installed by `make` / CMake. It requires Python 3
+(tested with 3.13), NumPy and the `getfem` module; Gmsh (`pip install gmsh`)
+is optional.
 
-## Mise en route depuis le dépôt
+## Getting started from the repository
 
 ```bash
 cd gui
-# le module getfem doit être importable, par exemple après un build CMake :
-export PYTHONPATH=<prefixe>/lib/python3.X/site-packages
-python -m getfem_gui run examples/plaque.json -w /tmp/plaque
-python -m pytest tests/        # ou : python tests/test_heat.py
+# the getfem module must be importable, e.g. after a CMake build:
+export PYTHONPATH=<prefix>/lib/python3.X/site-packages
+python -m getfem_gui run examples/plate.json -w /tmp/plate
+python -m pytest tests/        # or: python tests/test_heat.py
 ```
 
+## Overview
+
 ```
-                 géométrie ──► sélections nommées (frontières, sous-domaines)
+                 geometry ──► named selections (boundaries, subdomains)
                      │
           ┌──────────┴──────────┐
-     maillage A             maillage B          (structuré, mailleur GetFEM, Gmsh, import)
-          │                      │               évalue les sélections -> régions GetFEM
-          ▼                      ▼               cache : <travail>/maillages/<nom>.mesh/.json
-   physique ── utilise un maillage, ne connaît que des noms de sélections
+       mesh A                 mesh B          (structured, GetFEM mesher, Gmsh, import)
+          │                      │            selections evaluated -> GetFEM regions
+          ▼                      ▼            cache: <workdir>/meshes/<name>.mesh/.json
+   physics ── uses one mesh, only knows selection names
           │
           ▼
    run_getfem.py ──► results.json + .vtu
 ```
 
-## Utilisation
+## Usage
 
 ```bash
-python -m getfem_gui new modele.json                     # modèle de départ
-python -m getfem_gui validate examples/plaque_trouee.json
-python -m getfem_gui mesh examples/plaque_trouee.json    # tous les maillages, avec bilan des sélections
-python -m getfem_gui run examples/plaque_trouee.json -w resultats/
-python -m getfem_gui generate modele.json -o calcul.py   # script de calcul seul
-python -m getfem_gui migrate ancien_v1.json -o nouveau.json
+python -m getfem_gui new model.json                         # starting model
+python -m getfem_gui validate examples/plate_with_hole.json
+python -m getfem_gui mesh examples/plate_with_hole.json     # all meshes, with selection summary
+python -m getfem_gui run examples/plate_with_hole.json -w results/
+python -m getfem_gui generate model.json -o solve.py        # solve script only
+python -m getfem_gui migrate old_v1.json -o new.json
 ```
 
-`--python /chemin/vers/python` choisit l'interpréteur qui possède GetFEM (et Gmsh).
+`--python /path/to/python` selects the interpreter that provides GetFEM (and Gmsh).
 
-Tests contre des solutions exactes : `python -m pytest tests/` ou `python tests/test_heat.py`.
+## Layout
 
-## Organisation
-
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `getfem_gui/model.py` | format JSON (v2), sélections, validation, migration depuis v1 |
-| `getfem_gui/mesher.py` | étape de maillage : script généré, régions, cache par hash |
-| `getfem_gui/codegen.py` | script de calcul GetFEM (charge le maillage préparé) |
-| `getfem_gui/runner.py` | enchaîne maillage et calcul en sous-processus |
-| `getfem_gui/cli.py` | ligne de commande |
-| `tests/test_heat.py` | 17 cas de validation (dont 1 qui demande Gmsh) |
-| `examples/` | plaque chauffée (boîte), plaque trouée (CSG, deux maillages) |
+| `getfem_gui/model.py` | JSON format (v2), selections, validation, migration from v1 |
+| `getfem_gui/mesher.py` | meshing step: generated script, regions, hash-based cache |
+| `getfem_gui/codegen.py` | GetFEM solve script (loads the prepared mesh) |
+| `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
+| `getfem_gui/cli.py` | command line interface |
+| `tests/test_heat.py` | 16 validation cases (one of them requires Gmsh) |
+| `examples/` | heated plate (box), plate with a hole (CSG, two meshes) |
 
-## Géométrie, sélections, maillages
+## Geometry, selections, meshes
 
-La description complète du format est dans la docstring de `model.py`.
+The complete format description is in the docstring of `model.py`.
 
-**Sources de géométrie** : `box` (1D/2D/3D), `csg` (rectangle, disque/boule,
-cylindre, réunion, intersection, différence), `cad` (STEP, IGES, BREP lus par
-Gmsh/OpenCASCADE), `mesh_file` (un maillage `.msh` sert de géométrie).
+**Geometry sources**: `box` (1D/2D/3D), `csg` (rectangle, disk/ball,
+cylinder, union, intersection, difference), `cad` (STEP, IGES, BREP read by
+Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 
-**Mailleurs** et sources acceptées :
+**Meshers** and accepted sources:
 
-| Mailleur | box | csg | cad | mesh_file |
+| Mesher | box | csg | cad | mesh_file |
 |---|---|---|---|---|
-| `structured` (grille, simplexes ou quadrangles) | ✓ | | | |
-| `getfem` (mailleur expérimental, `MesherObject`) | ✓ | ✓ | | |
+| `structured` (grid, simplices or quadrilaterals) | ✓ | | | |
+| `getfem` (experimental mesher, `MesherObject`) | ✓ | ✓ | | |
 | `gmsh` (OpenCASCADE) | ✓ | ✓ | ✓ | |
 | `import` | | | | ✓ |
 
-**Sélections** : `all` et `boundary` existent toujours ; `box` ajoute
-`xmin … zmax`, un `.msh` apporte ses groupes physiques nommés. On définit les
-autres par critères évalués *sur le maillage*, ce qui les rend indépendantes
-du mailleur et robustes au remaillage : `plane`, `normal`, `in_box`, `in_ball`,
-`physical`, `union`. Une sélection vide est une erreur explicite.
+**Selections**: `all` and `boundary` always exist; `box` adds
+`xmin … zmax`, a `.msh` file brings its named physical groups. Other
+selections are defined by criteria evaluated *on the mesh*, which makes them
+independent of the mesher and robust to remeshing: `plane`, `normal`,
+`in_box`, `in_ball`, `physical`, `union`. An empty selection is an explicit
+error.
 
-Attention : `normal` prend *toutes* les faces de bord orientées dans la
-direction donnée, y compris celles d'un trou (le bord droit d'un trou a une
-normale extérieure −x, comme le bord gauche de la pièce). Pour « la face
-gauche », utiliser `plane` ; c'est ce que font les faces prédéfinies `xmin…zmax`.
+Beware: `normal` picks *all* boundary faces oriented in the given direction,
+including those of a hole (the right edge of a hole has a −x outward normal,
+like the left edge of the part). For "the left face", use `plane`; this is
+what the predefined faces `xmin…zmax` do.
 
-Les numéros de régions GetFEM sont attribués par l'application, jamais par
-l'utilisateur. Quand deux matériaux couvrent la même zone, le dernier listé
-l'emporte : on peut donc écrire un matériau par défaut sur `all`, puis des
-exceptions.
+GetFEM region numbers are assigned by the application, never by the user.
+When two materials cover the same area, the last one listed wins: one can
+thus define a default material on `all`, then exceptions.
 
-**Cache** : un maillage n'est refait que si sa géométrie, ses paramètres ou le
-fichier source changent (hash SHA-256). Changer la physique ne remaille pas.
+**Cache**: a mesh is only rebuilt when its geometry, its parameters or its
+source file change (SHA-256 hash). Changing the physics does not remesh.
 
-## État des mailleurs
+## Status of the meshers
 
-- `structured`, `getfem` et `import` sont testés contre des solutions exactes
-  (le mailleur `getfem` demande un GetFEM compilé avec Qhull).
-- `gmsh` (y compris l'import CAO) n'a **pas encore été testé**. Le test
-  `test_mailleur_gmsh_csg` s'exécute automatiquement là où `import gmsh` réussit.
-- Unités CAO : Gmsh/OpenCASCADE conserve les unités du fichier STEP
-  (souvent le mm) ; il faudra une option d'échelle.
+- `structured`, `getfem` and `import` are tested against exact solutions
+  (the `getfem` mesher requires GetFEM built with Qhull).
+- `gmsh` (including CAD import) has **not been tested yet**. The test
+  `test_gmsh_mesher_csg` runs automatically wherever `import gmsh` succeeds.
+- CAD units: Gmsh/OpenCASCADE keeps the units of the STEP file (often mm);
+  a scaling option will be needed.
 
-## Ajouter une physique
+## Adding a physics
 
-Écrire deux fonctions dans `codegen.py` (termes GWFL, post-traitement), les
-enregistrer dans `PHYSICS`, et ajouter les conditions aux limites autorisées
-dans `model.validate`. L'élasticité linéaire est le candidat naturel suivant.
+Write two functions in `codegen.py` (GWFL terms, post-processing), register
+them in `PHYSICS`, and add the allowed boundary conditions to
+`model.validate`. Linear elasticity is the natural next candidate.
 
-## Pistes ouvertes
+## Open topics
 
-- Vérifier la syntaxe des expressions GWFL dès la validation.
-- Raffinement local Gmsh par sélection (`refinements`), noms de faces CAO.
-- Plusieurs physiques sur des maillages différents dans un même modèle
-  (GetFEM le permet) et études de convergence sur plusieurs maillages.
+- Check the syntax of GWFL expressions as early as validation.
+- Local Gmsh refinement per selection, CAD face names.
+- Several physics on different meshes in the same model (GetFEM allows it)
+  and convergence studies over several meshes.

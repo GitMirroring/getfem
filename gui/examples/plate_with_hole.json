@@ -1,9 +1,9 @@
 {
   "format_version": 2,
-  "name": "Plaque trouée : trou chauffé, bords refroidis",
+  "name": "Plate with a heated hole, cooled edges",
   "geometries": [
     {
-      "name": "plaque_trouee",
+      "name": "plate_with_hole",
       "source": {
         "type": "csg",
         "dim": 2,
@@ -33,7 +33,7 @@
         }
       },
       "selections": {
-        "trou": {
+        "hole": {
           "kind": "boundary",
           "criteria": {
             "type": "in_ball",
@@ -44,7 +44,7 @@
             "radius": 0.025
           }
         },
-        "gauche": {
+        "left": {
           "kind": "boundary",
           "criteria": {
             "type": "plane",
@@ -58,7 +58,7 @@
             ]
           }
         },
-        "droite": {
+        "right": {
           "kind": "boundary",
           "criteria": {
             "type": "plane",
@@ -77,15 +77,15 @@
   ],
   "meshes": [
     {
-      "name": "grossier",
-      "geometry": "plaque_trouee",
+      "name": "coarse",
+      "geometry": "plate_with_hole",
       "mesher": "getfem",
       "h": 0.01,
       "order": 2
     },
     {
-      "name": "fin",
-      "geometry": "plaque_trouee",
+      "name": "fine",
+      "geometry": "plate_with_hole",
       "mesher": "gmsh",
       "size": 0.003,
       "order": 2
@@ -96,7 +96,7 @@
   },
   "materials": [
     {
-      "name": "acier",
+      "name": "steel",
       "selection": "all",
       "properties": {
         "k": 50.0
@@ -105,23 +105,23 @@
   ],
   "physics": {
     "type": "heat_stationary",
-    "mesh": "grossier",
+    "mesh": "coarse",
     "variable": "T",
     "sources": [],
     "boundary_conditions": [
       {
         "type": "heat_flux",
-        "selection": "trou",
+        "selection": "hole",
         "value": 20000.0
       },
       {
         "type": "temperature",
-        "selection": "gauche",
+        "selection": "left",
         "value": 20.0
       },
       {
         "type": "convection",
-        "selection": "droite",
+        "selection": "right",
         "h": 50.0,
         "T_ext": 20.0
       }
@@ -131,22 +131,22 @@
     "type": "stationary"
   },
   "outputs": {
-    "vtu": "plaque_trouee.vtu",
+    "vtu": "plate_with_hole.vtu",
     "quantities": [
       {
-        "name": "puissance_trou",
+        "name": "hole_power",
         "expr": "k*Grad_T.Normal",
-        "selection": "trou"
+        "selection": "hole"
       },
       {
-        "name": "flux_gauche",
+        "name": "outflow_left",
         "expr": "-k*Grad_T.Normal",
-        "selection": "gauche"
+        "selection": "left"
       },
       {
-        "name": "flux_droite",
+        "name": "outflow_right",
         "expr": "-k*Grad_T.Normal",
-        "selection": "droite"
+        "selection": "right"
       }
     ]
   }

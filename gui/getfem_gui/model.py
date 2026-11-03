@@ -14,86 +14,86 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Modèle de données de l'application, indépendant de toute interface graphique.
+"""Application data model, independent of any graphical interface.
 
-Un modèle est un dictionnaire Python sérialisé en JSON. Ce module fournit le
-chargement (avec migration des anciennes versions), la sauvegarde, les tables
-de sélections et la validation. La validation renvoie des messages lisibles
-plutôt que de lever une exception, pour qu'une GUI puisse les afficher.
+A model is a Python dictionary serialized as JSON. This module provides
+loading (with migration of older format versions), saving, selection tables
+and validation. Validation returns readable messages rather than raising an
+exception, so that a GUI can display them next to the relevant fields.
 
 Format version 2
 ================
 
-La géométrie et le maillage sont séparés. Une géométrie porte des
-*sélections nommées* ; chaque maillage de cette géométrie en hérite. La
-physique ne connaît que des noms de sélections et le nom du maillage utilisé.
+Geometry and mesh are separate. A geometry carries *named selections*; every
+mesh of that geometry inherits them. The physics only knows selection names
+and the name of the mesh it uses.
 
 {
   "format_version": 2,
-  "name": "Plaque trouée",
+  "name": "Plate with a hole",
   "geometries": [
     {
-      "name": "plaque",
-      "source": {...},                      # voir GEOMETRY_SOURCES
+      "name": "plate",
+      "source": {...},                      # see GEOMETRY_SOURCES
       "selections": {
-        "trou":  {"kind": "boundary", "criteria": {"type": "in_ball", "center": [0.5, 0.5], "radius": 0.21}},
-        "parois": {"kind": "boundary", "criteria": {"type": "union", "of": ["ymin", "ymax"]}}
+        "hole":  {"kind": "boundary", "criteria": {"type": "in_ball", "center": [0.5, 0.5], "radius": 0.21}},
+        "walls": {"kind": "boundary", "criteria": {"type": "union", "of": ["ymin", "ymax"]}}
       }
     }
   ],
   "meshes": [
-    {"name": "grossier", "geometry": "plaque", "mesher": "getfem", "h": 0.1},
-    {"name": "fin",      "geometry": "plaque", "mesher": "gmsh",   "size": 0.02, "order": 2}
+    {"name": "coarse", "geometry": "plate", "mesher": "getfem", "h": 0.1},
+    {"name": "fine",   "geometry": "plate", "mesher": "gmsh",   "size": 0.02, "order": 2}
   ],
   "discretization": {"degree": 2},
-  "materials": [{"name": "acier", "selection": "all", "properties": {"k": 50}}],
+  "materials": [{"name": "steel", "selection": "all", "properties": {"k": 50}}],
   "physics": {
-    "type": "heat_stationary", "mesh": "fin", "variable": "T",
+    "type": "heat_stationary", "mesh": "fine", "variable": "T",
     "sources": [{"selection": "all", "value": 0}],
     "boundary_conditions": [
       {"type": "temperature", "selection": "xmin", "value": 20},
-      {"type": "heat_flux",   "selection": "trou", "value": 100},
+      {"type": "heat_flux",   "selection": "hole", "value": 100},
       {"type": "convection",  "selection": "xmax", "h": 10, "T_ext": 20}
     ]
   },
   "study": {"type": "stationary"},
-  "outputs": {"vtu": "resultat.vtu",
+  "outputs": {"vtu": "result.vtu",
               "quantities": [{"name": "flux", "expr": "-k*Grad_T.Normal", "selection": "xmin"}]}
 }
 
-Sources de géométrie
---------------------
+Geometry sources
+----------------
 - box       : {"type": "box", "origin": [...], "size": [...]}         (1D, 2D, 3D)
-- csg       : {"type": "csg", "dim": 2, "shape": <forme>}            primitives + booléens
-              forme = {"type": "rectangle", "min": [...], "max": [...]}
+- csg       : {"type": "csg", "dim": 2, "shape": <shape>}            primitives + booleans
+              shape = {"type": "rectangle", "min": [...], "max": [...]}
                     | {"type": "ball", "center": [...], "radius": r}
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
-                    | {"type": "union" | "intersection" | "difference", "of": [<forme>, ...]}
-- cad       : {"type": "cad", "file": "piece.step"}                  STEP, IGES, BREP (via Gmsh)
-- mesh_file : {"type": "mesh_file", "file": "piece.msh"}             la géométrie est le maillage
+                    | {"type": "union" | "intersection" | "difference", "of": [<shape>, ...]}
+- cad       : {"type": "cad", "file": "part.step"}                   STEP, IGES, BREP (through Gmsh)
+- mesh_file : {"type": "mesh_file", "file": "part.msh"}              the geometry is the mesh
 
-Mailleurs et sources compatibles
---------------------------------
+Meshers and compatible sources
+------------------------------
 - structured : box               {"divisions": [...], "element": "simplex" | "quad"}
-- getfem     : box, csg          {"h": taille, "order": 1}   (mailleur expérimental de GetFEM)
-- gmsh       : box, csg, cad     {"size": taille, "order": 1}
-- import     : mesh_file         (aucun paramètre)
+- getfem     : box, csg          {"h": size, "order": 1}   (GetFEM experimental mesher)
+- gmsh       : box, csg, cad     {"size": size, "order": 1}
+- import     : mesh_file         (no parameter)
 
-Sélections
+Selections
 ----------
-Toujours disponibles : "all" (tout le domaine) et "boundary" (tout le bord).
-box ajoute xmin, xmax, ymin, ... ; mesh_file ajoute ses groupes physiques nommés.
-Sélections utilisateur : {"kind": "domain" | "boundary", "criteria": {...}} avec
-- {"type": "plane", "point": [...], "normal": [...]}   faces de bord contenues dans un plan
-- {"type": "normal", "direction": [...], "angle": 1}   faces de bord de normale proche (degrés) ;
-                                                         attention, inclut les bords intérieurs (trous)
-- {"type": "in_box", "min": [...], "max": [...]}        faces de bord / éléments dans la boîte
-- {"type": "in_ball", "center": [...], "radius": r}     faces de bord dans la boule
-- {"type": "physical", "tag": n}                         groupe physique d'un maillage importé
-- {"type": "union", "of": ["nom1", "nom2", ...]}         réunion de sélections de même nature
-Les critères sont évalués sur le maillage : ils survivent au remaillage.
+Always available: "all" (the whole domain) and "boundary" (the whole boundary).
+box adds xmin, xmax, ymin, ...; mesh_file adds its named physical groups.
+User selections: {"kind": "domain" | "boundary", "criteria": {...}} with
+- {"type": "plane", "point": [...], "normal": [...]}   boundary faces lying in a plane
+- {"type": "normal", "direction": [...], "angle": 1}   boundary faces with a close normal (degrees);
+                                                         beware, this includes inner boundaries (holes)
+- {"type": "in_box", "min": [...], "max": [...]}        boundary faces / elements inside the box
+- {"type": "in_ball", "center": [...], "radius": r}     boundary faces inside the ball
+- {"type": "physical", "tag": n}                         physical group of an imported mesh
+- {"type": "union", "of": ["name1", "name2", ...]}       union of selections of the same kind
+Criteria are evaluated on the mesh, so they survive remeshing.
 
-Les valeurs numériques peuvent être des nombres ou des expressions GWFL.
+Numerical values may be numbers or GWFL expressions.
 """
 
 from __future__ import annotations
@@ -127,36 +127,35 @@ CRITERIA = {
     "physical": (BOUNDARY, DOMAIN),
     "union": (BOUNDARY, DOMAIN),
 }
-SHAPES_2D_3D = ("rectangle", "ball")
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
 
 
-# ------------------------------------------------------------------ utilitaires
+# ------------------------------------------------------------------ utilities
 
 def box_boundary_names(dim: int) -> list[str]:
-    """Noms des faces d'une boîte : xmin, xmax, ymin, ..."""
+    """Names of the faces of a box: xmin, xmax, ymin, ..."""
     return [f"{_AXES[i]}{side}" for i in range(dim) for side in ("min", "max")]
 
 
 def default_model() -> dict:
-    """Modèle de départ : carré unité, conduction, bords gauche/droit fixés."""
+    """Starting model: unit square, conduction, left and right edges fixed."""
     return {
         "format_version": FORMAT_VERSION,
-        "name": "Nouveau modèle",
+        "name": "New model",
         "geometries": [{
-            "name": "geometrie",
+            "name": "geometry",
             "source": {"type": "box", "origin": [0.0, 0.0], "size": [1.0, 1.0]},
             "selections": {},
         }],
         "meshes": [{
-            "name": "maillage", "geometry": "geometrie", "mesher": "structured",
+            "name": "mesh", "geometry": "geometry", "mesher": "structured",
             "divisions": [10, 10], "element": "simplex",
         }],
         "discretization": {"degree": 2},
-        "materials": [{"name": "materiau", "selection": ALL, "properties": {"k": 1.0}}],
+        "materials": [{"name": "material", "selection": ALL, "properties": {"k": 1.0}}],
         "physics": {
             "type": "heat_stationary",
-            "mesh": "maillage",
+            "mesh": "mesh",
             "variable": "T",
             "sources": [],
             "boundary_conditions": [
@@ -165,12 +164,12 @@ def default_model() -> dict:
             ],
         },
         "study": {"type": "stationary"},
-        "outputs": {"vtu": "resultat.vtu", "quantities": []},
+        "outputs": {"vtu": "result.vtu", "quantities": []},
     }
 
 
 def load(path: str | Path) -> dict:
-    """Charge un modèle ; un fichier d'une ancienne version est migré en mémoire."""
+    """Load a model; a file in an older format version is migrated in memory."""
     path = Path(path)
     with path.open(encoding="utf-8") as f:
         model = json.load(f)
@@ -199,7 +198,7 @@ def resolve_file(model: dict, file: str) -> Path:
 
 
 def read_gmsh_physical_names(path: str | Path) -> dict[str, tuple[int, int]]:
-    """Section $PhysicalNames d'un .msh ASCII (formats 2 et 4) : {nom: (dim, tag)}."""
+    """$PhysicalNames section of an ASCII .msh file (formats 2 and 4): {name: (dim, tag)}."""
     names: dict[str, tuple[int, int]] = {}
     try:
         with Path(path).open(encoding="utf-8", errors="replace") as f:
@@ -215,14 +214,14 @@ def read_gmsh_physical_names(path: str | Path) -> dict[str, tuple[int, int]]:
     return names
 
 
-# ------------------------------------------------------------------ accès
+# ------------------------------------------------------------------ access
 
 def by_name(items: list[dict], name: str) -> dict | None:
     return next((it for it in items if it.get("name") == name), None)
 
 
 def physics_mesh(model: dict) -> dict | None:
-    """Maillage utilisé par la physique (le premier si non précisé)."""
+    """Mesh used by the physics (the first one if not specified)."""
     meshes = model.get("meshes", [])
     name = model.get("physics", {}).get("mesh")
     if name is None:
@@ -247,9 +246,9 @@ def geometry_dim(model: dict, geom: dict) -> int | None:
 
 
 def selection_table(model: dict, geom: dict) -> dict[str, dict]:
-    """Toutes les sélections d'une géométrie : {nom: {"kind": ..., "builtin": bool, ...}}.
+    """All selections of a geometry: {name: {"kind": ..., "builtin": bool, ...}}.
 
-    L'ordre est significatif : il fixe la numérotation des régions GetFEM.
+    The order matters: it fixes the numbering of the GetFEM regions.
     """
     table: dict[str, dict] = {
         ALL: {"kind": DOMAIN, "builtin": True},
@@ -283,24 +282,24 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
 
 def _check_value(v, where: str, errors: list[str]) -> None:
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
-        errors.append(f"{where} : valeur attendue (nombre ou expression GWFL), reçu {v!r}")
+        errors.append(f"{where}: value expected (number or GWFL expression), got {v!r}")
     elif isinstance(v, str) and not v.strip():
-        errors.append(f"{where} : expression vide")
+        errors.append(f"{where}: empty expression")
 
 
 def _check_vec(v, n, where, errors, positive=False):
     if not isinstance(v, list) or (n is not None and len(v) != n) \
             or any(isinstance(x, bool) or not isinstance(x, (int, float)) for x in v):
-        errors.append(f"{where} : {n or ''} nombres attendus".replace("  ", " "))
+        errors.append(f"{where}: {n or ''} numbers expected".replace("  ", " "))
         return False
     if positive and any(x <= 0 for x in v):
-        errors.append(f"{where} : valeurs strictement positives attendues")
+        errors.append(f"{where}: strictly positive values expected")
     return True
 
 
 def _check_positive(v, where, errors):
     if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
-        errors.append(f"{where} : nombre strictement positif attendu")
+        errors.append(f"{where}: strictly positive number expected")
 
 
 def _check_shape(shape, dim, where, errors):
@@ -313,7 +312,7 @@ def _check_shape(shape, dim, where, errors):
         _check_positive(shape.get("radius"), f"{where}.radius", errors)
     elif t == "cylinder":
         if dim != 3:
-            errors.append(f"{where} : cylinder n'existe qu'en 3D")
+            errors.append(f"{where}: cylinder only exists in 3D")
         _check_vec(shape.get("origin"), dim, f"{where}.origin", errors)
         _check_vec(shape.get("axis"), dim, f"{where}.axis", errors)
         _check_positive(shape.get("length"), f"{where}.length", errors)
@@ -321,11 +320,11 @@ def _check_shape(shape, dim, where, errors):
     elif t in SHAPES_BOOLEAN:
         parts = shape.get("of", [])
         if len(parts) < 2:
-            errors.append(f"{where}.of : au moins deux formes attendues")
+            errors.append(f"{where}.of: at least two shapes expected")
         for i, s in enumerate(parts):
             _check_shape(s, dim, f"{where}.of[{i}]", errors)
     else:
-        errors.append(f"{where}.type : forme inconnue {t!r} "
+        errors.append(f"{where}.type: unknown shape {t!r} "
                       "(rectangle, ball, cylinder, union, intersection, difference)")
 
 
@@ -335,33 +334,33 @@ def _validate_geometry(model, geom, where, errors):
     if t == "box":
         dim = len(src.get("size", []))
         if dim not in (1, 2, 3):
-            errors.append(f"{where}.source.size : 1, 2 ou 3 valeurs attendues")
+            errors.append(f"{where}.source.size: 1, 2 or 3 values expected")
         else:
             _check_vec(src.get("size"), dim, f"{where}.source.size", errors, positive=True)
             _check_vec(src.get("origin"), dim, f"{where}.source.origin", errors)
     elif t == "csg":
         dim = src.get("dim")
         if dim not in (2, 3):
-            errors.append(f"{where}.source.dim : 2 ou 3 attendu")
+            errors.append(f"{where}.source.dim: 2 or 3 expected")
         else:
             _check_shape(src.get("shape"), dim, f"{where}.source.shape", errors)
     elif t in ("cad", "mesh_file"):
         if "file" not in src:
-            errors.append(f"{where}.source.file : chemin du fichier manquant")
+            errors.append(f"{where}.source.file: missing file path")
         elif not resolve_file(model, src["file"]).exists():
-            errors.append(f"{where}.source.file : fichier introuvable ({resolve_file(model, src['file'])})")
+            errors.append(f"{where}.source.file: file not found ({resolve_file(model, src['file'])})")
         elif t == "mesh_file":
             by_tag: dict[int, list[str]] = {}
             for name, (_, tag) in read_gmsh_physical_names(resolve_file(model, src["file"])).items():
                 by_tag.setdefault(tag, []).append(name)
             for tag, group in by_tag.items():
                 if len(group) > 1:
-                    errors.append(f"{where}.source.file : les groupes physiques {', '.join(group)} "
-                                  f"partagent le numéro {tag} ; GetFEM a besoin de numéros distincts")
+                    errors.append(f"{where}.source.file: physical groups {', '.join(group)} "
+                                  f"share the number {tag}; GetFEM needs distinct numbers")
         if t == "cad" and Path(src.get("file", "")).suffix.lower() not in (".step", ".stp", ".iges", ".igs", ".brep"):
-            errors.append(f"{where}.source.file : formats CAO acceptés : STEP, IGES, BREP")
+            errors.append(f"{where}.source.file: accepted CAD formats are STEP, IGES, BREP")
     else:
-        errors.append(f"{where}.source.type : {', '.join(GEOMETRY_SOURCES)} attendu, reçu {t!r}")
+        errors.append(f"{where}.source.type: {', '.join(GEOMETRY_SOURCES)} expected, got {t!r}")
         return
 
     table = selection_table(model, geom)
@@ -369,20 +368,20 @@ def _validate_geometry(model, geom, where, errors):
     for name, sel in geom.get("selections", {}).items():
         w = f"{where}.selections.{name}"
         if not _IDENT.match(name):
-            errors.append(f"{w} : nom invalide (lettres, chiffres, _)")
+            errors.append(f"{w}: invalid name (letters, digits, _)")
         if name in table and table[name]["builtin"]:
-            errors.append(f"{w} : le nom {name!r} est déjà une sélection prédéfinie")
+            errors.append(f"{w}: {name!r} is already a predefined selection")
         kind = sel.get("kind")
         if kind not in (DOMAIN, BOUNDARY):
-            errors.append(f"{w}.kind : 'domain' ou 'boundary' attendu")
+            errors.append(f"{w}.kind: 'domain' or 'boundary' expected")
             continue
         crit = sel.get("criteria", {})
         ct = crit.get("type")
         if ct not in CRITERIA:
-            errors.append(f"{w}.criteria.type : {', '.join(CRITERIA)} attendu, reçu {ct!r}")
+            errors.append(f"{w}.criteria.type: {', '.join(CRITERIA)} expected, got {ct!r}")
             continue
         if kind not in CRITERIA[ct]:
-            errors.append(f"{w} : le critère {ct!r} ne s'applique qu'à {', '.join(CRITERIA[ct])}")
+            errors.append(f"{w}: criterion {ct!r} only applies to {', '.join(CRITERIA[ct])}")
         if ct == "normal":
             _check_vec(crit.get("direction"), dim, f"{w}.criteria.direction", errors)
         elif ct == "plane":
@@ -396,67 +395,67 @@ def _validate_geometry(model, geom, where, errors):
             _check_positive(crit.get("radius"), f"{w}.criteria.radius", errors)
         elif ct == "physical":
             if t != "mesh_file":
-                errors.append(f"{w} : le critère 'physical' demande une géométrie mesh_file")
+                errors.append(f"{w}: criterion 'physical' requires a mesh_file geometry")
             if not isinstance(crit.get("tag"), int):
-                errors.append(f"{w}.criteria.tag : entier attendu")
+                errors.append(f"{w}.criteria.tag: integer expected")
         elif ct == "union":
             for other in crit.get("of", []):
                 if other not in table or other == name:
-                    errors.append(f"{w}.criteria.of : sélection inconnue {other!r}")
+                    errors.append(f"{w}.criteria.of: unknown selection {other!r}")
                 elif table[other]["kind"] != kind:
-                    errors.append(f"{w}.criteria.of : {other!r} n'est pas de nature {kind!r}")
+                    errors.append(f"{w}.criteria.of: {other!r} is not of kind {kind!r}")
                 elif table[other].get("criteria", {}).get("type") == "union":
-                    errors.append(f"{w}.criteria.of : réunion de réunions non prise en charge ({other!r})")
+                    errors.append(f"{w}.criteria.of: union of unions not supported ({other!r})")
             if not crit.get("of"):
-                errors.append(f"{w}.criteria.of : liste de sélections attendue")
+                errors.append(f"{w}.criteria.of: list of selections expected")
 
 
 def _validate_mesh(model, mesh, where, errors):
     geom = geometry_of(model, mesh)
     if geom is None:
-        errors.append(f"{where}.geometry : géométrie inconnue {mesh.get('geometry')!r}")
+        errors.append(f"{where}.geometry: unknown geometry {mesh.get('geometry')!r}")
         return
     mesher = mesh.get("mesher")
     if mesher not in MESHERS:
-        errors.append(f"{where}.mesher : {', '.join(MESHERS)} attendu, reçu {mesher!r}")
+        errors.append(f"{where}.mesher: {', '.join(MESHERS)} expected, got {mesher!r}")
         return
     stype = geom.get("source", {}).get("type")
     if stype not in MESHERS[mesher]:
-        errors.append(f"{where}.mesher : {mesher!r} ne sait pas mailler une géométrie {stype!r} "
-                      f"(compatible : {', '.join(MESHERS[mesher])})")
+        errors.append(f"{where}.mesher: {mesher!r} cannot mesh a {stype!r} geometry "
+                      f"(compatible: {', '.join(MESHERS[mesher])})")
     if mesher == "structured" and stype == "box":
         dim = len(geom["source"].get("size", []))
         div = mesh.get("divisions")
         if not isinstance(div, list) or len(div) != dim or any(
                 not isinstance(n, int) or isinstance(n, bool) or n < 1 for n in div):
-            errors.append(f"{where}.divisions : {dim} entiers >= 1 attendus")
+            errors.append(f"{where}.divisions: {dim} integers >= 1 expected")
         if mesh.get("element", "simplex") not in ("simplex", "quad"):
-            errors.append(f"{where}.element : 'simplex' ou 'quad' attendu")
+            errors.append(f"{where}.element: 'simplex' or 'quad' expected")
     elif mesher == "getfem":
         _check_positive(mesh.get("h"), f"{where}.h", errors)
     elif mesher == "gmsh":
         _check_positive(mesh.get("size"), f"{where}.size", errors)
     if mesher in ("getfem", "gmsh") and mesh.get("order", 1) not in (1, 2, 3):
-        errors.append(f"{where}.order : 1, 2 ou 3 attendu")
+        errors.append(f"{where}.order: 1, 2 or 3 expected")
 
 
 def validate(model: dict) -> list[str]:
-    """Renvoie la liste des erreurs (vide si le modèle est valide)."""
+    """Return the list of errors (empty if the model is valid)."""
     errors: list[str] = []
     if model.get("format_version") != FORMAT_VERSION:
-        errors.append(f"format_version : {FORMAT_VERSION} attendu, reçu {model.get('format_version')!r}")
+        errors.append(f"format_version: {FORMAT_VERSION} expected, got {model.get('format_version')!r}")
 
-    # --- Géométries et maillages
+    # --- Geometries and meshes
     for key in ("geometries", "meshes"):
         items = model.get(key, [])
         if not items:
-            errors.append(f"{key} : au moins un élément est nécessaire")
+            errors.append(f"{key}: at least one item is required")
         names = [it.get("name") for it in items]
         for i, name in enumerate(names):
             if not isinstance(name, str) or not _IDENT.match(name):
-                errors.append(f"{key}[{i}].name : identifiant attendu, reçu {name!r}")
+                errors.append(f"{key}[{i}].name: identifier expected, got {name!r}")
             elif names.count(name) > 1:
-                errors.append(f"{key}[{i}].name : nom {name!r} utilisé plusieurs fois")
+                errors.append(f"{key}[{i}].name: name {name!r} used more than once")
     for i, geom in enumerate(model.get("geometries", [])):
         _validate_geometry(model, geom, f"geometries[{i}]", errors)
     for i, mesh in enumerate(model.get("meshes", [])):
@@ -464,12 +463,12 @@ def validate(model: dict) -> list[str]:
 
     degree = model.get("discretization", {}).get("degree", 1)
     if not isinstance(degree, int) or isinstance(degree, bool) or not 1 <= degree <= 6:
-        errors.append("discretization.degree : entier entre 1 et 6 attendu")
+        errors.append("discretization.degree: integer between 1 and 6 expected")
 
     phys = model.get("physics", {})
     mesh = physics_mesh(model)
     if mesh is None:
-        errors.append(f"physics.mesh : maillage inconnu {phys.get('mesh')!r}")
+        errors.append(f"physics.mesh: unknown mesh {phys.get('mesh')!r}")
         return errors
     geom = geometry_of(model, mesh)
     if geom is None:
@@ -478,40 +477,40 @@ def validate(model: dict) -> list[str]:
 
     def check_sel(name, kind, where):
         if name not in table:
-            errors.append(f"{where} : sélection inconnue {name!r} (géométrie {geom['name']!r} : "
+            errors.append(f"{where}: unknown selection {name!r} (geometry {geom['name']!r}: "
                           f"{', '.join(table)})")
         elif table[name]["kind"] != kind:
-            what = "un domaine" if kind == DOMAIN else "une frontière"
-            errors.append(f"{where} : {name!r} n'est pas {what}")
+            what = "a domain" if kind == DOMAIN else "a boundary"
+            errors.append(f"{where}: {name!r} is not {what}")
 
-    # --- Matériaux
+    # --- Materials
     materials = model.get("materials", [])
     if not materials:
-        errors.append("materials : au moins un matériau est nécessaire")
+        errors.append("materials: at least one material is required")
     seen = set()
     for i, mat in enumerate(materials):
         where = f"materials[{i}]"
         name = mat.get("name", "")
         if not _IDENT.match(str(name)):
-            errors.append(f"{where}.name : identifiant attendu, reçu {name!r}")
+            errors.append(f"{where}.name: identifier expected, got {name!r}")
         if name in seen:
-            errors.append(f"{where}.name : nom {name!r} déjà utilisé")
+            errors.append(f"{where}.name: name {name!r} already used")
         seen.add(name)
         check_sel(mat.get("selection", ALL), DOMAIN, f"{where}.selection")
         props = mat.get("properties", {})
         if "k" not in props:
-            errors.append(f"{where}.properties.k : conductivité manquante")
+            errors.append(f"{where}.properties.k: missing thermal conductivity")
         for prop, v in props.items():
             if not _IDENT.match(prop):
-                errors.append(f"{where}.properties : nom invalide {prop!r}")
+                errors.append(f"{where}.properties: invalid name {prop!r}")
             _check_value(v, f"{where}.properties.{prop}", errors)
 
-    # --- Physique
+    # --- Physics
     if phys.get("type") != "heat_stationary":
-        errors.append(f"physics.type : seul 'heat_stationary' est disponible, reçu {phys.get('type')!r}")
+        errors.append(f"physics.type: only 'heat_stationary' is available, got {phys.get('type')!r}")
     var = phys.get("variable", "T")
     if not _IDENT.match(str(var)):
-        errors.append(f"physics.variable : identifiant attendu, reçu {var!r}")
+        errors.append(f"physics.variable: identifier expected, got {var!r}")
     for i, src in enumerate(phys.get("sources", [])):
         check_sel(src.get("selection", ALL), DOMAIN, f"physics.sources[{i}].selection")
         _check_value(src.get("value"), f"physics.sources[{i}].value", errors)
@@ -522,31 +521,31 @@ def validate(model: dict) -> list[str]:
         where = f"physics.boundary_conditions[{i}]"
         btype = bc.get("type")
         if btype not in required:
-            errors.append(f"{where}.type : {', '.join(required)} attendu, reçu {btype!r}")
+            errors.append(f"{where}.type: {', '.join(required)} expected, got {btype!r}")
             continue
         check_sel(bc.get("selection"), BOUNDARY, f"{where}.selection")
         for key in required[btype]:
             _check_value(bc.get(key), f"{where}.{key}", errors)
         has_dirichlet |= btype in ("temperature", "convection")
     if not has_dirichlet and not errors:
-        errors.append("physics.boundary_conditions : sans température imposée ni convection, "
-                      "la température n'est définie qu'à une constante près")
+        errors.append("physics.boundary_conditions: without imposed temperature or convection, "
+                      "the temperature is only defined up to a constant")
 
-    # --- Sorties
+    # --- Outputs
     for i, q in enumerate(model.get("outputs", {}).get("quantities", [])):
         where = f"outputs.quantities[{i}]"
         if not _IDENT.match(str(q.get("name", ""))):
-            errors.append(f"{where}.name : identifiant attendu")
+            errors.append(f"{where}.name: identifier expected")
         _check_value(q.get("expr"), f"{where}.expr", errors)
         sel = q.get("selection", ALL)
         if sel not in table:
-            errors.append(f"{where}.selection : sélection inconnue {sel!r}")
+            errors.append(f"{where}.selection: unknown selection {sel!r}")
 
     return errors
 
 
 def with_defaults(model: dict) -> dict:
-    """Copie du modèle complétée par les valeurs par défaut optionnelles."""
+    """Copy of the model completed with the optional default values."""
     m = copy.deepcopy(model)
     m.setdefault("discretization", {}).setdefault("degree", 1)
     for geom in m.get("geometries", []):
@@ -566,7 +565,7 @@ def with_defaults(model: dict) -> dict:
     for src in phys["sources"]:
         src.setdefault("selection", ALL)
     out = m.setdefault("outputs", {})
-    out.setdefault("vtu", "resultat.vtu")
+    out.setdefault("vtu", "result.vtu")
     out.setdefault("quantities", [])
     for q in out["quantities"]:
         q.setdefault("selection", ALL)
@@ -576,13 +575,13 @@ def with_defaults(model: dict) -> dict:
 # ------------------------------------------------------------------ migration
 
 def migrate(model: dict) -> dict:
-    """Met un modèle d'une version antérieure au format courant (copie)."""
+    """Bring a model from an older format version to the current one (copy)."""
     version = model.get("format_version")
     if version == FORMAT_VERSION:
         return model
     if version == 1:
         return _migrate_v1(model)
-    raise ValueError(f"format_version {version!r} inconnu")
+    raise ValueError(f"unknown format_version {version!r}")
 
 
 def _migrate_v1(old: dict) -> dict:
@@ -591,16 +590,16 @@ def _migrate_v1(old: dict) -> dict:
     extra_regions = m.pop("regions", {})
 
     if mesh.get("type") == "box":
-        geom = {"name": "geometrie", "source": {"type": "box", "origin": mesh.get("origin"),
-                                                 "size": mesh.get("size")}, "selections": {}}
-        new_mesh = {"name": "maillage", "geometry": "geometrie", "mesher": "structured",
+        geom = {"name": "geometry", "source": {"type": "box", "origin": mesh.get("origin"),
+                                                "size": mesh.get("size")}, "selections": {}}
+        new_mesh = {"name": "mesh", "geometry": "geometry", "mesher": "structured",
                     "divisions": mesh.get("divisions"), "element": mesh.get("element", "simplex")}
     else:
-        geom = {"name": "geometrie", "source": {"type": "mesh_file", "file": mesh.get("file")},
+        geom = {"name": "geometry", "source": {"type": "mesh_file", "file": mesh.get("file")},
                 "selections": {}}
-        new_mesh = {"name": "maillage", "geometry": "geometrie", "mesher": "import"}
+        new_mesh = {"name": "mesh", "geometry": "geometry", "mesher": "import"}
 
-    # region -> selection partout
+    # region -> selection everywhere, keeping the key order
     def rename(items):
         for it in items:
             if "region" in it:
@@ -613,7 +612,7 @@ def _migrate_v1(old: dict) -> dict:
     rename(phys.get("boundary_conditions", []))
     rename(m.get("outputs", {}).get("quantities", []))
 
-    # Les régions déclarées à la main deviennent des sélections par numéro.
+    # Regions declared by hand become selections by physical group number.
     domain_uses = {it.get("selection") for it in m.get("materials", []) + phys.get("sources", [])}
     for name, tag in extra_regions.items():
         kind = DOMAIN if name in domain_uses else BOUNDARY
@@ -621,6 +620,6 @@ def _migrate_v1(old: dict) -> dict:
 
     m["geometries"] = [geom]
     m["meshes"] = [new_mesh]
-    phys["mesh"] = "maillage"
+    phys["mesh"] = "mesh"
     m["format_version"] = FORMAT_VERSION
     return m

@@ -1,9 +1,9 @@
 {
   "format_version": 2,
-  "name": "Plaque chauffée refroidie par convection",
+  "name": "Heated plate cooled by convection",
   "geometries": [
     {
-      "name": "plaque",
+      "name": "plate",
       "source": {
         "type": "box",
         "origin": [
@@ -16,7 +16,7 @@
         ]
       },
       "selections": {
-        "bords_convectifs": {
+        "convective_edges": {
           "kind": "boundary",
           "criteria": {
             "type": "union",
@@ -31,8 +31,8 @@
   ],
   "meshes": [
     {
-      "name": "maillage",
-      "geometry": "plaque",
+      "name": "mesh",
+      "geometry": "plate",
       "mesher": "structured",
       "divisions": [
         40,
@@ -55,7 +55,7 @@
   ],
   "physics": {
     "type": "heat_stationary",
-    "mesh": "maillage",
+    "mesh": "mesh",
     "variable": "T",
     "sources": [
       {
@@ -71,7 +71,7 @@
       },
       {
         "type": "convection",
-        "selection": "bords_convectifs",
+        "selection": "convective_edges",
         "h": 25.0,
         "T_ext": 20.0
       }
@@ -81,25 +81,25 @@
     "type": "stationary"
   },
   "outputs": {
-    "vtu": "plaque.vtu",
+    "vtu": "plate.vtu",
     "quantities": [
       {
-        "name": "puissance_injectee",
+        "name": "injected_power",
         "expr": "5e5 * exp(-(sqr(X(1)-0.1) + sqr(X(2)-0.05)) / 1e-4)",
         "selection": "all"
       },
       {
-        "name": "flux_sortant_xmin",
+        "name": "outflow_xmin",
         "expr": "-k*Grad_T.Normal",
         "selection": "xmin"
       },
       {
-        "name": "flux_sortant_convection",
+        "name": "outflow_convection",
         "expr": "-k*Grad_T.Normal",
-        "selection": "bords_convectifs"
+        "selection": "convective_edges"
       },
       {
-        "name": "temperature_moyenne",
+        "name": "mean_temperature",
         "expr": "T / 0.02",
         "selection": "all"
       }

@@ -14,14 +14,14 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Traduction d'un modèle en script Python GetFEM de calcul, lisible et autonome.
+"""Translation of a model into a readable, standalone GetFEM Python script.
 
-Le maillage (et ses régions) est préparé à part par `mesher` ; le script de
-calcul ne fait que le charger. Il ne dépend pas de getfem_gui : on peut le
-lire, le modifier et le relancer à la main.
+The mesh (with its regions) is prepared separately by `mesher`; the solve
+script only loads it. The script does not depend on getfem_gui: it can be
+read, modified and run again by hand.
 
-Chaque physique est une paire de fonctions enregistrée dans PHYSICS, qui
-écrit ses termes en GWFL. Ajouter une physique revient à ajouter une paire.
+Each physics is a pair of functions registered in PHYSICS, which write their
+terms in GWFL. Adding a physics amounts to adding such a pair.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ class ScriptWriter:
 
 
 def gwfl(value) -> str:
-    """Valeur du modèle -> morceau d'expression GWFL."""
+    """Model value -> piece of GWFL expression."""
     if isinstance(value, (int, float)):
         return repr(float(value))
     return f"({value.strip()})"
@@ -58,13 +58,13 @@ def _rg(name: str) -> str:
     return f"REGIONS[{name!r}]"
 
 
-# ---------------------------------------------------------------- matériaux
+# ---------------------------------------------------------------- materials
 
 def _materials(model: dict, w: ScriptWriter) -> None:
-    """Chaque propriété devient une donnée EF discontinue, définie par sélection.
+    """Each property becomes discontinuous finite element data, defined per selection.
 
-    On peut ainsi écrire simplement 'k' dans n'importe quelle expression GWFL
-    (termes, flux, grandeurs dérivées), même si k varie d'un matériau à l'autre.
+    Plain 'k' can then be used in any GWFL expression (terms, fluxes, derived
+    quantities), even when k varies from one material to another.
     """
     materials = model["materials"]
     props = sorted({p for mat in materials for p in mat["properties"]})
@@ -86,11 +86,11 @@ def _materials(model: dict, w: ScriptWriter) -> None:
             else:
                 w(f"{prop}[{dofs}] = md.interpolation({gwfl(value)!r}, mf_mat)[{dofs}]  # {mat['name']}")
         w(f"if np.isnan({prop}).any():")
-        w(f"    raise RuntimeError(\"propriété '{prop}' non définie sur une partie du domaine\")")
+        w(f"    raise RuntimeError(\"property '{prop}' is undefined on part of the domain\")")
         w(f"md.add_initialized_fem_data({prop!r}, mf_mat, {prop})")
 
 
-# ---------------------------------------------------------------- physiques
+# ---------------------------------------------------------------- physics
 
 def _heat_stationary(model: dict, w: ScriptWriter) -> None:
     phys = model["physics"]
@@ -106,15 +106,15 @@ def _heat_stationary(model: dict, w: ScriptWriter) -> None:
         w("")
         if bc["type"] == "temperature":
             data = f"{u}_D{i}"
-            w(f"# Température imposée sur {bc['selection']}")
+            w(f"# Imposed temperature on {bc['selection']}")
             w(f"md.add_initialized_fem_data({data!r}, mf, md.interpolation({gwfl(bc['value'])!r}, mf))")
             w(f"md.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
         elif bc["type"] == "heat_flux":
-            w(f"# Flux entrant imposé sur {bc['selection']} : k grad {u}.n = q")
+            w(f"# Imposed incoming flux on {bc['selection']}: k grad {u}.n = q")
             w(f"md.add_source_term(mim, {gwfl(bc['value']) + '*Test_' + u!r}, {rg})")
         elif bc["type"] == "convection":
             h, text = gwfl(bc["h"]), gwfl(bc["T_ext"])
-            w(f"# Convection sur {bc['selection']} : -k grad {u}.n = h ({u} - T_ext)")
+            w(f"# Convection on {bc['selection']}: -k grad {u}.n = h ({u} - T_ext)")
             w(f"md.add_linear_term(mim, {h + '*' + u + '*Test_' + u!r}, {rg})")
             w(f"md.add_source_term(mim, {h + '*' + text + '*Test_' + u!r}, {rg})")
 
@@ -127,7 +127,7 @@ def _heat_post(model: dict, w: ScriptWriter) -> None:
     w("mf_flux = gf.MeshFem(m, m.dim())")
     w("mf_flux.set_classical_discontinuous_fem(max(degree - 1, 0))")
     w(f"flux = md.interpolation('-k*Grad_{u}', mf_flux)")
-    w(f"fields = [mf, {u}, {u!r}, mf_flux, flux, 'flux_thermique']")
+    w(f"fields = [mf, {u}, {u!r}, mf_flux, flux, 'heat_flux']")
 
 
 PHYSICS = {"heat_stationary": (_heat_stationary, _heat_post)}
@@ -136,22 +136,22 @@ PHYSICS = {"heat_stationary": (_heat_stationary, _heat_post)}
 # ---------------------------------------------------------------- script
 
 def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
-    """Script de calcul pour un maillage déjà préparé (voir mesher.ensure_mesh).
+    """Solve script for an already prepared mesh (see mesher.ensure_mesh).
 
-    Lève ValueError si le modèle est invalide.
+    Raises ValueError if the model is invalid.
     """
     errors = M.validate(model)
     if errors:
-        raise ValueError("modèle invalide :\n  - " + "\n  - ".join(errors))
+        raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
     model = M.with_defaults(model)
     out = model["outputs"]
     physics, post = PHYSICS[model["physics"]["type"]]
 
     w = ScriptWriter()
     w("#!/usr/bin/env python3")
-    w(f"# Script GetFEM généré par getfem_gui le {_dt.datetime.now():%Y-%m-%d %H:%M}")
-    w(f"# Modèle : {model.get('name', '')}")
-    w("# Ce script est autonome : il peut être lu, modifié et relancé à la main.")
+    w(f"# GetFEM script generated by getfem_gui on {_dt.datetime.now():%Y-%m-%d %H:%M}")
+    w(f"# Model: {model.get('name', '')}")
+    w("# This script is standalone: it can be read, modified and run again by hand.")
     w("import json")
     w("import time")
     w("")
@@ -162,28 +162,28 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w(f"results = {{'model': {model.get('name', '')!r}, 'status': 'error'}}")
     w(f"degree = {model['discretization']['degree']}")
 
-    w.section(f"Maillage {mesh_info.get('mesh', '')!r} (préparé par l'étape de maillage)")
+    w.section(f"Mesh {mesh_info.get('mesh', '')!r} (prepared by the meshing step)")
     w(f"m = gf.Mesh('load', {str(Path(mesh_path).resolve())!r})")
     w(f"REGIONS = {mesh_info['regions']!r}")
     w("results['mesh'] = {'name': %r, 'nb_elements': int(m.nbcvs())}" % mesh_info.get("mesh", ""))
 
-    w.section("Discrétisation")
+    w.section("Discretization")
     w("mf = gf.MeshFem(m, 1)")
     w("mf.set_classical_fem(degree)")
     w("mim = gf.MeshIm(m, 2 * degree)")
     w("md = gf.Model('real')")
 
-    w.section("Matériaux")
+    w.section("Materials")
     _materials(model, w)
 
-    w.section(f"Physique : {model['physics']['type']}")
+    w.section(f"Physics: {model['physics']['type']}")
     physics(model, w)
 
-    w.section("Résolution")
+    w.section("Solve")
     w("md.solve()")
     w("results['nb_dofs'] = int(md.nbdof())")
 
-    w.section("Post-traitement")
+    w.section("Post-processing")
     post(model, w)
     if out["quantities"]:
         w("quantities = {}")

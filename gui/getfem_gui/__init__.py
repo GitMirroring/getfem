@@ -14,6 +14,6 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Cœur (sans interface graphique) d'une future GUI pour GetFEM."""
+"""Core (without graphical interface yet) of a future GUI for GetFEM."""
 
 __version__ = "0.0.1"

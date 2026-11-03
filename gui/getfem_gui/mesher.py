@@ -14,17 +14,17 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Étape de maillage : géométrie + paramètres -> maillage GetFEM avec régions.
+"""Meshing step: geometry + parameters -> GetFEM mesh with regions.
 
-Pour chaque maillage du modèle, on génère un script lisible qui :
-  1. construit le maillage (structuré, mailleur GetFEM, Gmsh) ou l'importe ;
-  2. évalue les sélections de la géométrie sur ce maillage ;
-  3. renumérote les régions 1, 2, ... dans l'ordre des sélections ;
-  4. enregistre le maillage au format natif GetFEM (régions comprises)
-     et un fichier JSON d'information (régions, nombre d'éléments, ...).
+For each mesh of the model, a readable script is generated that:
+  1. builds the mesh (structured, GetFEM mesher, Gmsh) or imports it;
+  2. evaluates the selections of the geometry on this mesh;
+  3. renumbers the regions 1, 2, ... in the order of the selections;
+  4. saves the mesh in the native GetFEM format (regions included)
+     together with a JSON information file (regions, number of elements, ...).
 
-Le résultat est mis en cache : on ne remaille que si la géométrie, les
-paramètres du maillage ou le fichier source ont changé.
+The result is cached: remeshing only happens when the geometry, the mesh
+parameters or the source file have changed.
 """
 
 from __future__ import annotations
@@ -38,8 +38,11 @@ from pathlib import Path
 
 from . import model as M
 
-# À incrémenter quand le script généré change, pour invalider les caches.
-SCRIPT_VERSION = 2
+# To be incremented whenever the generated script changes, to invalidate caches.
+SCRIPT_VERSION = 3
+
+# Subdirectory of the working directory where meshes are stored.
+MESH_DIR = "meshes"
 
 GF_SHAPES = {"union": "union", "intersection": "intersect", "difference": "set minus"}
 OCC_BOOLEANS = {"union": "fuse", "intersection": "intersect", "difference": "cut"}
@@ -77,7 +80,7 @@ def _build_structured(model, geom, mesh, w):
 
 
 def _gf_shape(shape, w) -> str:
-    """Écrit les lignes créant un MesherObject GetFEM et renvoie le nom de variable."""
+    """Write the lines creating a GetFEM MesherObject and return its variable name."""
     t = shape["type"]
     parts = [_gf_shape(s, w) for s in shape["of"]] if t in GF_SHAPES else []
     v = w.var("o")
@@ -101,14 +104,14 @@ def _box_as_shape(src):
 def _build_getfem(model, geom, mesh, w):
     src = geom["source"]
     shape = _box_as_shape(src) if src["type"] == "box" else src["shape"]
-    w("# Description implicite de la géométrie (MesherObject)")
+    w("# Implicit description of the geometry (MesherObject)")
     top = _gf_shape(shape, w)
-    w("# Mailleur expérimental de GetFEM : taille h, degré géométrique K")
+    w("# GetFEM experimental mesher: element size h, geometric degree K")
     w(f"m = gf.Mesh('generate', {top}, {float(mesh['h'])!r}, {int(mesh.get('order', 1))})")
 
 
 def _occ_shape(shape, dim, w) -> str:
-    """Lignes créant une entité OpenCASCADE dans Gmsh ; renvoie une liste de (dim, tag)."""
+    """Lines creating an OpenCASCADE entity in Gmsh; return a list of (dim, tag)."""
     t = shape["type"]
     parts = [_occ_shape(s, dim, w) for s in shape["of"]] if t in OCC_BOOLEANS else []
     v = w.var("e")
@@ -144,7 +147,7 @@ def _build_gmsh(model, geom, mesh, w, msh_name):
     w("")
     w("gmsh.initialize()")
     w("gmsh.option.setNumber('General.Terminal', 0)")
-    w("gmsh.model.add('geometrie')")
+    w("gmsh.model.add('geometry')")
     if src["type"] == "cad":
         w(f"entities = gmsh.model.occ.importShapes({str(M.resolve_file(model, src['file']))!r})")
         w("gmsh.model.occ.synchronize()")
@@ -155,8 +158,8 @@ def _build_gmsh(model, geom, mesh, w, msh_name):
         _occ_shape(shape, dim, w)
         w("gmsh.model.occ.synchronize()")
         w(f"dim = {dim}")
-    w("# Un seul groupe physique (le domaine) : Gmsh n'écrit alors que les éléments")
-    w("# de dimension maximale ; les frontières viennent des sélections, plus bas.")
+    w("# A single physical group (the domain): Gmsh then only writes elements of")
+    w("# maximal dimension; boundaries come from the selections, further down.")
     w("gmsh.model.addPhysicalGroup(dim, [t for _, t in gmsh.model.getEntities(dim)], 1)")
     w(f"gmsh.option.setNumber('Mesh.MeshSizeMin', {float(mesh['size'])!r})")
     w(f"gmsh.option.setNumber('Mesh.MeshSizeMax', {float(mesh['size'])!r})")
@@ -175,12 +178,12 @@ def _build_import(model, geom, mesh, w):
 
 
 def _drop_z(w):
-    w("# Gmsh écrit toujours des points 3D : on retire z pour un maillage plan")
+    w("# Gmsh always writes 3D points: drop z for a planar mesh")
     w("if m.pts().shape[0] == 3 and np.allclose(m.pts()[2], 0.0):")
     w("    m.transform([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])")
 
 
-# ------------------------------------------------------------------ sélections
+# ------------------------------------------------------------------ selections
 
 def _selection_code(name, sel, w):
     kind, c = sel["kind"], sel.get("criteria", {})
@@ -205,7 +208,7 @@ def _selection_code(name, sel, w):
     elif t == "physical":
         tag = int(c["tag"])
         w(f"if {tag} not in imported:")
-        w(f"    raise RuntimeError('groupe physique {tag} absent du fichier (sélection {name})')")
+        w(f"    raise RuntimeError('physical group {tag} missing from the file (selection {name})')")
         if kind == M.BOUNDARY:
             w(f"SEL[{name!r}] = ('boundary', imported[{tag}])")
         else:
@@ -219,25 +222,25 @@ def _selection_code(name, sel, w):
 
 
 def mesh_script(model: dict, mesh: dict, basename: str) -> str:
-    """Texte du script de maillage ; écrit <basename>.mesh et <basename>.json."""
+    """Text of the meshing script; it writes <basename>.mesh and <basename>.json."""
     geom = M.geometry_of(model, mesh)
     table = M.selection_table(model, geom)
     w = _W()
     w("#!/usr/bin/env python3")
-    w(f"# Script de maillage généré par getfem_gui : maillage {mesh['name']!r}, "
-      f"géométrie {geom['name']!r}")
+    w(f"# Meshing script generated by getfem_gui: mesh {mesh['name']!r}, "
+      f"geometry {geom['name']!r}")
     w("import json")
     w("")
     w("import numpy as np")
     w("import getfem as gf")
     w("")
     w("def cvs(a):")
-    w("    \"\"\"Numéros d'éléments (première ligne si tableau éléments/faces).\"\"\"")
+    w("    \"\"\"Element numbers (first row if given an elements/faces array).\"\"\"")
     w("    a = np.asarray(a)")
     w("    return np.unique(a[0] if a.ndim == 2 else a)")
     w("")
     w("def faces_in_plane(point, normal):")
-    w("    \"\"\"Faces de bord dont tous les nœuds sont dans le plan (point, normale).\"\"\"")
+    w("    \"\"\"Boundary faces whose nodes all lie in the plane (point, normal).\"\"\"")
     w("    n = np.asarray(normal, float) / np.linalg.norm(normal)")
     w("    P = m.pts()")
     w("    tol = 1e-6 * max(np.ptp(P, axis=1).max(), 1e-300)")
@@ -247,7 +250,7 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     w("            if np.all(np.abs((P[:, m.pid_in_faces(faces[:, j:j+1])].T - point) @ n) < tol)]")
     w("    return faces[:, keep]")
 
-    w.section(f"Maillage ({mesh['mesher']})")
+    w.section(f"Mesh ({mesh['mesher']})")
     mesher = mesh["mesher"]
     if mesher == "structured":
         _build_structured(model, geom, mesh, w)
@@ -258,8 +261,8 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     else:
         _build_import(model, geom, mesh, w)
 
-    w.section("Sélections -> régions")
-    w("# Régions éventuellement présentes après import (groupes physiques)")
+    w.section("Selections -> regions")
+    w("# Regions possibly present after an import (physical groups)")
     w("imported = {int(rg): m.region(int(rg)) for rg in np.atleast_1d(m.regions())}")
     w("SEL = {}")
     ordered = [n for n, s in table.items() if s.get("criteria", {}).get("type") != "union"]
@@ -270,7 +273,7 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     w("")
     w(f"for name in {user!r}:")
     w("    if SEL[name][1].size == 0:")
-    w("        raise RuntimeError(f\"la sélection '{name}' est vide sur ce maillage\")")
+    w("        raise RuntimeError(f\"selection '{name}' is empty on this mesh\")")
     w("for rg in imported:")
     w("    m.delete_region(rg)")
     w("REGIONS = {'all': -1}")
@@ -280,7 +283,7 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     w("    REGIONS[name] = i")
     w("    KINDS[name] = kind")
 
-    w.section("Enregistrement")
+    w.section("Save")
     w(f"m.save({basename + '.mesh'!r})")
     w("info = {")
     w(f"    'mesh': {mesh['name']!r},")
@@ -297,7 +300,7 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     return "\n".join(w.lines) + "\n"
 
 
-# ------------------------------------------------------------------ cache et exécution
+# ------------------------------------------------------------------ cache and execution
 
 def cache_key(model: dict, mesh: dict) -> str:
     geom = M.geometry_of(model, mesh)
@@ -326,12 +329,12 @@ class MeshResult:
 
 def ensure_mesh(model: dict, mesh_name: str, workdir: str | Path,
                 python: str | None = None, force: bool = False) -> MeshResult:
-    """Construit le maillage dans <workdir>/maillages/ s'il n'est pas déjà à jour."""
+    """Build the mesh in <workdir>/meshes/ unless it is already up to date."""
     model = M.with_defaults(model)
     mesh = M.by_name(model["meshes"], mesh_name)
     if mesh is None:
-        raise ValueError(f"maillage inconnu : {mesh_name!r}")
-    folder = Path(workdir).resolve() / "maillages"
+        raise ValueError(f"unknown mesh: {mesh_name!r}")
+    folder = Path(workdir).resolve() / MESH_DIR
     folder.mkdir(parents=True, exist_ok=True)
     base = folder / mesh_name
     info_file, mesh_file = base.with_suffix(".json"), base.with_suffix(".mesh")

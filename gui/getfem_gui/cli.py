@@ -14,14 +14,14 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Ligne de commande.
+"""Command line interface.
 
-    python -m getfem_gui new modele.json
-    python -m getfem_gui validate modele.json
-    python -m getfem_gui mesh modele.json [-m fin] [-w dossier]   # tous les maillages par défaut
-    python -m getfem_gui generate modele.json [-w dossier] [-o calcul.py]
-    python -m getfem_gui run modele.json [-w dossier]
-    python -m getfem_gui migrate ancien.json -o nouveau.json
+    python -m getfem_gui new model.json
+    python -m getfem_gui validate model.json
+    python -m getfem_gui mesh model.json [-m fine] [-w dir]   # all meshes by default
+    python -m getfem_gui generate model.json [-w dir] [-o solve.py]
+    python -m getfem_gui run model.json [-w dir]
+    python -m getfem_gui migrate old.json -o new.json
 """
 
 from __future__ import annotations
@@ -47,45 +47,45 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("model")
         return sp
 
-    cmd("new", "créer un modèle de départ")
-    cmd("validate", "vérifier un modèle")
-    pm = cmd("mesh", "construire les maillages (avec cache)")
-    pm.add_argument("-m", "--mesh", action="append", help="nom du maillage (répétable)")
-    pm.add_argument("--force", action="store_true", help="ignorer le cache")
-    pg = cmd("generate", "écrire le script de calcul GetFEM")
-    pg.add_argument("-o", "--output", help="fichier de sortie (défaut : sortie standard)")
-    cmd("run", "mailler puis calculer")
-    pmi = cmd("migrate", "convertir un modèle au format courant")
+    cmd("new", "create a starting model")
+    cmd("validate", "check a model")
+    pm = cmd("mesh", "build the meshes (cached)")
+    pm.add_argument("-m", "--mesh", action="append", help="mesh name (repeatable)")
+    pm.add_argument("--force", action="store_true", help="ignore the cache")
+    pg = cmd("generate", "write the GetFEM solve script")
+    pg.add_argument("-o", "--output", help="output file (default: standard output)")
+    cmd("run", "mesh then solve")
+    pmi = cmd("migrate", "convert a model to the current format")
     pmi.add_argument("-o", "--output", required=True)
     for sp in (pm, pg, sub.choices["run"]):
-        sp.add_argument("-w", "--workdir", help="dossier de travail (défaut : <modèle>_run/)")
-        sp.add_argument("--python", help="interpréteur Python qui possède GetFEM")
+        sp.add_argument("-w", "--workdir", help="working directory (default: <model>_run/)")
+        sp.add_argument("--python", help="Python interpreter that provides GetFEM")
 
     args = p.parse_args(argv)
 
     if args.cmd == "new":
         M.save(M.default_model(), args.model)
-        print(f"modèle créé : {args.model}")
+        print(f"model created: {args.model}")
         return 0
 
     try:
         model = M.load(args.model)
     except ValueError as exc:
-        print(f"erreur : {exc}", file=sys.stderr)
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.cmd == "migrate":
         M.save(model, args.output)
-        print(f"modèle au format {M.FORMAT_VERSION} écrit dans {args.output}")
+        print(f"model in format {M.FORMAT_VERSION} written to {args.output}")
         return 0
 
     errors = M.validate(model)
     for e in errors:
-        print(f"erreur : {e}", file=sys.stderr)
+        print(f"error: {e}", file=sys.stderr)
     if errors:
         return 1
     if args.cmd == "validate":
-        print("modèle valide")
+        print("model is valid")
         return 0
 
     workdir = _workdir(args)
@@ -97,21 +97,21 @@ def main(argv: list[str] | None = None) -> int:
             res = mesher.ensure_mesh(model, name, workdir, python=args.python, force=args.force)
             if res.ok:
                 i = res.info
-                tag = " (cache)" if res.cached else ""
-                print(f"{name}{tag} : {i['nb_elements']} éléments, {i['nb_points']} nœuds, "
+                tag = " (cached)" if res.cached else ""
+                print(f"{name}{tag}: {i['nb_elements']} elements, {i['nb_points']} nodes, "
                       f"dim {i['dim']} -> {res.path}")
                 for sel, size in i["sizes"].items():
                     print(f"    {sel:<20} {i['kinds'][sel]:<9} {size}")
             else:
                 status = 1
-                print(f"{name} : échec du maillage : {res.error}", file=sys.stderr)
+                print(f"{name}: meshing failed: {res.error}", file=sys.stderr)
         return status
 
     if args.cmd == "generate":
         name = M.physics_mesh(model)["name"]
         res = mesher.ensure_mesh(model, name, workdir, python=args.python)
         if not res.ok:
-            print(f"échec du maillage {name!r} : {res.error}", file=sys.stderr)
+            print(f"meshing of {name!r} failed: {res.error}", file=sys.stderr)
             return 1
         script = codegen.generate(model, res.path, res.info)
         if args.output:
@@ -122,9 +122,9 @@ def main(argv: list[str] | None = None) -> int:
 
     res = runner.run(model, workdir, python=args.python)
     if not res.ok:
-        print(f"échec : {res.error}", file=sys.stderr)
+        print(f"failed: {res.error}", file=sys.stderr)
         if res.script:
-            print(f"script : {res.script}", file=sys.stderr)
+            print(f"script: {res.script}", file=sys.stderr)
         return 1
     print(json.dumps(res.results, indent=2, ensure_ascii=False))
     return 0

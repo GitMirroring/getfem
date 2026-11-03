@@ -14,9 +14,9 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Exécution d'un modèle : maillage (mis en cache) puis calcul, chacun dans
-un processus séparé, pour que l'interface ne gèle pas et ne plante pas avec
-le solveur. Le script de calcul écrit results.json ; c'est ce fichier qui fait foi.
+"""Running a model: meshing (cached) then solving, each in a separate process,
+so that the interface neither freezes nor crashes with the solver. The solve
+script writes results.json, which is the authoritative output.
 """
 
 from __future__ import annotations
@@ -43,28 +43,28 @@ class RunResult:
 
     @property
     def error(self) -> str:
-        """Dernière ligne utile de l'erreur, pour l'afficher à l'utilisateur."""
+        """Last meaningful line of the error, to be shown to the user."""
         lines = [l for l in self.stderr.strip().splitlines() if l.strip()]
         return lines[-1] if lines else ""
 
 
 def run(model: dict, workdir: str | Path, python: str | None = None,
         timeout: float | None = None) -> RunResult:
-    """Prépare le maillage de la physique, génère le script de calcul, l'exécute.
+    """Prepare the mesh used by the physics, generate the solve script, run it.
 
-    `python` permet de choisir l'interpréteur qui possède GetFEM
-    (par défaut celui qui exécute getfem_gui).
+    `python` selects the interpreter that provides GetFEM
+    (by default, the one running getfem_gui).
     """
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     errors = M.validate(model)
     if errors:
-        raise ValueError("modèle invalide :\n  - " + "\n  - ".join(errors))
+        raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
 
     mesh_name = M.physics_mesh(model)["name"]
     mres = mesher.ensure_mesh(model, mesh_name, workdir, python=python)
     if not mres.ok:
-        return RunResult(False, workdir, None, stderr=f"maillage {mesh_name!r} : {mres.error}", mesh=mres)
+        return RunResult(False, workdir, None, stderr=f"mesh {mesh_name!r}: {mres.error}", mesh=mres)
 
     script = workdir / "run_getfem.py"
     script.write_text(codegen.generate(model, mres.path, mres.info), encoding="utf-8")
@@ -75,7 +75,7 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
                               capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         return RunResult(False, workdir, script, stdout=exc.stdout or "",
-                         stderr=f"calcul interrompu après {timeout} s", mesh=mres)
+                         stderr=f"solve interrupted after {timeout} s", mesh=mres)
 
     results = {}
     if results_file.exists():
