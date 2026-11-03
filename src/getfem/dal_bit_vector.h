@@ -129,6 +129,7 @@ namespace dal {
     bool operator==(const bit_iterator& x) const { return ind == x.ind; }
     bool operator!=(const bit_iterator& x) const { return ind != x.ind; }
     bool operator<(bit_iterator x) const { return ind < x.ind; }
+    bool operator<=(bit_iterator x) const { return ind <= x.ind; }
     bool operator>(bit_iterator x) const { return ind > x.ind; }
     bool operator>=(bit_iterator x) const { return ind >= x.ind; }
   };
@@ -175,6 +176,7 @@ namespace dal {
     bool operator==(const bit_const_iterator& x) const { return ind == x.ind; }
     bool operator!=(const bit_const_iterator& x) const { return ind != x.ind; }
     bool operator<(bit_const_iterator x) const { return ind < x.ind; }
+    bool operator<=(bit_const_iterator x) const { return ind <= x.ind; }
     bool operator>(bit_const_iterator x) const { return ind > x.ind; }
     bool operator>=(bit_const_iterator x) const { return ind >= x.ind; }
   };
@@ -234,7 +236,8 @@ namespace dal {
     size_type capacity(void) const
     { return bit_container::capacity() * WD_BIT; }
     size_type max_size(void) const { return (size_type(-1)); }
-    // bool empty(void) const { return card() == 0; } /* ?? */
+    /// true if no index is in the set (hides dynamic_array::empty)
+    bool empty(void) const { return card() == 0; }
     reference front(void) { return *begin(); }
     const_reference front(void) const { return *begin(); }
     reference back(void) { return *(end() - 1); }
@@ -251,6 +254,8 @@ namespace dal {
     void clear(void) {
       icard = 0; icard_valid = true;
       ifirst_false = ilast_false = ifirst_true = ilast_true = 0;
+      // no stale word should remain: &= and == work on the whole storage
+      bit_container::clear();
       fill_false(0,0); 
     }
     void swap(size_type i1, size_type i2) {

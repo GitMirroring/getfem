@@ -103,6 +103,7 @@ namespace dal
     bool operator ==(const dna_iterator &i) const { return (i.in==in);}
     bool operator !=(const dna_iterator &i) const { return (i.in!=in);}
     bool operator < (const dna_iterator &i) const { return ( in<i.in);}
+    bool operator <=(const dna_iterator &i) const { return ( in<=i.in);}
     bool operator >=(const dna_iterator &i) const { return ( in>=i.in);}
     bool operator > (const dna_iterator &i) const { return ( in>i.in);}
   };
@@ -161,8 +162,10 @@ namespace dal
       { return (i.in != in); }
     bool operator < (const dna_const_iterator &i) const
       { return (in < i.in); }
+    bool operator <=(const dna_const_iterator &i) const
+      { return (in <= i.in); }
     bool operator >=(const dna_const_iterator &i) const
-      { return (i.in >= in); }
+      { return (in >= i.in); }
     bool operator > (const dna_const_iterator &i) const
       { return (in > i.in); }
   };
@@ -309,6 +312,7 @@ namespace dal
   
   template<class T, unsigned char pks> dynamic_array<T,pks>
   &dynamic_array<T,pks>::operator = (const dynamic_array<T,pks> &da) {
+    if (this == &da) return *this;
     array.resize(da.array.size());
     last_ind = da.last_ind;
     last_accessed = da.last_accessed;
@@ -378,7 +382,7 @@ namespace dal
   { return std::lexicographical_compare(x.begin(),x.end(),y.begin(),y.end()); }
 
   template<class T, unsigned char pks> inline
-    void swap(const dynamic_array<T,pks> &x, const dynamic_array<T,pks> &y)
+    void swap(dynamic_array<T,pks> &x, dynamic_array<T,pks> &y)
   { x.swap(y); }
 
 }

@@ -91,7 +91,7 @@ namespace dal {
   }
 
   bit_vector::size_type bit_vector::first_true(void) const {
-    assert(ifirst_true <= ilast_true);
+    if (card() == 0) { ifirst_true = ilast_true = 0; return size_type(-1); }
     const_iterator itx = begin(), ite = end(); itx += ifirst_true;
     while (itx != ite && !*itx ) { ++itx; ++(ifirst_true); }
     if (is_in(ifirst_true)) return ifirst_true;

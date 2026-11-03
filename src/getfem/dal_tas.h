@@ -81,6 +81,7 @@ namespace dal
     bool operator ==(const dnt_iterator &i) const { return i.id==id;}
     bool operator !=(const dnt_iterator &i) const { return i.id!=id;}
     bool operator < (const dnt_iterator &i) const { return id < i.id;}
+    bool operator <=(const dnt_iterator &i) const { return id <= i.id;}
     bool operator > (const dnt_iterator &i) const { return id > i.id;}
     bool operator >=(const dnt_iterator &i) const { return id >= i.id;}
   };
@@ -130,6 +131,8 @@ namespace dal
     { return i.id != id;}
     bool operator < (const dnt_const_iterator &i) const
     { return id < i.id;}
+    bool operator <=(const dnt_const_iterator &i) const
+    { return id <= i.id;}
     bool operator > (const dnt_const_iterator &i) const
     { return id > i.id;}
     bool operator >=(const dnt_const_iterator &i) const
@@ -147,7 +150,12 @@ namespace dal
     typedef dnt_iterator<T, pks> tas_iterator;
     typedef dnt_const_iterator<T, pks> const_tas_iterator;
     typedef typename dynamic_array<T, pks>::size_type size_type;
-    
+    typedef typename dynamic_array<T, pks>::reverse_iterator reverse_iterator;
+    typedef typename dynamic_array<T, pks>::const_reverse_iterator
+    const_reverse_iterator;
+    typedef typename dynamic_array<T, pks>::reference reference;
+    typedef typename dynamic_array<T, pks>::const_reference const_reference;
+
     size_type memsize(void) const
     {	return dynamic_array<T, pks>::memsize() + ind.memsize(); }
     size_type size(void) const
@@ -166,6 +174,16 @@ namespace dal
     const_tas_iterator tas_end(void) const
     { return const_tas_iterator(*this, size()); }
     
+    /* The range [begin, end) has to agree with size(), which ignores the
+       slots removed at the end of the array. */
+    iterator end(void) { return iterator(*this, size()); }
+    const_iterator end(void) const { return const_iterator(*this, size()); }
+    reverse_iterator rbegin(void) { return reverse_iterator(end()); }
+    const_reverse_iterator rbegin(void) const
+    { return const_reverse_iterator(end()); }
+    reference back(void) { return *(end() - 1); }
+    const_reference back(void) const { return *(end() - 1); }
+
     const bit_vector &index(void) const { return ind; }
     bool index_valid(size_type i) const { return ind[i]; }
     bool empty(void) const { return (ind.card() == 0); }

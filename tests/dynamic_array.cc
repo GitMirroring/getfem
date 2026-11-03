@@ -252,6 +252,29 @@ int main(void) {
     // cout << "capacity : (should be 80) " << t3.capacity() << endl;
     GMM_ASSERT1(t.capacity() == 80, "bad capacity");
 
+    { // regression tests: iterator comparisons, self-assignment, swap
+      dal::dynamic_array<int, 4> a, b;
+      for (int i = 0; i < 40; ++i) { a[i] = i; b[i] = 2*i; }
+
+      const dal::dynamic_array<int, 4> &ca = a;
+      dal::dynamic_array<int, 4>::const_iterator c2 = ca.begin() + 2;
+      dal::dynamic_array<int, 4>::const_iterator c5 = ca.begin() + 5;
+      GMM_ASSERT1(c5 >= c2 && !(c2 >= c5) && c2 >= c2, "bad const_iterator >=");
+      GMM_ASSERT1(c2 <= c5 && !(c5 <= c2) && c2 <= c2, "bad const_iterator <=");
+      dal::dynamic_array<int, 4>::iterator i2 = a.begin() + 2;
+      dal::dynamic_array<int, 4>::iterator i5 = a.begin() + 5;
+      GMM_ASSERT1(i2 <= i5 && !(i5 <= i2) && i2 <= i2, "bad iterator <=");
+
+      dal::dynamic_array<int, 4> &ra = a;
+      a = ra;
+      for (int i = 0; i < 40; ++i)
+        GMM_ASSERT1(a[i] == i, "self-assignment does not work");
+
+      dal::swap(a, b);
+      for (int i = 0; i < 40; ++i)
+        GMM_ASSERT1(a[i] == 2*i && b[i] == i, "swap does not work");
+    }
+
   }
   GMM_STANDARD_CATCH_ERROR;
 

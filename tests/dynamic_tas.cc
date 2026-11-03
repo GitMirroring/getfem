@@ -52,6 +52,15 @@ int main(void)
     for ( ; it != end; ++it) { cout << " : " << *it; }
     cout << endl;
     
+    { // regression test: [begin, end) has to agree with size()
+      dal::dynamic_tas<int> u;
+      u.add(1); u.add(2); u.add(3);
+      u.sup(2);
+      GMM_ASSERT1(u.size() == 2, "bad size");
+      GMM_ASSERT1(u.end() - u.begin() == 2, "end() does not agree with size()");
+      GMM_ASSERT1(u.back() == 2, "bad back()");
+    }
+
     return 0;
     
   }

@@ -157,6 +157,20 @@ int main(int argc, char *argv[]) {
   if (argc == 2 && strcmp(argv[1],"-quick")==0) quick = true;
 
   cout << "cardinal : " << nn.card() << endl; assert(nn.card() == 0);
+  assert(nn.empty()); nn.add(70); assert(!nn.empty()); nn.del(70);
+  assert(nn.empty()); nn.clear();
+  { // clear() should not leave any stale bit
+    dal::bit_vector a, b, c;
+    a.add(100); b.add(100); b.clear();
+    assert(a != b); assert(b == c);
+    a &= b; assert(a.card() == 0);
+  }
+  { // first_true() on a set emptied after last_true() has tightened its bound
+    dal::bit_vector a;
+    a.add(7); assert(a.first_true() == 7);
+    a.del(7); assert(a.last_true() == size_type(-1));
+    assert(a.first_true() == size_type(-1));
+  }
   cout << "first true : " << nn.first_true() << endl;
   //assert(nn.first_true() == 1);
   assert(nn.first_true() == size_type(-1));
