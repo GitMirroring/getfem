@@ -139,6 +139,23 @@ def test_edges_select_the_same_faces_and_follow_the_parameters():
             assert ymax > 0                       # the remaining side
 
 
+def test_changing_a_selection_does_not_mesh_again():
+    m = load("plate_hole_tension.json")
+    with tempfile.TemporaryDirectory() as tmp:
+        first = mesher.ensure_mesh(m, "coarse", tmp)
+        script = Path(tmp) / mesher.MESH_DIR / "coarse.py"
+        assert "Mesh('generate'" in script.read_text()
+        m["geometries"][0]["selections"]["hole_e"] = edges(((1,), "circle"))
+        second = mesher.ensure_mesh(m, "coarse", tmp)
+        assert second.ok and not second.cached
+        text = script.read_text()
+        assert "gf.Mesh('load', 'coarse_raw.mesh')" in text and "Mesh('generate'" not in text
+        assert second.info["nb_points"] == first.info["nb_points"] and second.info["sizes"]["hole_e"] > 0
+        m["parameters"][2]["value"] = 0.012                 # the geometry changes: meshed again
+        assert mesher.ensure_mesh(m, "coarse", tmp).ok
+        assert "Mesh('generate'" in script.read_text()
+
+
 def test_picking_from_a_condition_edits_its_support():
     m = load("plate_hole_tension.json")
     bc = ("physics", "boundary_conditions", 2)

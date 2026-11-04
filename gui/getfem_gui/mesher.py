@@ -41,7 +41,7 @@ from pathlib import Path
 from . import geometry2d as G, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 5
+SCRIPT_VERSION = 6
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -230,8 +230,14 @@ def _selection_code(name, sel, w, shape=None):
             w(f"SEL[{name!r}] = ('domain', np.unique(np.hstack([{parts}])))")
 
 
-def mesh_script(model: dict, mesh: dict, basename: str) -> str:
-    """Text of the meshing script; it writes <basename>.mesh and <basename>.json."""
+def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = None,
+                reuse_raw: bool = False) -> str:
+    """Text of the meshing script; it writes <basename>.mesh and <basename>.json.
+
+    The mesh before the selections ("raw" mesh, <basename>_raw.mesh) depends
+    on the geometry and the mesh parameters only: with reuse_raw, it is loaded
+    instead of being generated again, so that changing a selection does not
+    run the mesher again. Otherwise it is saved, with raw_key."""
     geom = M.geometry_of(model, mesh)
     table = M.selection_table(model, geom)
     w = _W()
@@ -287,16 +293,26 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     w("            if any(on_piece(P[:, m.pid_in_faces(faces[:, j:j+1])].T, pc, tol) for pc in pieces)]")
     w("    return faces[:, keep]")
 
-    w.section(f"Mesh ({mesh['mesher']})")
-    mesher = mesh["mesher"]
-    if mesher == "structured":
-        _build_structured(model, geom, mesh, w)
-    elif mesher == "getfem":
-        _build_getfem(model, geom, mesh, w)
-    elif mesher == "gmsh":
-        _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh")
+    raw = f"{basename}_raw.mesh"
+    if reuse_raw:
+        w.section("Mesh (unchanged since the last meshing: only the selections changed)")
+        w(f"m = gf.Mesh('load', {raw!r})")
     else:
-        _build_import(model, geom, mesh, w)
+        w.section(f"Mesh ({mesh['mesher']})")
+        mesher = mesh["mesher"]
+        if mesher == "structured":
+            _build_structured(model, geom, mesh, w)
+        elif mesher == "getfem":
+            _build_getfem(model, geom, mesh, w)
+        elif mesher == "gmsh":
+            _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh")
+        else:
+            _build_import(model, geom, mesh, w)
+        if raw_key is not None:
+            w("# Kept to evaluate other selections without meshing again")
+            w(f"m.save({raw!r})")
+            w(f"with open({basename + '_raw.json'!r}, 'w', encoding='utf-8') as f:")
+            w(f"    json.dump({{'key': {raw_key!r}}}, f)")
 
     w.section("Selections -> regions")
     w("# Regions possibly present after an import (physical groups)")
@@ -352,6 +368,22 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
 
 
 # ------------------------------------------------------------------ cache and execution
+
+def raw_key(model: dict, mesh: dict) -> str:
+    """Hash of what the mesh before the selections depends on: the geometry
+    without its selections, and the mesh parameters."""
+    geom = dict(M.geometry_of(model, mesh))
+    geom.pop("selections", None)
+    geom.pop("name", None)
+    m = {k: v for k, v in mesh.items() if k not in ("name", "geometry")}
+    payload = {"version": SCRIPT_VERSION, "source": geom, "mesh": m}
+    src = geom.get("source", {})
+    if "file" in src:
+        path = M.resolve_file(model, src["file"])
+        payload["file"] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 
 def cache_key(model: dict, mesh: dict) -> str:
     """Hash of what the mesh depends on (geometry and mesh, with the values of
@@ -474,7 +506,17 @@ def prepare_mesh(model: dict, mesh_name: str, workdir: str | Path,
     folder = mesh_folder(workdir)
     folder.mkdir(parents=True, exist_ok=True)
     script = folder / f"{mesh_name}.py"
-    script.write_text(mesh_script(model, mesh, mesh_name), encoding="utf-8")
+    rkey = raw_key(model, mesh)
+    reuse = False
+    raw_info = folder / f"{mesh_name}_raw.json"
+    if not force and raw_info.exists() and (folder / f"{mesh_name}_raw.mesh").exists():
+        try:
+            reuse = json.loads(raw_info.read_text(encoding="utf-8")).get("key") == rkey
+        except (OSError, ValueError):
+            reuse = False
+    if not reuse:
+        raw_info.unlink(missing_ok=True)
+    script.write_text(mesh_script(model, mesh, mesh_name, rkey, reuse), encoding="utf-8")
     (folder / f"{mesh_name}.json").unlink(missing_ok=True)
     return MeshJob(mesh_name, folder, [python or sys.executable, script.name],
                    cache_key(model, mesh))
