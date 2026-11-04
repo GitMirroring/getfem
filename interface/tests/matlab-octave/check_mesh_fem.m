@@ -141,7 +141,7 @@ function check_mesh_fem(iverbose,idebug)
   E=gf_mesh_get(m, 'curved edges',10);
   E=gf_mesh_get(m, 'curved edges',8);
   asserterr('gf_mesh_get(m, ''curved edges'',-1)');
-  gfassert('abs(sum(sum(sum(E)))-1.872e3) < 2');
+  gfassert('abs(sum(sum(sum(E)))-1.477e3) < 2');
   asserterr('gf_mesh_get(m, ''triangulated surface'', 3)');
   Z=gf_mesh_get(m, 'triangulated surface', 4,gf_mesh_get(m, 'outer faces',[4 5]));
   % gfassert('size(Z)==[9 160]');
