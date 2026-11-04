@@ -31,7 +31,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 
@@ -97,6 +97,30 @@ def _load_plotter(parent):
     return plotter, plotter
 
 
+class ClickFilter(QObject):
+    """Reports left clicks (press and release without moving) on a widget.
+
+    Done at the Qt level: VTK interactors swallow button release events, and
+    PyVista then listens to them on the interactor style, which is replaced
+    whenever the interaction style changes (2D / 3D)."""
+
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self.callback = callback          # callback(widget, x, y), Qt logical coordinates
+        self._press = None
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+            self._press = ev.position()
+        elif t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
+            press, self._press = self._press, None
+            pos = ev.position()
+            if press is not None and abs(pos.x() - press.x()) + abs(pos.y() - press.y()) <= 4:
+                self.callback(obj, pos.x(), pos.y())
+        return False                      # the view still receives the events (panning)
+
+
 class Viewer(QWidget):
     edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
 
@@ -127,7 +151,7 @@ class Viewer(QWidget):
         self._last = None
         self._shown_key = None
         self.error = ""            # why the 3D view is unavailable (with the traceback)
-        self._pieces, self._hover, self._press = [], None, None     # picking state
+        self._pieces, self._hover = [], None     # picking state
         try:
             self.plotter, self.view_widget = _load_plotter(self)
             layout.addWidget(self.view_widget, 1)
@@ -210,28 +234,25 @@ class Viewer(QWidget):
         iren = getattr(self.plotter, "iren", None)
         if iren is None:              # off-screen plotter: see pick_world / hover_world
             return
-        iren.add_observer("LeftButtonPressEvent", self._on_press)
-        iren.add_observer("LeftButtonReleaseEvent", self._on_release)
         iren.add_observer("MouseMoveEvent", self._on_move)
+        self._click_filter = ClickFilter(self._on_click, self)
+        self.view_widget.installEventFilter(self._click_filter)
 
     def _event_world(self):
         from . import scene
         x, y = self.plotter.iren.interactor.GetEventPosition()
         return (x, y), scene.display_to_world(self.plotter, x, y)
 
-    def _on_press(self, *args):
-        if self._pieces:
-            self._press = self.plotter.iren.interactor.GetEventPosition()
-
-    def _on_release(self, *args):
-        # a click, not the end of a drag (the left button also pans the view)
-        if not self._pieces or self._press is None:
+    def _on_click(self, widget, x, y):
+        """A click on the view (Qt logical coordinates), converted to VTK display
+        coordinates as the render window interactor does (origin at the bottom)."""
+        if not self._pieces:
             return
-        (x, y), world = self._event_world()
-        x0, y0 = self._press
-        self._press = None
-        if abs(x - x0) + abs(y - y0) <= 4:
-            self.pick_world(world)
+        from . import scene
+        scale = widget.devicePixelRatioF()
+        world = scene.display_to_world(self.plotter, round(x * scale),
+                                       round((widget.height() - y - 1) * scale))
+        self.pick_world(world)
 
     def _on_move(self, *args):
         if self._pieces:

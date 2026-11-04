@@ -163,6 +163,29 @@ def test_main_with_splash_screen():
         w.close()
 
 
+def test_click_filter():
+    """Clicks are seen at the Qt level: press and release without moving."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QWidget
+    from getfem_gui.app.viewer import ClickFilter
+    app()
+    clicks = []
+    w = QWidget()
+    f = ClickFilter(lambda widget, x, y: clicks.append((x, y)))
+    w.installEventFilter(f)
+
+    def send(kind, x, y):
+        QApplication.sendEvent(w, QMouseEvent(kind, QPointF(x, y), QPointF(x, y),
+                                              Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                              Qt.KeyboardModifier.NoModifier))
+    send(QEvent.Type.MouseButtonPress, 10, 20)
+    send(QEvent.Type.MouseButtonRelease, 11, 21)          # a click
+    send(QEvent.Type.MouseButtonPress, 10, 20)
+    send(QEvent.Type.MouseButtonRelease, 60, 20)          # a drag (panning)
+    assert clicks == [(11.0, 21.0)]
+
+
 def test_edit_a_value_then_undo():
     win = window()
     key = ("materials", 0, "properties", "k")
