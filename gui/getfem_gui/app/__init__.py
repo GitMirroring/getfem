@@ -33,8 +33,10 @@ def main(argv: list[str] | None = None, python: str | None = None) -> int:
         print("error: the graphical interface requires PySide6 (pip install pyside6 pyvistaqt)",
               file=sys.stderr)
         return 1
+    from .viewer import prepare_opengl
     from .window import MainWindow
 
+    prepare_opengl()
     app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setApplicationName("GetFEM GUI")
     app.setOrganizationName("GetFEM")

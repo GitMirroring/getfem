@@ -27,6 +27,7 @@ display server).
 from __future__ import annotations
 
 import os
+import sys
 import traceback
 from pathlib import Path
 
@@ -34,10 +35,47 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 
+def prepare_opengl() -> None:
+    """Process-wide OpenGL settings, to be applied before any window exists.
+
+    Recent pyvistaqt (>= 0.13) renders through a QOpenGLWidget; on Wayland its
+    context must match the default format of the top-level window, otherwise
+    the view stays black. This is the format of VTK's QVTKRenderWindowAdapter:
+    desktop OpenGL 3.2 core (not GLES, whose GLSL rejects VTK's shaders); VTK
+    renders into its own framebuffers, hence the minimal buffers.
+    """
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QSurfaceFormat
+    fmt = QSurfaceFormat()
+    fmt.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    fmt.setVersion(3, 2)
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    for size in (fmt.setRedBufferSize, fmt.setGreenBufferSize, fmt.setBlueBufferSize,
+                 fmt.setAlphaBufferSize, fmt.setDepthBufferSize):
+        size(8)
+    fmt.setStencilBufferSize(0)
+    fmt.setSamples(0)
+    QSurfaceFormat.setDefaultFormat(fmt)
+    if QCoreApplication.instance() is None:
+        QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+
+
+def _quiet_matplotlib() -> None:
+    """PyVista imports matplotlib.pyplot (for its colors). With PySide6 already
+    loaded, matplotlib would pick its Qt backend, which fails with versions of
+    matplotlib older than the installed PySide6 (TypeError on KeyboardModifier
+    with PySide6 6.12). The window needs no matplotlib backend: use Agg,
+    unless the user chose one."""
+    if "matplotlib.pyplot" not in sys.modules:
+        os.environ.setdefault("MPLBACKEND", "Agg")
+
+
 def _load_plotter(parent):
     """(plotter, widget to insert in the layout)."""
     if os.environ.get("GETFEM_GUI_NO_3D"):
         raise ImportError("3D view disabled (GETFEM_GUI_NO_3D)")
+    _quiet_matplotlib()
     if os.environ.get("GETFEM_GUI_OFFSCREEN_3D"):
         import pyvista as pv  # noqa: PLC0415
         plotter = pv.Plotter(off_screen=True, window_size=(800, 600))
