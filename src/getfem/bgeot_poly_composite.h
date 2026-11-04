@@ -44,36 +44,11 @@
 #include "bgeot_mesh.h"
 #include "bgeot_rtree.h"
 
-// TODO : Use of rtree instead of dal::dynamic_tree_sorted<base_node,
-//        imbricated_box_less>
-
-
 namespace bgeot {
-
-  /// A comparison function for bgeot::base_node
-  struct imbricated_box_less
-  {
-    mutable int exp_max, exp_min;
-    mutable scalar_type c_max;
-    unsigned base;
-
-    /// comparaison function
-    int operator()(const base_node &x, const base_node &y) const;
-
-    imbricated_box_less(unsigned ba = 10, int emi = -15, int ema = -2) {
-      base = ba; exp_max = ema; exp_min = emi;
-      c_max = pow(double(base), double(-exp_max));
-    }
-  };
-
-
 
   struct mesh_precomposite {
 
-    typedef dal::dynamic_tree_sorted<base_node, imbricated_box_less> PTAB;
-
     const basic_mesh *msh;
-    PTAB vertices;
     rtree box_tree;
     std::map<size_type, std::vector<size_type>> box_to_convexes_map;
     std::vector<base_matrix> gtrans, gtransinv;
