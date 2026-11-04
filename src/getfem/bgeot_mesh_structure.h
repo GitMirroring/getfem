@@ -39,7 +39,7 @@
 
 #include <set>
 #include "bgeot_convex_structure.h"
-#include "dal_tree_sorted.h"
+#include "dal_tas.h"
 
 namespace bgeot {
 
@@ -344,7 +344,20 @@ namespace bgeot {
     edge_list_elt() {}
   };
 
-  typedef dal::dynamic_tree_sorted<edge_list_elt> edge_list;
+  /** List of distinct edges, kept in their order of first insertion. */
+  class edge_list {
+    std::set<edge_list_elt> known;
+    std::vector<edge_list_elt> edges;
+  public:
+    typedef std::vector<edge_list_elt>::const_iterator const_iterator;
+    /// Add e, unless the list already contains it.
+    void add(const edge_list_elt &e)
+    { if (known.insert(e).second) edges.push_back(e); }
+    size_type size() const { return edges.size(); }
+    const edge_list_elt &operator [](size_type i) const { return edges[i]; }
+    const_iterator begin() const { return edges.begin(); }
+    const_iterator end() const { return edges.end(); }
+  };
 
   /* do not use that */
   void APIDECL mesh_edge_list_convex(pconvex_structure cvs,
