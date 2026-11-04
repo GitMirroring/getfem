@@ -80,8 +80,16 @@ class Splash(QSplashScreen):
     W, H = 560, 300
     clicked = Signal()
 
+    painted = Signal()                     # first paint: the window is on screen
+
     def mousePressEvent(self, event):      # a click closes it earlier
         self.clicked.emit()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not getattr(self, "_painted", False):
+            self._painted = True
+            self.painted.emit()
 
     def __init__(self, versions: GetfemVersion | None = None):
         super().__init__(self._render(None))

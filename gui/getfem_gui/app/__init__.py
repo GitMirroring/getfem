@@ -60,16 +60,32 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
         build().show()
         return app.exec()
 
-    # The start-up window is shown by the event loop: the main window is built
-    # from the loop, once the start-up window is on screen (some window
-    # systems, macOS in particular, need several turns of the loop to show a
-    # window). It is shown when the start-up window closes, after
-    # DURATION_MS at least: shown earlier, it would cover the start-up window
-    # (a window cannot stay on top on Wayland).
+    # The start-up window must be on screen before the long part of the
+    # loading: the 3D libraries are imported in a background thread (they do
+    # not touch Qt) while the event loop shows the start-up window, and the
+    # main window is built from the loop when both are done. DURATION_MS counts
+    # from the first paint of the start-up window (some window systems, macOS
+    # in particular, show a window only after several turns of the loop). The
+    # main window is shown when the start-up window closes: shown earlier, it
+    # would cover it (a window cannot stay on top on Wayland).
+    import threading
     screen = Splash(versions)
     clock = QElapsedTimer()
+    loader = threading.Thread(target=_preload_3d, daemon=True)
+    state = {"painted": False, "built": False}
 
-    def start():
+    def painted():
+        if not state["painted"]:
+            state["painted"] = True
+            clock.start()
+
+    def try_build():
+        if state["built"]:
+            return
+        if not state["painted"] or loader.is_alive():
+            QTimer.singleShot(30, try_build)
+            return
+        state["built"] = True
         win = build()
 
         def done():
@@ -79,7 +95,24 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
         screen.clicked.connect(done)
         QTimer.singleShot(max(0, DURATION_MS - clock.elapsed()), done)
 
+    screen.painted.connect(painted)
     screen.show()
-    clock.start()                       # the DURATION_MS count from now
-    QTimer.singleShot(150, start)       # after the first paints of the start-up window
+    screen.raise_()
+    loader.start()
+    QTimer.singleShot(30, try_build)
     return app.exec()
+
+
+def _preload_3d() -> None:
+    """Import the 3D libraries (the slow part of the start); errors are left to
+    the 3D view, which reports them."""
+    import os
+    if os.environ.get("GETFEM_GUI_NO_3D"):
+        return
+    try:
+        from .viewer import _quiet_matplotlib
+        _quiet_matplotlib()
+        import pyvista  # noqa: F401
+        import pyvista.plotting  # noqa: F401
+    except Exception:  # noqa: BLE001
+        pass
