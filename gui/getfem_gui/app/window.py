@@ -141,7 +141,9 @@ class MainWindow(QMainWindow):
         if tip:
             a.setStatusTip(tip)
             a.setToolTip(tip)
-        a.triggered.connect(slot)
+        # triggered(bool checked): the slots are called without it (it would
+        # otherwise be taken for their first optional argument)
+        a.triggered.connect(lambda checked=False: slot())
         return a
 
     def _build_actions(self):

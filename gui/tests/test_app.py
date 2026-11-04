@@ -379,6 +379,18 @@ def test_export_python_script():
         win.select(("materials", 0))
         edit(win.props.editor(("materials", 0, "properties", "k")), "")
         assert not win.export_script(Path(tmp) / "bad.py")        # invalid model: refused
+        win.undo()
+        # through the menu action, as the user does (the dialog is replaced)
+        import getfem_gui.app.window as W
+        chosen = Path(tmp) / "from_menu.py"
+        original = W.QFileDialog.getSaveFileName
+        W.QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(chosen), ""))
+        try:
+            assert wait(lambda: win._gwfl_key == win._model_key(), 60)
+            win.a_export.trigger()
+        finally:
+            W.QFileDialog.getSaveFileName = original
+        assert chosen.exists() and "Part 1: mesh" in chosen.read_text()
         close(win)
 
 
