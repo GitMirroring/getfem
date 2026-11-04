@@ -49,24 +49,37 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
 
     from .splash import DURATION_MS, GetfemVersion, Splash
     versions = GetfemVersion(python)
-    screen = None
-    if splash:
-        screen = Splash(versions)
-        screen.show()
-        clock = QElapsedTimer()
-        clock.start()
-        app.processEvents()
+    windows = []                        # keeps the main window alive
 
-    from .window import MainWindow     # loading the 3D view takes a moment
-    win = MainWindow(argv[0] if argv else None, python=python, versions=versions)
-    if screen is None:
-        win.show()
-    else:
-        # The main window is shown only when the start-up window closes: shown
-        # earlier, it would cover it (a window cannot stay on top on Wayland).
+    def build():
+        from .window import MainWindow  # loading the 3D view takes a moment
+        windows.append(MainWindow(argv[0] if argv else None, python=python, versions=versions))
+        return windows[-1]
+
+    if not splash:
+        build().show()
+        return app.exec()
+
+    # The start-up window is shown by the event loop: the main window is built
+    # from the loop, once the start-up window is on screen (some window
+    # systems, macOS in particular, need several turns of the loop to show a
+    # window). It is shown when the start-up window closes, after
+    # DURATION_MS at least: shown earlier, it would cover the start-up window
+    # (a window cannot stay on top on Wayland).
+    screen = Splash(versions)
+    clock = QElapsedTimer()
+
+    def start():
+        win = build()
+
         def done():
-            win.show()
-            screen.close()
+            if not win.isVisible():
+                win.show()
+                screen.close()
         screen.clicked.connect(done)
         QTimer.singleShot(max(0, DURATION_MS - clock.elapsed()), done)
+
+    screen.show()
+    clock.start()                       # the DURATION_MS count from now
+    QTimer.singleShot(150, start)       # after the first paints of the start-up window
     return app.exec()
