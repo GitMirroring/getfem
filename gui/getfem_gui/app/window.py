@@ -66,6 +66,8 @@ class MainWindow(QMainWindow):
             self.open_file(path)
         else:
             self.new_model()
+        if not self.viewer.available:
+            self._log(self.viewer.error.strip() or "3D view unavailable", error=True)
 
     # ================================================================ interface
 

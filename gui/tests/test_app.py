@@ -108,6 +108,16 @@ def test_tree_shows_the_model():
     close(win)
 
 
+def test_reason_of_a_missing_3d_view_stays_visible():
+    win = window()
+    if not win.viewer.available:
+        assert "GETFEM_GUI_NO_3D" in win.log.toPlainText()
+        win.select(("meshes", 0))
+        text = win.viewer.placeholder.text()
+        assert "3D view unavailable" in text and "not built yet" in text
+    close(win)
+
+
 def test_edit_a_value_then_undo():
     win = window()
     key = ("materials", 0, "properties", "k")

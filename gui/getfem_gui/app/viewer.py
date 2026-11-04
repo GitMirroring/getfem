@@ -27,6 +27,7 @@ display server).
 from __future__ import annotations
 
 import os
+import traceback
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -42,7 +43,9 @@ def _load_plotter(parent):
         plotter = pv.Plotter(off_screen=True, window_size=(800, 600))
         plotter.set_background("white", top="#dfe6ee")
         return plotter, QLabel("(off-screen 3D view)")
-    os.environ.setdefault("QT_API", "pyside6")
+    # The window is PySide6: pyvistaqt (through qtpy) must use the same binding,
+    # whatever QT_API says in the environment (e.g. pyqt5 set by another tool).
+    os.environ["QT_API"] = "pyside6"
     from pyvistaqt import QtInteractor  # noqa: PLC0415
     from . import scene  # noqa: F401, PLC0415  (fails early if pyvista is missing)
     plotter = QtInteractor(parent)
@@ -77,19 +80,29 @@ class Viewer(QWidget):
         self.edges = {"mesh": True, "field": False}   # element edges, per kind of display
         self._last = None
         self._shown_key = None
+        self.error = ""            # why the 3D view is unavailable (with the traceback)
         try:
             self.plotter, self.view_widget = _load_plotter(self)
             layout.addWidget(self.view_widget, 1)
             self.placeholder = None
         except Exception as exc:  # noqa: BLE001 (missing package, no OpenGL, ...)
             self.plotter = None
-            self.placeholder = QLabel(f"3D view unavailable:\n{exc}\n\n"
-                                      "Install pyvista and pyvistaqt to display meshes and results.")
+            self.error = traceback.format_exc()
+            self._reason = f"3D view unavailable: {type(exc).__name__}: {exc}"
+            self.placeholder = QLabel()
             self.placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.placeholder.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self._placeholder("")
             self.placeholder.setWordWrap(True)
             layout.addWidget(self.placeholder, 1)
             for b in self._buttons:
                 b.setEnabled(False)
+
+    def _placeholder(self, text: str) -> None:
+        """Without 3D view: the reason stays visible, with the current message."""
+        hint = ("Install pyvista and pyvistaqt (pip install pyvista pyvistaqt); "
+                "the details are in the Messages tab.")
+        self.placeholder.setText(f"{self._reason}\n{hint}" + (f"\n\n{text}" if text else ""))
 
     @property
     def available(self) -> bool:
@@ -106,14 +119,14 @@ class Viewer(QWidget):
             scene.message(self.plotter, "")
             self.plotter.render()
         else:
-            self.placeholder.setText(text)
+            self._placeholder(text)
 
     def show_mesh(self, mesh_file: Path, selection_file: Path | None = None,
                   status: str = "") -> None:
         self.status.setText(status)
         self._last = ("mesh", mesh_file, selection_file, status)
         if self.plotter is None:
-            self.placeholder.setText(status or str(mesh_file))
+            self._placeholder(status or str(mesh_file))
             return
         from . import scene
         key = ("mesh", str(mesh_file))
@@ -128,7 +141,7 @@ class Viewer(QWidget):
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status)
         if self.plotter is None:
-            self.placeholder.setText(status or name)
+            self._placeholder(status or name)
             return
         from . import scene
         key = ("result", str(result_file))
