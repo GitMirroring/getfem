@@ -175,12 +175,18 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      );
 
 
-  /*@INIT MF = ('set minus', @tmo object1 , @tmo object2)
-    Geometric object being object1 minus object2.@*/
+  /*@INIT MF = ('set minus', @tmo object1 , @tmo object2, ...)
+    Geometric object being object1 minus object2 (minus the union of
+    object2, object3, ... when more objects are given).@*/
   sub_command
     ("set minus", 2, 100, 0, 1,
      getfem::pmesher_signed_distance psd1 = to_mesher_object(in.pop());
      getfem::pmesher_signed_distance psd2 = to_mesher_object(in.pop());
+     if (in.remaining()) {  // the other objects were silently ignored before
+       std::vector<getfem::pmesher_signed_distance> vd(1, psd2);
+       while (in.remaining()) vd.push_back(to_mesher_object(in.pop()));
+       psd2 = getfem::new_mesher_union(vd);
+     }
      psd = getfem::new_mesher_setminus(psd1, psd2);
      );
 
