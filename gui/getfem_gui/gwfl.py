@@ -103,6 +103,7 @@ def check_script(model: dict, items: list[dict], dim: int) -> str:
     w("mf.set_classical_fem(degree)")
     w("mim = gf.MeshIm(m, 2 * degree)")
     w("md = gf.Model('real')")
+    codegen.coordinates(w, dim)
     w("# material properties: their names, with a representative value")
     for p in props:
         w(f"{p} = np.array([{sample(p)!r}])")

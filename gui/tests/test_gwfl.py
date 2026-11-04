@@ -92,6 +92,35 @@ def test_heat_expressions_and_3d():
     assert M.validate(m) == [] and gwfl.check(m) == []
 
 
+def test_coordinates_x_y_z():
+    m = load("plate.json")                       # 2D
+    m["materials"][0]["properties"]["k"] = "50*(1 + 0.1*x*y)"
+    m["outputs"]["quantities"] = [{"name": "a", "expr": "x + X(2)", "selection": "all"},
+                                  {"name": "b", "expr": "z", "selection": "all"}]
+    e = by_path(gwfl.check(m))
+    assert list(e) == ["outputs.quantities[1].expr"] and '"z"' in e["outputs.quantities[1].expr"]
+    # reserved names
+    m = load("plate.json")
+    m["materials"][0]["properties"]["y"] = 1.0
+    m["physics"]["variable"] = "x"
+    errors = M.validate(m)
+    assert any("'y' is reserved for the coordinates" in e for e in errors)
+    assert any("physics.variable: 'x' is reserved" in e for e in errors)
+
+
+def test_coordinates_give_the_same_solution_as_X():
+    results = []
+    for value in ("20 + 100*X(1)*X(2)", "20 + 100*x*y"):
+        m = load("plate.json")
+        m["physics"]["boundary_conditions"][0]["value"] = value
+        with tempfile.TemporaryDirectory() as tmp:
+            res = runner.run(m, tmp)
+            assert res.ok, res.error
+            results.append(res.results)
+    assert results[0]["quantities"] == results[1]["quantities"]
+    assert results[0]["max_T"] == results[1]["max_T"]
+
+
 def test_run_refuses_an_invalid_expression():
     m = load("plate.json")
     m["materials"][0]["properties"]["k"] = "1+"

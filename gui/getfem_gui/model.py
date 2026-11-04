@@ -111,7 +111,9 @@ forms from it):
                            traction {value: vector}, pressure {value} (on the outward normal)
                       GWFL macros: eps, sigma, von_mises, mu_L, lambda_L
 
-Numerical values may be numbers or GWFL expressions. Vector values are a list
+Numerical values may be numbers or GWFL expressions, in which the space
+coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
+Vector values are a list
 of such values (one per space dimension) or a GWFL vector expression such as
 "[0, -9.81*rho]". The macros of the physics may be used in the expressions of
 the derived quantities, e.g. "(sigma*Normal)(1)" for a reaction force.
@@ -152,6 +154,10 @@ SHAPES_BOOLEAN = ("union", "intersection", "difference")
 
 SCALAR = "scalar"
 VECTOR = "vector"
+
+# Space coordinates, defined in every expression (GWFL macros x = X(1), ...,
+# up to the dimension of the mesh); these names cannot be used for anything else.
+COORDINATES = ("x", "y", "z")
 
 # Declarative description of the physics. Value kinds are SCALAR or VECTOR.
 PHYSICS_SPECS = {
@@ -572,6 +578,10 @@ def validate(model: dict) -> list[str]:
     var = phys.get("variable", spec["variable"])
     if not _IDENT.match(str(var)):
         errors.append(f"physics.variable: identifier expected, got {var!r}")
+    elif var in COORDINATES:
+        errors.append(f"physics.variable: {var!r} is reserved for the coordinates")
+    elif var in spec["macros"]:
+        errors.append(f"physics.variable: {var!r} is a reserved name for this physics")
     reserved = set(spec["macros"]) | {str(var)}
 
     # --- Materials
@@ -595,6 +605,8 @@ def validate(model: dict) -> list[str]:
         for prop, v in props.items():
             if not _IDENT.match(prop):
                 errors.append(f"{where}.properties: invalid name {prop!r}")
+            elif prop in COORDINATES:
+                errors.append(f"{where}.properties: {prop!r} is reserved for the coordinates")
             elif prop in reserved:
                 errors.append(f"{where}.properties: {prop!r} is a reserved name for this physics")
             _check_value(v, f"{where}.properties.{prop}", errors)

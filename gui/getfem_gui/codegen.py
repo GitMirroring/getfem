@@ -62,6 +62,15 @@ def gwfl_vec(value, dim: int) -> str:
     return gwfl(value)
 
 
+def coordinates(w: ScriptWriter, dim: int) -> None:
+    """Macros x, y, z for the coordinates (see model.COORDINATES)."""
+    names = M.COORDINATES[:dim]
+    if names:
+        w(f"# Coordinates: {', '.join(f'{c} = X({i})' for i, c in enumerate(names, 1))}")
+        for i, c in enumerate(names, start=1):
+            w(f"md.add_macro({c!r}, 'X({i})')")
+
+
 def _rg(name: str) -> str:
     return f"REGIONS[{name!r}]"
 
@@ -273,6 +282,7 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w("mf.set_classical_fem(degree)")
     w("mim = gf.MeshIm(m, 2 * degree)")
     w("md = gf.Model('real')")
+    coordinates(w, dim)
 
     w.section("Materials")
     _materials(model, w)

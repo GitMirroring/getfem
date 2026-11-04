@@ -79,7 +79,7 @@ python -m getfem_gui gui [model.json]
 - The **properties** form of a node is built from the model description
   (`PHYSICS_SPECS`, meshers, criteria): adding a physics or a boundary
   condition type does not require any interface code. Values are numbers or
-  GWFL expressions; vectors are edited per component.
+  GWFL expressions (with the coordinates x, y, z); vectors are edited per component.
 - Selecting a selection, a material, a source, a boundary condition or an
   output highlights its support on the mesh.
 - **Build mesh** (F7) and **Compute** (F8) run in separate processes, whose

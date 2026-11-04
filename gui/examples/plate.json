@@ -60,7 +60,7 @@
     "sources": [
       {
         "selection": "all",
-        "value": "5e5 * exp(-(sqr(X(1)-0.1) + sqr(X(2)-0.05)) / 1e-4)"
+        "value": "5e5 * exp(-(sqr(x-0.1) + sqr(y-0.05)) / 1e-4)"
       }
     ],
     "boundary_conditions": [
@@ -85,7 +85,7 @@
     "quantities": [
       {
         "name": "injected_power",
-        "expr": "5e5 * exp(-(sqr(X(1)-0.1) + sqr(X(2)-0.05)) / 1e-4)",
+        "expr": "5e5 * exp(-(sqr(x-0.1) + sqr(y-0.05)) / 1e-4)",
         "selection": "all"
       },
       {
