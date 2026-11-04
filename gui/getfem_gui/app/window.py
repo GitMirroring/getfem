@@ -49,8 +49,10 @@ DEFAULT_FIELD = {"linear_elasticity": ("von_mises", "displacement")}
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, path: str | Path | None = None, python: str | None = None):
+    def __init__(self, path: str | Path | None = None, python: str | None = None,
+                 versions=None):
         super().__init__()
+        self.versions = versions        # splash.GetfemVersion, or None
         self.jobs = JobRunner(python, self)
         self.jobs.output.connect(self._job_output)
         self.jobs.meshFinished.connect(self._mesh_finished)
@@ -832,10 +834,12 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.workdir)))
 
     def about(self):
+        from .. import DESCRIPTION
+        from .splash import title
+        version = self.versions.version if self.versions is not None else None
         QMessageBox.about(self, APP_NAME,
-                          f"<b>{APP_NAME}</b><p>A graphical interface for "
-                          "<a href='https://getfem.org'>GetFEM</a>, a framework for rapid "
-                          "prototyping of complex multiphysics finite element models."
+                          f"<b>{title(version)}</b><p>A graphical interface for "
+                          f"<a href='https://getfem.org'>GetFEM</a>, {DESCRIPTION}."
                           "<p>Distributed under the GNU LGPL, like GetFEM.")
 
 

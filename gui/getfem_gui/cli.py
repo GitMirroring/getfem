@@ -65,12 +65,14 @@ def main(argv: list[str] | None = None) -> int:
     pgui = sub.add_parser("gui", help="open the graphical interface (requires PySide6)")
     pgui.add_argument("model", nargs="?")
     pgui.add_argument("--python", help="Python interpreter that provides GetFEM")
+    pgui.add_argument("--no-splash", action="store_true", help="no start-up window")
 
     args = p.parse_args(argv)
 
     if args.cmd == "gui":
         from .app import main as gui_main
-        return gui_main([args.model] if args.model else [], python=args.python)
+        return gui_main([args.model] if args.model else [], python=args.python,
+                        splash=not args.no_splash)
 
     if args.cmd == "new":
         M.save(M.default_model(), args.model)

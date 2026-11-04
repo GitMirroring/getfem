@@ -119,6 +119,42 @@ def test_reason_of_a_missing_3d_view_stays_visible():
     close(win)
 
 
+def test_main_with_splash_screen():
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+    import getfem_gui.app as A
+    from getfem_gui.app.splash import Splash
+    seen = {}
+
+    from getfem_gui.app.window import MainWindow
+
+    def check():
+        app = QApplication.instance()
+        try:
+            seen["splash"] = [w.isVisible() for w in app.topLevelWidgets() if isinstance(w, Splash)]
+            win = next(w for w in app.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible())
+            seen["version"] = win.versions.version
+            original = QMessageBox.about
+            QMessageBox.about = lambda parent, title, text: seen.setdefault("about", text)
+            try:
+                win.about()
+            finally:
+                QMessageBox.about = original
+            win.setWindowModified(False)
+        finally:
+            app.quit()
+    app()
+    QTimer.singleShot(3500, check)
+    assert A.main([str(EXAMPLES / "plate.json")]) == 0
+    assert seen["splash"] == [False]                    # closed after about 2 s
+    import getfem
+    assert seen["version"] == getfem.util_version()
+    assert f"GetFEM GUI 0.1 on GetFEM {seen['version']}" in seen["about"]
+    assert "rapid prototyping of complex multiphysics" in seen["about"]
+    for w in QApplication.instance().topLevelWidgets():
+        w.close()
+
+
 def test_edit_a_value_then_undo():
     win = window()
     key = ("materials", 0, "properties", "k")

@@ -14,6 +14,9 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""Core (without graphical interface yet) of a future GUI for GetFEM."""
+"""getfem_gui: a graphical user interface for GetFEM (see README.md)."""
 
-__version__ = "0.0.1"
+__version__ = "0.1"
+
+DESCRIPTION = ("a framework for rapid prototyping of complex multiphysics "
+               "finite element models")

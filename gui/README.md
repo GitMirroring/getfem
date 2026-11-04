@@ -55,8 +55,12 @@ python -m getfem_gui migrate old_v1.json -o new.json
 ## Graphical interface
 
 ```bash
-python -m getfem_gui gui [model.json]
+python -m getfem_gui gui [model.json]       # --no-splash: no start-up window
 ```
+
+A start-up window shows the versions ("GetFEM GUI 0.1 on GetFEM 5.5") for
+about two seconds while the interface loads. The version of GetFEM is asked
+to the interpreter that runs the computations (`getfem.util_version()`).
 
 ```
 ┌ Model tree ─────────┬ Properties ───────────┬ 3D view ──────────────────────┐

@@ -25,22 +25,39 @@ from __future__ import annotations
 import sys
 
 
-def main(argv: list[str] | None = None, python: str | None = None) -> int:
+def main(argv: list[str] | None = None, python: str | None = None, splash: bool = True) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
+        from PySide6.QtCore import QElapsedTimer, QTimer
         from PySide6.QtWidgets import QApplication
     except ImportError:
         print("error: the graphical interface requires PySide6 (pip install pyside6 pyvistaqt)",
               file=sys.stderr)
         return 1
     from .viewer import prepare_opengl
-    from .window import MainWindow
 
     prepare_opengl()
     app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setApplicationName("GetFEM GUI")
     app.setOrganizationName("GetFEM")
     app.setStyle("Fusion")
-    win = MainWindow(argv[0] if argv else None, python=python)
+
+    from .splash import DURATION_MS, GetfemVersion, Splash
+    versions = GetfemVersion(python)
+    screen = None
+    if splash:
+        screen = Splash(versions)
+        screen.show()
+        clock = QElapsedTimer()
+        clock.start()
+        app.processEvents()
+
+    from .window import MainWindow     # loading the 3D view takes a moment
+    win = MainWindow(argv[0] if argv else None, python=python, versions=versions)
     win.show()
+    if screen is not None:
+        screen.raise_()
+        # close() rather than finish(): the main window is already shown, and
+        # finish() waits for it to be exposed, which some platforms never report
+        QTimer.singleShot(max(0, DURATION_MS - clock.elapsed()), screen.close)
     return app.exec()
