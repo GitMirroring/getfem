@@ -185,6 +185,32 @@ def test_click_filter():
     send(QEvent.Type.MouseButtonRelease, 60, 20)          # a drag (panning)
     assert clicks == [(11.0, 21.0)]
 
+    # while drawing, the filter takes the events (the view must not pan)
+    class Hooks:
+        on, seen = True, []
+
+        def active(self):
+            return self.on
+
+        def press(self, w, x, y):
+            self.seen.append("press")
+
+        def move(self, w, x, y):
+            self.seen.append("move")
+
+        def release(self, w, x, y):
+            self.seen.append("release")
+    hooks = Hooks()
+    f.draw = hooks
+    taken = []
+    for kind, x in ((QEvent.Type.MouseButtonPress, 10), (QEvent.Type.MouseMove, 30),
+                    (QEvent.Type.MouseButtonRelease, 30)):
+        taken.append(f.eventFilter(w, QMouseEvent(kind, QPointF(x, 20), QPointF(x, 20),
+                                                  Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                                  Qt.KeyboardModifier.NoModifier)))
+    assert taken == [True, True, True] and hooks.seen == ["press", "move", "release"]
+    assert clicks == [(11.0, 21.0)]                       # no click while drawing
+
 
 def test_edit_a_value_then_undo():
     win = window()

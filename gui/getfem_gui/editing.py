@@ -1099,3 +1099,82 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
     geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
     item["selection"] = new
     return new, True
+
+
+# ------------------------------------------------------------------ drawing shapes
+
+def can_draw(model: dict, path: Path) -> int | None:
+    """Index of the 2D geometry (box or csg) that a drawn shape goes to, when
+    the node at path is that geometry or one of its shapes; None otherwise."""
+    if path[:1] != ("geometries",) or len(path) < 2 or (len(path) > 2 and path[2] != "source"):
+        return None
+    gi = path[1]
+    src = get_at(model, ("geometries", gi, "source"), {})
+    if src.get("type") == "box" and len(src.get("size", [])) == 2:
+        return gi
+    if src.get("type") == "csg" and src.get("dim") == 2:
+        return gi
+    return None
+
+
+def _prefix_edge_refs(geom: dict, prefix: tuple) -> None:
+    """The CSG root moved under a boolean at `prefix`: update the edges refs."""
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "edges":
+            for ref in crit.get("edges", []):
+                ref["shape"] = list(prefix) + list(ref.get("shape", []))
+
+
+def _box_to_csg(model: dict, gi: int) -> list[str]:
+    """Turn a 2D box into a CSG rectangle; its built-in sides (xmin...) become
+    selections of the same name, so that their uses stay valid; structured
+    meshes of the geometry switch to the GetFEM mesher. Returns notes."""
+    geom = model["geometries"][gi]
+    src = geom["source"]
+    o, s = src["origin"], src["size"]
+    shape = {"type": "rectangle", "min": list(o),
+             "max": [f"{format_value(a)} + {format_value(b)}" if isinstance(a, str) or isinstance(b, str)
+                     else a + b for a, b in zip(o, s)]}
+    geom["source"] = {"type": "csg", "dim": 2, "shape": shape}
+    sides = {"xmin": "xmin", "xmax": "xmax", "ymin": "ymin", "ymax": "ymax"}
+    old = geom.get("selections", {})
+    new = {name: {"kind": M.BOUNDARY, "criteria": {"type": "edges", "edges": [{"shape": [], "side": side}]}}
+           for name, side in sides.items() if name not in old}
+    new.update(old)          # edges refs of a box already designate the root rectangle
+    geom["selections"] = new
+    notes = ["the box became a constructive geometry; its sides xmin... are now selections"]
+    for mesh in model.get("meshes", []):
+        if mesh.get("geometry") == geom.get("name") and mesh.get("mesher") == "structured":
+            vals, _ = P.values(model)
+            try:
+                sizes = [P.evaluate(x, vals) for x in s]
+                h = min(si / max(int(P.evaluate(d, vals)), 1) for si, d in zip(sizes, mesh["divisions"]))
+            except (P.ParameterError, KeyError, TypeError):
+                h = 0.1
+            for k in ("divisions", "element"):
+                mesh.pop(k, None)
+            mesh.update({"mesher": "getfem", "h": h, "order": 1})
+            notes.append(f"mesh {mesh.get('name')!r}: structured mesher replaced by the GetFEM mesher (h = {h:g})")
+    return notes
+
+
+def add_shape_2d(model: dict, gi: int, shape: dict, op: str) -> tuple[Path, list[str]]:
+    """Combine a drawn primitive with a 2D geometry: op is union, difference
+    (the shape is removed) or intersection. Returns the path of the new shape
+    node and notes about what was changed."""
+    if op not in M.SHAPES_BOOLEAN:
+        raise ValueError(f"unknown operation {op!r}")
+    notes: list[str] = []
+    geom = model["geometries"][gi]
+    if geom["source"].get("type") == "box":
+        notes += _box_to_csg(model, gi)
+    src = geom["source"]
+    root = src["shape"]
+    base = ("geometries", gi, "source", "shape")
+    if root.get("type") == op:            # a \ b \ c, a u b u c...: one more operand
+        root.setdefault("of", []).append(shape)
+        return base + ("of", len(root["of"]) - 1), notes
+    src["shape"] = {"type": op, "of": [root, shape]}
+    _prefix_edge_refs(geom, (0,))
+    return base + ("of", 1), notes

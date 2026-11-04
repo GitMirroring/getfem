@@ -31,8 +31,11 @@ import sys
 import traceback
 from pathlib import Path
 
+import numpy as np
+
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 
 def prepare_opengl() -> None:
@@ -97,6 +100,30 @@ def _load_plotter(parent):
     return plotter, plotter
 
 
+class _DrawHooks:
+    """Mouse events of the view, while a drawing tool is active."""
+
+    def __init__(self, viewer):
+        self.viewer = viewer
+
+    def active(self) -> bool:
+        return self.viewer._tool is not None
+
+    def _world(self, widget, x, y):
+        from . import scene
+        s = widget.devicePixelRatioF()
+        return scene.display_to_world(self.viewer.plotter, round(x * s), round((widget.height() - y - 1) * s))
+
+    def press(self, widget, x, y):
+        self.viewer.draw_begin(self._world(widget, x, y))
+
+    def move(self, widget, x, y):
+        self.viewer.draw_move(self._world(widget, x, y))
+
+    def release(self, widget, x, y):
+        self.viewer.draw_end(self._world(widget, x, y))
+
+
 class ClickFilter(QObject):
     """Reports left clicks (press and release without moving) on a widget.
 
@@ -104,13 +131,23 @@ class ClickFilter(QObject):
     PyVista then listens to them on the interactor style, which is replaced
     whenever the interaction style changes (2D / 3D)."""
 
-    def __init__(self, callback, parent=None):
+    def __init__(self, callback, parent=None, draw=None):
         super().__init__(parent)
         self.callback = callback          # callback(widget, x, y), Qt logical coordinates
+        self.draw = draw                  # object with active(), press/move/release(widget, x, y)
         self._press = None
 
     def eventFilter(self, obj, ev):
         t = ev.type()
+        if self.draw is not None and self.draw.active() and t in (
+                QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
+            # drawing a shape: the view must not pan, the events are taken here
+            if t == QEvent.Type.MouseMove:
+                self.draw.move(obj, ev.position().x(), ev.position().y())
+            elif ev.button() == Qt.MouseButton.LeftButton:
+                (self.draw.press if t == QEvent.Type.MouseButtonPress else self.draw.release)(
+                    obj, ev.position().x(), ev.position().y())
+            return True
         if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
             self._press = ev.position()
         elif t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
@@ -123,6 +160,7 @@ class ClickFilter(QObject):
 
 class Viewer(QWidget):
     edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
+    shapeDrawn = Signal(object, str)      # primitive (model format), operation
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -147,6 +185,7 @@ class Viewer(QWidget):
             bar.addWidget(b)
             self._buttons.append(b)
         layout.addLayout(bar)
+        self._build_draw_bar(layout)
         self.edges = {"mesh": True, "field": False}   # element edges, per kind of display
         self._last = None
         self._shown_key = None
@@ -211,21 +250,24 @@ class Viewer(QWidget):
         self.plotter.render()
 
     def show_geometry(self, shape: dict, pieces: list, highlighted=(), domain=False,
-                      status: str = "", pickable: bool = False) -> None:
+                      status: str = "", pickable: bool = False, key: str | None = None) -> None:
         """Exact preview of a 2D geometry; with pickable, clicks on its boundary
         pieces are reported by edgeClicked."""
         self.status.setText(status)
-        self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable)
+        self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable, key)
         self._pieces = pieces if pickable else []
         self._hover = None
         if self.plotter is None:
             self._placeholder(status)
             return
         from . import scene
-        key = ("geometry", repr(shape))
+        # the camera is kept while the same geometry is edited (key: its name)
+        key = ("geometry", key if key is not None else repr(shape))
         scene.show_geometry_2d(self.plotter, shape, pieces, highlighted, domain,
                                reset=key != self._shown_key)
         self._shown_key = key
+        if self._tool is not None:
+            self._show_grid(True)
         self.plotter.render()
 
     # -------------------------------------------------------------- picking
@@ -235,7 +277,7 @@ class Viewer(QWidget):
         if iren is None:              # off-screen plotter: see pick_world / hover_world
             return
         iren.add_observer("MouseMoveEvent", self._on_move)
-        self._click_filter = ClickFilter(self._on_click, self)
+        self._click_filter = ClickFilter(self._on_click, self, draw=_DrawHooks(self))
         self.view_widget.installEventFilter(self._click_filter)
 
     def _event_world(self):
@@ -275,6 +317,116 @@ class Viewer(QWidget):
         if piece != self._hover:
             self._hover = piece
             scene.show_hover(self.plotter, piece)
+            self.plotter.render()
+
+    # -------------------------------------------------------------- drawing
+
+    OPERATIONS = (("union", "add"), ("difference", "subtract"), ("intersection", "intersect"))
+
+    def _build_draw_bar(self, layout):
+        self.draw_bar = QWidget()
+        row = QHBoxLayout(self.draw_bar)
+        row.setContentsMargins(4, 0, 4, 2)
+        row.addWidget(QLabel("Draw:"))
+        self.draw_buttons = {}
+        for kind, text, tip in (("rectangle", "Rectangle", "Drag from a corner to the opposite one"),
+                                ("ball", "Disk", "Drag from the center to the circle")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip + " (Escape: stop drawing)")
+            b.setCheckable(True)
+            b.setObjectName(f"draw:{kind}")
+            b.toggled.connect(lambda on, k=kind: self._tool_toggled(k, on))
+            row.addWidget(b)
+            self.draw_buttons[kind] = b
+        self.draw_op = QComboBox()
+        self.draw_op.setObjectName("draw:operation")
+        for op, label in self.OPERATIONS:
+            self.draw_op.addItem(label, op)
+        self.draw_op.setToolTip("How the drawn shape is combined with the geometry")
+        row.addWidget(self.draw_op)
+        self.grid_label = QLabel("")
+        self.grid_label.setStyleSheet("color: #555;")
+        row.addWidget(self.grid_label)
+        row.addStretch(1)
+        layout.addWidget(self.draw_bar)
+        self.draw_bar.hide()
+        self._tool = None
+        self._draw_start = None
+        self._draw_step = None
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.stop_drawing)
+
+    def set_drawing(self, enabled: bool) -> None:
+        """Show the drawing tools (a 2D geometry is selected) or hide them."""
+        if not enabled:
+            self.stop_drawing()
+        self.draw_bar.setVisible(enabled and self.plotter is not None)
+
+    def stop_drawing(self) -> None:
+        for b in self.draw_buttons.values():
+            b.setChecked(False)
+
+    def _tool_toggled(self, kind, on):
+        if on:
+            for k, b in self.draw_buttons.items():
+                if k != kind:
+                    b.setChecked(False)
+            self._tool = kind
+        elif self._tool == kind:
+            self._tool = None
+        self.draw_cancel()
+        self._show_grid(self._tool is not None)
+
+    def _show_grid(self, on: bool):
+        if self.plotter is None:
+            return
+        from .. import geometry2d as G
+        from . import scene
+        if not on:
+            self._draw_step = None
+            self.grid_label.setText("")
+            scene.show_grid(self.plotter, None, None, None)
+            self.plotter.render()
+            return
+        width = scene.pixel_size(self.plotter) * max(self.view_widget.width(), 100)
+        self._draw_step = G.grid_step(width)
+        self.grid_label.setText(f"grid {self._draw_step:g}")
+        lo = scene.display_to_world(self.plotter, 0, 0)
+        hi = scene.display_to_world(self.plotter, self.view_widget.width() * self.view_widget.devicePixelRatioF(),
+                                    self.view_widget.height() * self.view_widget.devicePixelRatioF())
+        scene.show_grid(self.plotter, np.minimum(lo, hi), np.maximum(lo, hi), self._draw_step)
+        self.plotter.render()
+
+    def _snapped(self, world):
+        from .. import geometry2d as G
+        return G.snap(world, self._draw_step) if self._draw_step else [float(world[0]), float(world[1])]
+
+    def draw_begin(self, world) -> None:
+        if self._tool is not None:
+            self._draw_start = self._snapped(world)
+
+    def draw_move(self, world) -> None:
+        if self._tool is None or self._draw_start is None or self.plotter is None:
+            return
+        from .. import geometry2d as G
+        from . import scene
+        scene.show_rubber(self.plotter, G.drawn_shape(self._tool, self._draw_start, self._snapped(world)))
+        self.plotter.render()
+
+    def draw_end(self, world) -> None:
+        if self._tool is None or self._draw_start is None:
+            return
+        from .. import geometry2d as G
+        shape = G.drawn_shape(self._tool, self._draw_start, self._snapped(world))
+        self.draw_cancel()
+        if shape is not None:
+            self.shapeDrawn.emit(shape, self.draw_op.currentData())
+
+    def draw_cancel(self) -> None:
+        self._draw_start = None
+        if self.plotter is not None:
+            from . import scene
+            scene.show_rubber(self.plotter, None)
             self.plotter.render()
 
     # -------------------------------------------------------------- results

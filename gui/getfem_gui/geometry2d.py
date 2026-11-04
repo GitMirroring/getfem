@@ -334,3 +334,38 @@ def toggle_edge(criteria: dict, ref: dict) -> dict:
     if len(kept) == len(edges):
         kept.append(dict(ref))
     return {"type": "edges", "edges": kept}
+
+
+# ------------------------------------------------------------------ drawing
+
+def grid_step(width: float, divisions: int = 40) -> float:
+    """A round step (1, 2 or 5 x 10^n) giving about `divisions` steps over width."""
+    if width <= 0:
+        return 1.0
+    raw = width / divisions
+    e = math.floor(math.log10(raw))
+    for m in (1, 2, 5, 10):
+        if m * 10 ** e >= raw:
+            return m * 10.0 ** e
+    return 10.0 ** (e + 1)
+
+
+def snap(point, step: float) -> list[float]:
+    return [round(round(float(c) / step) * step, 12) for c in point[:2]]
+
+
+def drawn_shape(kind: str, p0, p1) -> dict | None:
+    """The primitive drawn from p0 to p1: a rectangle (two corners) or a disk
+    (center, point of the circle); None if degenerate."""
+    p0, p1 = np.asarray(p0, float)[:2], np.asarray(p1, float)[:2]
+    if kind == "rectangle":
+        lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
+        if np.any(hi - lo <= 0):
+            return None
+        return {"type": "rectangle", "min": [float(x) for x in lo], "max": [float(x) for x in hi]}
+    if kind == "ball":
+        r = float(np.linalg.norm(p1 - p0))
+        if r <= 0:
+            return None
+        return {"type": "ball", "center": [float(x) for x in p0], "radius": r}
+    raise ValueError(f"unknown shape {kind!r}")

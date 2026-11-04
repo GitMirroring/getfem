@@ -93,6 +93,16 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   primitives (see `geometry2d.py`), so that a selection follows the changes
   of the geometry, e.g. a parameter for the radius of a hole. Other
   geometries (CAD, imported meshes, 3D) are shown through their mesh.
+- **Drawing**: with a 2D geometry selected, the *Rectangle* and *Disk*
+  tools of the view draw a shape by dragging (corner to corner, center to
+  circle), snapped to a grid whose step follows the zoom; it is added to,
+  subtracted from or intersected with the geometry (Escape stops drawing).
+  The shape joins the root boolean of the CSG tree when it is the same
+  operation, otherwise the root is wrapped in a new boolean, and the `edges`
+  selections are updated so that they still designate the same sides. A box
+  becomes a CSG geometry on the first drawing: its sides `xmin`... become
+  selections of the same name (their uses stay valid), and a structured mesh
+  of it switches to the GetFEM mesher with an equivalent element size.
 - With a boundary condition (or an output integrated on a boundary)
   selected, clicking edges edits its support directly: its selection is
   modified in place if it is an `edges` selection used by this item only;

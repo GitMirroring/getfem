@@ -250,3 +250,39 @@ def pixel_size(plotter) -> float:
     """World length of one pixel (parallel projection)."""
     a, b = display_to_world(plotter, 0, 0), display_to_world(plotter, 1, 0)
     return float(np.linalg.norm(b - a)) or 1e-9
+
+
+def show_rubber(plotter, shape: dict | None) -> None:
+    """Outline of the shape being drawn (None: remove)."""
+    plotter.remove_actor("rubber")
+    if shape is None:
+        return
+    if shape["type"] == "rectangle":
+        (x0, y0), (x1, y1) = shape["min"], shape["max"]
+        pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
+    else:
+        c, r = np.asarray(shape["center"]), shape["radius"]
+        th = np.linspace(0, 2 * np.pi, 97)
+        pts = c + r * np.column_stack([np.cos(th), np.sin(th)])
+    plotter.add_mesh(_polyline(pts), color=HOVER, line_width=3, lighting=False, name="rubber")
+
+
+def show_grid(plotter, lo, hi, step: float) -> None:
+    """Light grid of the snapping step over [lo, hi] (None step: remove)."""
+    plotter.remove_actor("grid")
+    if step is None:
+        return
+    xs = np.arange(np.floor(lo[0] / step), np.ceil(hi[0] / step) + 1) * step
+    ys = np.arange(np.floor(lo[1] / step), np.ceil(hi[1] / step) + 1) * step
+    if len(xs) * len(ys) > 40000:          # too fine to be useful on screen
+        return
+    lines = []
+    for x in xs:
+        lines.append([[x, ys[0], 0.0], [x, ys[-1], 0.0]])
+    for y in ys:
+        lines.append([[xs[0], y, 0.0], [xs[-1], y, 0.0]])
+    pts = np.array(lines, float).reshape(-1, 3)
+    cells = np.hstack([[2, 2 * i, 2 * i + 1] for i in range(len(lines))])
+    grid = pv.PolyData(pts, lines=cells)
+    plotter.add_mesh(grid, color="#9fb3c2", opacity=0.35, line_width=1, lighting=False, name="grid",
+                     pickable=False)

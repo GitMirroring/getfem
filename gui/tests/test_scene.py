@@ -159,6 +159,52 @@ def test_preview_and_picking_in_the_window():
             win.close()
 
 
+def test_drawing_in_the_window():
+    """Drawing a disk to subtract it from a box geometry (mouse simulated at
+    world coordinates, off-screen plotter)."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication, QComboBox, QToolButton
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(EXAMPLES / "plate.json", tmp)
+        win = MainWindow(path)
+        try:
+            v = win.viewer
+            win.select(("physics",))
+            assert v.draw_bar.isHidden()                               # only for a 2D geometry
+            win.select(("geometries", 0))
+            assert not v.draw_bar.isHidden()
+            op = v.findChild(QComboBox, "draw:operation")
+            op.setCurrentIndex(op.findData("difference"))
+            v.findChild(QToolButton, "draw:ball").setChecked(True)
+            assert v._draw_step is not None
+            step = v._draw_step
+            v.draw_begin((0.1 + 0.3 * step, 0.05))                     # snapped to the grid
+            v.draw_move((0.12, 0.05))
+            assert "rubber" in v.plotter.actors
+            v.draw_end((0.12 + 0.2 * step, 0.05))
+            src = win.model["geometries"][0]["source"]
+            assert src["type"] == "csg" and src["shape"]["type"] == "difference"
+            disk = src["shape"]["of"][1]
+            assert disk["center"] == [0.1, 0.05] and abs(disk["radius"] - 0.02) < 1e-12
+            assert win.errors == [] and win.current_path() == ("geometries", 0)
+            assert "subtracted" in win.state.text()
+            v.draw_begin((0.0, 0.0))
+            v.stop_drawing()                                           # Escape
+            assert v._tool is None and "rubber" not in v.plotter.actors
+            win.undo()
+            assert win.model["geometries"][0]["source"]["type"] == "box"
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 def E_get(win, path):
     from getfem_gui import editing as E
     return E.get_at(win.model, path)

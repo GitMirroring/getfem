@@ -156,6 +156,49 @@ def test_changing_a_selection_does_not_mesh_again():
         assert "Mesh('generate'" in script.read_text()
 
 
+def test_drawn_shapes_and_grid():
+    assert G.grid_step(1.0) == 0.05 and G.grid_step(0.25) == 0.01 and G.grid_step(47) == 2.0
+    assert G.snap([0.01234, 0.0049], 0.005) == [0.01, 0.005]
+    assert G.drawn_shape("rectangle", [1, 2], [0, 0]) == {"type": "rectangle", "min": [0, 0], "max": [1, 2]}
+    assert G.drawn_shape("ball", [0, 0], [3, 4])["radius"] == 5.0
+    assert G.drawn_shape("rectangle", [0, 0], [1, 0]) is None
+
+
+def test_adding_a_shape_keeps_the_selections():
+    m = load("plate_hole_tension.json")
+    geom = m["geometries"][0]
+    geom["selections"]["hole_e"] = edges(((1,), "circle"))
+    def targets():
+        shape = G.shape_of(P.resolved(m)["geometries"][0]["source"])
+        return {n: [G.primitive_at(shape, r["shape"]) for r in s["criteria"]["edges"]]
+                for n, s in geom["selections"].items() if s["criteria"]["type"] == "edges"}
+    before = targets()
+    path, _ = E.add_shape_2d(m, 0, ball(0.08, 0.025, 0.005), "difference")   # same operation
+    assert path[-2:] == ("of", 2) and geom["source"]["shape"]["type"] == "difference"
+    path, _ = E.add_shape_2d(m, 0, rect(0.1, 0.0, 0.12, 0.02), "union")      # the root is wrapped
+    assert geom["source"]["shape"]["type"] == "union" and path[-2:] == ("of", 1)
+    assert geom["selections"]["hole_e"]["criteria"]["edges"][0]["shape"] == [0, 1]
+    assert targets() == before and M.validate(m) == []
+
+
+def test_drawing_on_a_box_and_solving():
+    from getfem_gui import runner
+    m = load("plate.json")
+    m["geometries"][0]["selections"]["west"] = edges(((), "xmin"))
+    uses = {bc["selection"] for bc in m["physics"]["boundary_conditions"]}
+    path, notes = E.add_shape_2d(m, 0, ball(0.1, 0.05, 0.02), "difference")
+    geom = m["geometries"][0]
+    assert geom["source"]["type"] == "csg" and len(notes) == 2
+    assert uses <= set(geom["selections"])                       # xmin... are now selections
+    assert geom["selections"]["west"]["criteria"]["edges"] == [{"shape": [0], "side": "xmin"}]
+    assert m["meshes"][0]["mesher"] == "getfem" and m["meshes"][0]["h"] > 0
+    assert M.validate(m) == []
+    with tempfile.TemporaryDirectory() as tmp:
+        res = runner.run(m, tmp)
+        assert res.ok, res.error
+        assert res.mesh.info["sizes"]["west"] == res.mesh.info["sizes"]["xmin"] > 0
+
+
 def test_picking_from_a_condition_edits_its_support():
     m = load("plate_hole_tension.json")
     bc = ("physics", "boundary_conditions", 2)

@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self.props.viewChanged.connect(self._result_view_changed)
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
+        self.viewer.shapeDrawn.connect(self._shape_drawn)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.tree)
         split.addWidget(self.props)
@@ -574,6 +575,29 @@ class MainWindow(QMainWindow):
             title += ": click edges to add or remove them"
         return title, shape, pieces, highlighted, domain, pickable
 
+    def _shape_drawn(self, shape: dict, op: str):
+        """A rectangle or a disk drawn in the view: combined with the geometry."""
+        path = self.current_path()
+        gi = E.can_draw(self.model, path)
+        if gi is None:
+            return
+        before = copy.deepcopy(self.model)
+        try:
+            _, notes = E.add_shape_2d(self.model, gi, shape, op)
+        except (ValueError, KeyError, TypeError) as exc:
+            self.model = before
+            self.state.setText(f"Not added: {exc}")
+            return
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=("geometries", gi))
+        what = "Rectangle" if shape["type"] == "rectangle" else "Disk"
+        verb = {"union": "added", "difference": "subtracted", "intersection": "intersected"}[op]
+        self.state.setText(f"{what} {verb}" + (": " + "; ".join(notes) if notes else ""))
+        for n in notes:
+            self._log(n)
+
     def _edge_clicked(self, piece):
         """A click on an edge of the preview: toggles it in the selected
         selection, or in the support of the selected condition / output."""
@@ -617,11 +641,12 @@ class MainWindow(QMainWindow):
         if path[:1] == (E.RESULTS,):
             return
         preview = self._preview(path)
+        self.viewer.set_drawing(preview is not None and E.can_draw(self.model, path) is not None)
         if preview is not None:
             title, shape, pieces, highlighted, domain, pickable = preview
             try:
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
-                                          pickable=pickable)
+                                          pickable=pickable, key=title.split(" — ")[0].split(":")[0])
             except Exception as exc:  # noqa: BLE001
                 self.viewer.show_message(f"Cannot display the geometry: {exc}")
             return
