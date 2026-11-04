@@ -24,9 +24,9 @@
     @brief implementation of various finite elements.
  */
 
+#include <set>
 #include "getfem/bgeot_torus.h"
 #include "getfem/dal_singleton.h"
-#include "getfem/dal_tree_sorted.h"
 #include "gmm/gmm_algobase.h"
 #include "getfem/dal_naming_system.h"
 #include "getfem/getfem_fem.h"
@@ -385,17 +385,28 @@ namespace getfem {
     return 0;
   }
 
-  typedef dal::dynamic_tree_sorted<dof_description, dof_description_comp__> dof_d_tab;
+  struct dof_description_less__ {
+    bool operator()(const dof_description &m,
+                    const dof_description &n) const
+    { return dof_description_comp__()(m, n) < 0; }
+  };
+
+  // The elements of a std::set never move: pdof_description pointers
+  // remain valid when new descriptions are added.
+  typedef std::set<dof_description, dof_description_less__> dof_d_tab;
+
+  /// Return the unique stored description equal to l.
+  static pdof_description stored_dof_description(const dof_description &l)
+  { return &(*(dal::singleton<dof_d_tab>::instance().insert(l).first)); }
 
   pdof_description lagrange_dof(dim_type n) {
     THREAD_SAFE_STATIC dim_type n_old = dim_type(-2);
     THREAD_SAFE_STATIC pdof_description p_old = nullptr;
     if (n != n_old) {
-      dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
       dof_description l;
       l.ddl_desc.resize(n);
       std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(LAGRANGE));
-      p_old = &(tab[tab.add_norepeat(l)]);
+      p_old = stored_dof_description(l);
       n_old = n;
     }
     return p_old;
@@ -405,24 +416,22 @@ namespace getfem {
     THREAD_SAFE_STATIC dim_type n_old = dim_type(-2);
     THREAD_SAFE_STATIC pdof_description p_old = nullptr;
     if (n != n_old) {
-      dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
       dof_description l;
       l.all_faces = true;
       l.ddl_desc.resize(n);
       l.linkable = false;
       std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(LAGRANGE));
-      p_old = &(tab[tab.add_norepeat(l)]);
+      p_old = stored_dof_description(l);
       n_old = n;
     }
     return p_old;
   }
 
   pdof_description deg_hierarchical_dof(pdof_description p, int deg) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l = *p;
     for (size_type i = 0; i < l.ddl_desc.size(); ++i)
       l.ddl_desc[i].hier_degree = gmm::int16_type(deg);
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   size_type reserve_xfem_index() {
@@ -431,21 +440,19 @@ namespace getfem {
   }
 
   pdof_description xfem_dof(pdof_description p, size_type ind) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l = *p; l.xfem_index = ind;
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description ipk_center_dof(dim_type n, size_type k_ind) {
     THREAD_SAFE_STATIC dim_type n_old = dim_type(-2);
     THREAD_SAFE_STATIC pdof_description p_old = nullptr;
     if (n != n_old) {
-      dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
       dof_description l;
       l.ddl_desc.resize(n);
       std::fill(l.ddl_desc.begin(), l.ddl_desc.end(),
                 ddl_elem(IPK_CENTER, -1, 0, k_ind));
-      p_old = &(tab[tab.add_norepeat(l)]);
+      p_old = stored_dof_description(l);
       n_old = n;
     }
     return p_old;
@@ -454,103 +461,91 @@ namespace getfem {
 
 
   pdof_description to_coord_dof(pdof_description p, dim_type ct) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l = *p;
     l.coord_index = ct;
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description raff_hierarchical_dof(pdof_description p, short_type deg) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l = *p;
     for (size_type i = 0; i < l.ddl_desc.size(); ++i)
       l.ddl_desc[i].hier_raff = deg;
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description lagrange_nonconforming_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l; l.linkable = false;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(LAGRANGE));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description bubble1_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(BUBBLE1));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description derivative_dof(dim_type n, dim_type num_der) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(LAGRANGE));
     l.ddl_desc.at(num_der) = ddl_elem(DERIVATIVE);
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description second_derivative_dof(dim_type n, dim_type num_der1,
                                          dim_type num_der2) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(LAGRANGE));
     l.ddl_desc[num_der1] = ddl_elem(SECOND_DERIVATIVE);
     l.ddl_desc[num_der2] = ddl_elem(SECOND_DERIVATIVE);
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description normal_derivative_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(),
               ddl_elem(NORMAL_DERIVATIVE));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description normal_component_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(),
               ddl_elem(NORMAL_COMPONENT));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description edge_component_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(),
               ddl_elem(EDGE_COMPONENT));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description mean_value_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.ddl_desc.resize(n);
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(), ddl_elem(MEAN_VALUE));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description global_dof(dim_type n) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     dof_description l;
     l.all_faces = true;
     l.ddl_desc.resize(n);
     l.linkable = false;
     std::fill(l.ddl_desc.begin(), l.ddl_desc.end(),ddl_elem(GLOBAL_DOF));
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   pdof_description product_dof(pdof_description a, pdof_description b) {
-    dof_d_tab& tab = dal::singleton<dof_d_tab>::instance();
     size_type nb1 = a->ddl_desc.size(), nb2 = b->ddl_desc.size();
     dof_description l;
     l.linkable = a->linkable && b->linkable;
@@ -576,7 +571,7 @@ namespace getfem {
       for (size_type i = 0; i < l.ddl_desc.size(); ++i)
         l.ddl_desc[i].hier_raff = deg;
     }
-    return &(tab[tab.add_norepeat(l)]);
+    return stored_dof_description(l);
   }
 
   // ATTENTION : en cas de modif, changer aussi

@@ -159,7 +159,7 @@ namespace getfem {
   struct dof_description;
 
   /// Type representing a pointer on a dof_description
-  typedef dof_description *pdof_description;
+  typedef const dof_description *pdof_description;
 
   /** @brief Description of a unique dof of lagrange type (value at the node).
    * @param d the dimension of the reference element (2 for triangles, 3 for tetrahedrons ...)
