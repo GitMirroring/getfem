@@ -54,10 +54,14 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
 
     from .window import MainWindow     # loading the 3D view takes a moment
     win = MainWindow(argv[0] if argv else None, python=python, versions=versions)
-    win.show()
-    if screen is not None:
-        screen.raise_()
-        # close() rather than finish(): the main window is already shown, and
-        # finish() waits for it to be exposed, which some platforms never report
-        QTimer.singleShot(max(0, DURATION_MS - clock.elapsed()), screen.close)
+    if screen is None:
+        win.show()
+    else:
+        # The main window is shown only when the start-up window closes: shown
+        # earlier, it would cover it (a window cannot stay on top on Wayland).
+        def done():
+            win.show()
+            screen.close()
+        screen.clicked.connect(done)
+        QTimer.singleShot(max(0, DURATION_MS - clock.elapsed()), done)
     return app.exec()

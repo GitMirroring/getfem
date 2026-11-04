@@ -15,13 +15,14 @@
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
 
-"""Start-up window, shown for about two seconds while the main window loads,
+"""Start-up window, shown for about three seconds while the main window loads,
 and the version of GetFEM (asked to the interpreter that runs the
 computations, which may not be the one running the interface)."""
 
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPixmap
@@ -29,7 +30,8 @@ from PySide6.QtWidgets import QSplashScreen
 
 from .. import DESCRIPTION, __version__
 
-DURATION_MS = 2000
+DURATION_MS = 3000
+LOGO = Path(__file__).resolve().parent / "resources" / "logo_getfem.png"
 
 # Version of GetFEM: util_version() since GetFEM 5.5; package metadata otherwise
 _VERSION_SCRIPT = """
@@ -76,6 +78,10 @@ def title(getfem_version: str | None) -> str:
 
 class Splash(QSplashScreen):
     W, H = 560, 300
+    clicked = Signal()
+
+    def mousePressEvent(self, event):      # a click closes it earlier
+        self.clicked.emit()
 
     def __init__(self, versions: GetfemVersion | None = None):
         super().__init__(self._render(None))
@@ -93,12 +99,13 @@ class Splash(QSplashScreen):
         p = QPainter(pix)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         g = QLinearGradient(0, 0, cls.W, cls.H)
-        g.setColorAt(0.0, QColor("#16324f"))
-        g.setColorAt(1.0, QColor("#1f6f78"))
+        g.setColorAt(0.0, QColor("#ffffff"))
+        g.setColorAt(1.0, QColor("#e6edf1"))
         p.fillRect(0, 0, cls.W, cls.H, g)
-        # a few mesh-like triangles, as a discreet decoration
-        p.setPen(QColor(255, 255, 255, 28))
+        # a discreet triangular mesh pattern
+        p.setPen(QColor(22, 50, 79, 18))
         step = 40
         for i in range(-cls.H // step, cls.W // step + 2):
             x = i * step
@@ -106,20 +113,25 @@ class Splash(QSplashScreen):
             p.drawLine(x, 0, x + cls.H, cls.H)
         for y in range(0, cls.H + 1, step):
             p.drawLine(0, y, cls.W, y)
+        p.fillRect(0, cls.H - 6, cls.W, 6, QColor("#1f6f78"))       # accent band
+        logo = QPixmap(str(LOGO))
+        if not logo.isNull():
+            w = 190
+            h = w * logo.height() / logo.width()
+            p.drawPixmap(QRectF(cls.W - w - 24, 22, w, h), logo, QRectF(logo.rect()))
 
-        def text(rect, size, string, bold=False, color="#ffffff", flags=Qt.AlignmentFlag.AlignLeft):
+        def text(rect, size, string, bold=False, color="#16324f"):
             f = QFont()
             f.setPointSizeF(size)
             f.setBold(bold)
             p.setFont(f)
             p.setPen(QColor(color))
-            p.drawText(QRectF(*rect), int(flags | Qt.TextFlag.TextWordWrap), string)
+            p.drawText(QRectF(*rect), int(Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap), string)
 
-        text((36, 48, cls.W - 72, 50), 26, "GetFEM GUI", bold=True)
-        text((38, 100, cls.W - 72, 30), 12, title(getfem_version), color="#cfe8ea")
-        text((38, 145, cls.W - 76, 70), 11.5,
-             f"A graphical interface for GetFEM, {DESCRIPTION}.", color="#ffffff")
-        text((38, cls.H - 48, cls.W - 76, 20), 9, "Distributed under the GNU LGPL  ·  getfem.org",
-             color="#a9c7cc")
+        text((36, 60, 300, 50), 26, "GetFEM GUI", bold=True)
+        text((38, 112, 320, 30), 12, title(getfem_version), color="#1f6f78")
+        text((38, 160, cls.W - 76, 70), 11.5, f"A graphical interface for GetFEM, {DESCRIPTION}.")
+        text((38, cls.H - 44, cls.W - 76, 20), 9, "Distributed under the GNU LGPL  ·  getfem.org",
+             color="#5b6b78")
         p.end()
         return pix

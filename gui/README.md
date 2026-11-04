@@ -59,7 +59,7 @@ python -m getfem_gui gui [model.json]       # --no-splash: no start-up window
 ```
 
 A start-up window shows the versions ("GetFEM GUI 0.1 on GetFEM 5.5") for
-about two seconds while the interface loads. The version of GetFEM is asked
+about three seconds while the interface loads. The version of GetFEM is asked
 to the interpreter that runs the computations (`getfem.util_version()`).
 
 ```
@@ -260,6 +260,10 @@ each change and shows the errors on the fields, in the tree and in the
 
 ## Open topics
 
+- Discretization: it belongs with the physics (finite element method and
+  degree of each unknown), rather than as a global node. To share it between
+  several parts of a model, finite element methods could instead be defined
+  per geometry (or mesh) and referred to by the physics.
 - Local Gmsh refinement per selection, CAD face names.
 - Several physics on different meshes in the same model (GetFEM allows it)
   and convergence studies over several meshes.
