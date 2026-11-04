@@ -398,7 +398,8 @@ class MainWindow(QMainWindow):
             return
         if not self.jobs.running:
             self.state.setText("Checking the expressions...")
-        self.checker.check(copy.deepcopy(self.model), key, self.workdir)
+        # in the temporary folder: opening a model must not create its work folder
+        self.checker.check(copy.deepcopy(self.model), key, None)
 
     def _gwfl_checked(self, key, result):
         if key != self._model_key():      # the model changed meanwhile
@@ -644,8 +645,8 @@ class MainWindow(QMainWindow):
 
     def _remove_property(self, f: E.Field):
         self._snapshot()
-        E.get_at(self.model, f.key[:-1]).pop(f.key[-1], None)
-        self._changed()
+        E.remove_at(self.model, f.remove)
+        self._changed(rebuild_panel=True)
 
     def undo(self):
         if self._undo:
@@ -833,7 +834,8 @@ class MainWindow(QMainWindow):
     def about(self):
         QMessageBox.about(self, APP_NAME,
                           f"<b>{APP_NAME}</b><p>A graphical interface for "
-                          "<a href='https://getfem.org'>GetFEM</a>, the finite element library."
+                          "<a href='https://getfem.org'>GetFEM</a>, a framework for rapid "
+                          "prototyping of complex multiphysics finite element models."
                           "<p>Distributed under the GNU LGPL, like GetFEM.")
 
 

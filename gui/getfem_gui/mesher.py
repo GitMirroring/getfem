@@ -38,7 +38,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import model as M
+from . import model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
 SCRIPT_VERSION = 4
@@ -319,6 +319,8 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
 # ------------------------------------------------------------------ cache and execution
 
 def cache_key(model: dict, mesh: dict) -> str:
+    """Hash of what the mesh depends on (geometry and mesh, with the values of
+    the parameters: a parameter used elsewhere does not invalidate it)."""
     geom = M.geometry_of(model, mesh)
     payload = {"version": SCRIPT_VERSION, "geometry": geom, "mesh": mesh}
     src = geom.get("source", {})
@@ -404,7 +406,7 @@ def mesh_folder(workdir: str | Path) -> Path:
 def cached_mesh(model: dict, mesh_name: str, workdir: str | Path,
                 up_to_date: bool = True) -> MeshResult | None:
     """The mesh already built in workdir, if any (only if up to date by default)."""
-    model = M.with_defaults(model)
+    model = P.resolved(M.with_defaults(model))
     mesh = M.by_name(model["meshes"], mesh_name)
     if mesh is None:
         return None
@@ -426,7 +428,7 @@ def prepare_mesh(model: dict, mesh_name: str, workdir: str | Path,
                  python: str | None = None, force: bool = False) -> MeshResult | MeshJob:
     """Return the cached mesh if it is up to date, otherwise write the meshing
     script and return the job to run."""
-    model = M.with_defaults(model)
+    model = P.resolved(M.with_defaults(model))
     mesh = M.by_name(model["meshes"], mesh_name)
     if mesh is None:
         raise ValueError(f"unknown mesh: {mesh_name!r}")

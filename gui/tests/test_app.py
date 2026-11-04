@@ -100,6 +100,7 @@ def button(win, ident):
 
 def test_tree_shows_the_model():
     win = window()
+    assert not (EXAMPLES / "plate_work").exists()       # opening creates nothing
     labels = [it.text(0) for it in win._iter_items()]
     assert any("Boundary conditions" in label for label in labels)
     assert any("xmin (built-in)" in label for label in labels)
@@ -168,6 +169,32 @@ def test_invalid_expressions_are_found_in_the_background():
     edit(win.props.editor(key), "1+X(1)")
     assert wait(lambda: win.errors == [] and win._gwfl_key == win._model_key(), 60)
     assert "background" not in win.props.editor(key).styleSheet()
+    close(win)
+
+
+def test_parameters_and_fields_in_the_window():
+    win = window("plate_hole_tension.json")
+    ball = ("geometries", 0, "source", "shape", "of", 1)
+    win.select(ball)
+    edit(win.props.editor(ball + ("radius",)), "a/2")
+    assert E.get_at(win.model, ball + ("radius",)) == "a/2" and win.errors == []
+    # a parameter making the geometry invalid: the error shows on the geometry
+    i = next(k for k, p in enumerate(win.model["parameters"]) if p["name"] == "a")
+    win.select(("parameters", i))
+    edit(win.props.editor(("parameters", i, "value")), "-0.01")
+    assert any(e.startswith("geometries[0].source.shape.of[1].radius") for e in win.errors)
+    win.undo()
+    assert win.errors == []
+    # a field with two values, then one removed with its button
+    win.select(("fields",))
+    button(win, "add_field").click()
+    path = win.current_path()
+    button(win, "add_field_value").click()
+    assert len(win.model["fields"][0]["values"]) == 2
+    from PySide6.QtWidgets import QToolButton
+    rm = win.props.findChild(QToolButton, "remove:" + ".".join(map(str, path + ("values", 1))))
+    rm.click()
+    assert len(win.model["fields"][0]["values"]) == 1 and win.errors == []
     close(win)
 
 

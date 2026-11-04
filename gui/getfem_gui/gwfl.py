@@ -59,6 +59,9 @@ def expressions(model: dict) -> list[dict]:
         elif isinstance(value, str) and value.strip():
             out.append({"where": where, "expr": value, "kind": kind, "on": on})
 
+    for i, f in enumerate(model.get("fields", [])):
+        for j, v in enumerate(f.get("values", [])):
+            add(f"fields[{i}].values[{j}].value", v.get("value"), SCALAR, M.DOMAIN)
     for i, mat in enumerate(model.get("materials", [])):
         for p, v in mat.get("properties", {}).items():
             add(f"materials[{i}].properties.{p}", v, SCALAR, M.DOMAIN)
@@ -104,7 +107,12 @@ def check_script(model: dict, items: list[dict], dim: int) -> str:
     w("mim = gf.MeshIm(m, 2 * degree)")
     w("md = gf.Model('real')")
     codegen.coordinates(w, dim)
-    w("# material properties: their names, with a representative value")
+    codegen.parameters(model, w)
+    w("# user fields and material properties: their names, with a representative value")
+    for f in model.get("fields", []):
+        nums = [v["value"] for v in f.get("values", []) if isinstance(v.get("value"), (int, float))]
+        w(f"{f['name']} = np.array([{float(nums[0]) if nums else 1.0!r}])")
+        w(f"md.add_initialized_data({f['name']!r}, {f['name']})")
     for p in props:
         w(f"{p} = np.array([{sample(p)!r}])")
         w(f"md.add_initialized_data({p!r}, {p})")

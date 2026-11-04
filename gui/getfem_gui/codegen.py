@@ -30,7 +30,7 @@ from __future__ import annotations
 import datetime as _dt
 from pathlib import Path
 
-from . import model as M
+from . import model as M, parameters as P
 
 
 class ScriptWriter:
@@ -71,11 +71,60 @@ def coordinates(w: ScriptWriter, dim: int) -> None:
             w(f"md.add_macro({c!r}, 'X({i})')")
 
 
+def parameters(model: dict, w: ScriptWriter) -> None:
+    """Global parameters as GetFEM data, usable in every expression."""
+    params = model.get("parameters", [])
+    if not params:
+        return
+    values, errors = P.values(model)
+    if errors:
+        raise ValueError("invalid parameters:\n  - " + "\n  - ".join(errors))
+    w("# Parameters")
+    for p in params:
+        name, expr = p["name"], p["value"]
+        notes = ([f"= {expr}"] if isinstance(expr, str) else []) + \
+            ([p["description"]] if p.get("description") else [])
+        comment = f"  # {', '.join(notes)}" if notes else ""
+        w(f"md.add_initialized_data({name!r}, [{values[name]!r}]){comment}")
+
+
 def _rg(name: str) -> str:
     return f"REGIONS[{name!r}]"
 
 
 # ---------------------------------------------------------------- materials
+
+def _piecewise_data(w: ScriptWriter) -> None:
+    """The discontinuous finite element method of the data defined per selection."""
+    w("mf_mat = gf.MeshFem(m, 1)")
+    w("mf_mat.set_classical_discontinuous_fem(degree)")
+    w("")
+    w("def on_region(rg):")
+    w("    return np.arange(mf_mat.nbdof()) if rg < 0 else mf_mat.basic_dof_on_region(rg)")
+
+
+def _piecewise(name: str, pieces: list[tuple[str, object, str]], what: str, w: ScriptWriter) -> None:
+    """Data `name` defined by (selection, value, comment) pieces; the last one wins."""
+    w("")
+    w(f"{name} = np.full(mf_mat.nbdof(), np.nan)")
+    for selection, value, comment in pieces:
+        dofs = f"on_region({_rg(selection)})"
+        if isinstance(value, (int, float)):
+            w(f"{name}[{dofs}] = {float(value)!r}  # {comment}")
+        else:
+            w(f"{name}[{dofs}] = md.interpolation({gwfl(value)!r}, mf_mat)[{dofs}]  # {comment}")
+    w(f"if np.isnan({name}).any():")
+    w(f"    raise RuntimeError(\"{what} '{name}' is undefined on part of the domain\")")
+    w(f"md.add_initialized_fem_data({name!r}, mf_mat, {name})")
+
+
+def _fields(model: dict, w: ScriptWriter) -> None:
+    """User fields: a value per selection, usable in all expressions (including
+    the material properties, which are defined after them)."""
+    for f in model.get("fields", []):
+        pieces = [(v["selection"], v["value"], v["selection"]) for v in f.get("values", [])]
+        _piecewise(f["name"], pieces, "field", w)
+
 
 def _materials(model: dict, w: ScriptWriter) -> None:
     """Each property becomes discontinuous finite element data, defined per selection.
@@ -85,26 +134,10 @@ def _materials(model: dict, w: ScriptWriter) -> None:
     """
     materials = model["materials"]
     props = sorted({p for mat in materials for p in mat["properties"]})
-    w("mf_mat = gf.MeshFem(m, 1)")
-    w("mf_mat.set_classical_discontinuous_fem(degree)")
-    w("")
-    w("def on_region(rg):")
-    w("    return np.arange(mf_mat.nbdof()) if rg < 0 else mf_mat.basic_dof_on_region(rg)")
     for prop in props:
-        w("")
-        w(f"{prop} = np.full(mf_mat.nbdof(), np.nan)")
-        for mat in materials:
-            if prop not in mat["properties"]:
-                continue
-            value = mat["properties"][prop]
-            dofs = f"on_region({_rg(mat['selection'])})"
-            if isinstance(value, (int, float)):
-                w(f"{prop}[{dofs}] = {float(value)!r}  # {mat['name']}")
-            else:
-                w(f"{prop}[{dofs}] = md.interpolation({gwfl(value)!r}, mf_mat)[{dofs}]  # {mat['name']}")
-        w(f"if np.isnan({prop}).any():")
-        w(f"    raise RuntimeError(\"property '{prop}' is undefined on part of the domain\")")
-        w(f"md.add_initialized_fem_data({prop!r}, mf_mat, {prop})")
+        pieces = [(mat["selection"], mat["properties"][prop], mat["name"])
+                  for mat in materials if prop in mat["properties"]]
+        _piecewise(prop, pieces, "property", w)
 
 
 # ---------------------------------------------------------------- physics
@@ -283,8 +316,11 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w("mim = gf.MeshIm(m, 2 * degree)")
     w("md = gf.Model('real')")
     coordinates(w, dim)
+    parameters(model, w)
 
-    w.section("Materials")
+    w.section("Data defined per selection: user fields, then material properties")
+    _piecewise_data(w)
+    _fields(model, w)
     _materials(model, w)
 
     w.section(f"Physics: {ptype}")
@@ -318,6 +354,8 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
             w(f"quantities[{q['name']!r}] = float(gf.asm('generic', mim, 0, {str(q['expr'])!r}, "
               f"{_rg(q['selection'])}, md))")
         w("results['quantities'] = quantities")
+    for f in model.get("fields", []):
+        w(f"fields += [mf_mat, {f['name']}, {f['name']!r}]  # user field")
     if out.get("vtu"):
         w(f"mf.export_to_vtu({out['vtu']!r}, *fields)")
         w(f"results['vtu'] = {out['vtu']!r}")

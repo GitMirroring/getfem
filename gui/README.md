@@ -111,6 +111,7 @@ widget itself needs a real display.
 | `getfem_gui/cli.py` | command line interface |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
+| `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
 | `getfem_gui/app/viewer.py`, `scene.py` | 3D view (pyvistaqt) and the PyVista scenes |
@@ -118,6 +119,7 @@ widget itself needs a real display.
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
 | `tests/test_elasticity.py` | 11 linear elasticity cases |
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
+| `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
@@ -203,6 +205,35 @@ three functions in `codegen.py` (declaration of the unknown and of the
 macros, GWFL terms, post-processing) and register them in `PHYSICS`; the
 first one is also used to check the user expressions.
 
+## Parameters, fields, coordinates
+
+```json
+"parameters": [{"name": "L", "value": 0.1, "description": "half length of the plate"},
+               {"name": "a", "value": "L/10", "description": "radius of the hole"}],
+"fields": [{"name": "porosity",
+            "values": [{"selection": "all", "value": "0.1*(1 + x)"},
+                       {"selection": "inclusion", "value": 0.3}]}]
+```
+
+- **Parameters** are named constants, evaluated in order (a parameter may use
+  the ones listed before it). Every numerical field of the geometries and
+  meshes accepts an expression of them (`"L/2"`, `"2*n"` for divisions); they
+  are evaluated before meshing, so that changing a parameter remeshes only
+  when the geometry or the mesh actually changes. In the physics, they are
+  GetFEM data, usable in any expression. Their syntax is the part common to
+  Python and GWFL: numbers, `+ - * /`, parentheses, `pi`, `sqr`, `sqrt`,
+  `pow`, `exp`, `log`, trigonometric and hyperbolic functions, `abs`, `min`,
+  `max`; it is evaluated without `eval`.
+- **Fields** have a value per domain selection (the last one listed wins),
+  like material properties; they may use the coordinates, the parameters and
+  the fields defined before them, are usable in every expression, including
+  material properties, and are exported with the results.
+- **Coordinates** are `x`, `y`, `z` in every expression (up to the dimension of
+  the mesh; `X(1)`... also works). These names, the GWFL functions and the
+  names of the physics are reserved.
+
+`examples/plate_hole_tension.json` is written with parameters.
+
 ## Checking the GWFL expressions
 
 `model.validate` checks the structure of a model without GetFEM. The
@@ -225,13 +256,6 @@ each change and shows the errors on the fields, in the tree and in the
 
 ## Open topics
 
-- Global parameters (as in Comsol): named constants, possibly defined from
-  each other, usable everywhere: geometry dimensions and mesh sizes (hence
-  evaluated numerically, with a restricted expression syntax common to Python
-  and GWFL) as well as physics values (passed to GetFEM as data).
-- User-defined fields: named GWFL expressions (of X, parameters, material
-  properties) with a value per selection, like material properties today,
-  usable in all expressions and available as outputs.
 - Local Gmsh refinement per selection, CAD face names.
 - Several physics on different meshes in the same model (GetFEM allows it)
   and convergence studies over several meshes.

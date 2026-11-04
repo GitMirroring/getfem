@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from . import model as M
+from . import model as M, parameters as P
 
 Path = tuple
 
@@ -68,7 +68,11 @@ class Field:
     size: int | None = None       # number of components (vector, numbers, ints)
     op: str | None = None         # special operation instead of a plain assignment
     help: str = ""
-    removable: bool = False       # e.g. an additional material property
+    remove: Path | None = None    # what a "remove" button next to the field deletes
+
+    @property
+    def removable(self) -> bool:
+        return self.remove is not None
 
 
 # ------------------------------------------------------------------ access
@@ -162,11 +166,16 @@ def parse_value(text: str):
 
 
 def parse_number(text: str, integer: bool = False):
+    """A number, or an expression of the parameters (kept as text, evaluated
+    when meshing; validation reports the errors)."""
     text = text.strip()
     try:
         return int(text) if integer else float(text)
     except ValueError:
-        raise ValueError(f"{'integer' if integer else 'number'} expected, got {text!r}") from None
+        pass
+    if not text:
+        raise ValueError(f"{'integer' if integer else 'number'} expected")
+    return text
 
 
 def split_vector(v, size: int) -> list | None:
@@ -217,6 +226,17 @@ def _bc_label(bc: dict) -> str:
 def tree(model: dict, result_fields=(), has_results: bool = False) -> Node:
     root = Node((), model.get("name", "Model"), "model")
 
+    params = Node(("parameters",), "Parameters", "parameters")
+    vals, _ = P.values(model)
+    for i, p in enumerate(model.get("parameters", [])):
+        name = p.get("name", "?")
+        v = p.get("value")
+        label = f"{name} = {format_value(v)}"
+        if isinstance(v, str) and name in vals:
+            label += f"  ({format_number(vals[name])})"
+        params.children.append(Node(("parameters", i), label, "parameter"))
+    root.children.append(params)
+
     geoms = Node(("geometries",), "Geometries", "geometries")
     for i, g in enumerate(model.get("geometries", [])):
         src = g.get("source", {})
@@ -242,6 +262,11 @@ def tree(model: dict, result_fields=(), has_results: bool = False) -> Node:
     root.children.append(meshes)
 
     root.children.append(Node(("discretization",), "Discretization", "discretization"))
+
+    fields_node = Node(("fields",), "Fields", "fields")
+    for i, f in enumerate(model.get("fields", [])):
+        fields_node.children.append(Node(("fields", i), f.get("name", "?"), "field"))
+    root.children.append(fields_node)
 
     mats = Node(("materials",), "Materials", "materials")
     for i, mat in enumerate(model.get("materials", [])):
@@ -426,6 +451,32 @@ def fields(model: dict, path: Path) -> list[Field]:
                           ((M.BOUNDARY, "boundary"), (M.DOMAIN, "domain")), op="selection_kind")
                     ] + _criteria_fields(model, gi, name, dim)
 
+    if path == ("parameters",):
+        return [Field(path, "", "info", help="Named constants, usable in every numerical field "
+                      "(\"L/2\") and expression. A parameter may use the ones listed before it.")]
+    if path[0] == "parameters" and n == 2:
+        vals, _ = P.values(model)
+        name = get_at(model, path + ("name",))
+        out = [Field(path + ("name",), "Name", "ident", op="rename_parameter"),
+               Field(path + ("value",), "Value", "value",
+                     help="number or expression: + - * /, pi, " + ", ".join(sorted(P.FUNCTIONS))),
+               Field(path + ("description",), "Description", "text")]
+        if isinstance(get_at(model, path + ("value",)), str) and name in vals:
+            out.append(Field(path, "", "info", help=f"= {format_number(vals[name])}"))
+        return out
+    if path == ("fields",):
+        return [Field(path, "", "info", help="Fields defined by a value per domain selection (the "
+                      "last one wins), usable in every expression, including material properties.")]
+    if path[0] == "fields" and n == 2:
+        out = [Field(path + ("name",), "Name", "ident", op="rename_field"),
+               Field(path + ("description",), "Description", "text")]
+        domains = tuple((s, s) for s in selections_of_kind(model, M.DOMAIN))
+        for j, _ in enumerate(get_at(model, path + ("values",), [])):
+            out += [Field(path + ("values", j, "selection"), f"Domain {j + 1}", "choice", domains),
+                    Field(path + ("values", j, "value"), f"Value {j + 1}", "value",
+                          remove=path + ("values", j))]
+        return out
+
     if path == ("geometries",):
         return [Field(path, "", "info", help="Geometries and their named selections.")]
     if path == ("meshes",):
@@ -474,7 +525,8 @@ def fields(model: dict, path: Path) -> list[Field]:
             out.append(Field(path + ("properties", p), f"{p} ({label})", "value"))
         for p in props:
             if p not in spec.get("properties", {}):
-                out.append(Field(path + ("properties", p), p, "value", removable=True))
+                out.append(Field(path + ("properties", p), p, "value",
+                                 remove=path + ("properties", p)))
         return out
 
     if path == ("physics",):
@@ -582,6 +634,36 @@ def _default_bc(btype: str, spec: dict, selection: str, dim: int) -> dict:
     return bc
 
 
+_WORD = r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])"
+
+
+def rename_identifier(model: dict, old: str, new: str) -> None:
+    """Rename a parameter or a field, and its uses in every expression (whole
+    words only: Grad_L is not a use of L)."""
+    pattern = re.compile(_WORD.format(re.escape(old)))
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "name" and v == old and obj in named:
+                    obj[k] = new
+                elif isinstance(v, str) and k not in ("name", "selection", "geometry", "mesh",
+                                                       "type", "file", "description", "vtu",
+                                                       "kind", "element", "mesher"):
+                    obj[k] = pattern.sub(new, v)
+                elif k != "of" or not all(isinstance(x, str) for x in v):  # union: names
+                    walk(v)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                if isinstance(v, str):
+                    obj[i] = pattern.sub(new, v)
+                else:
+                    walk(v)
+    named = [p for p in model.get("parameters", []) if p.get("name") == old] + \
+        [f for f in model.get("fields", []) if f.get("name") == old]
+    walk({k: v for k, v in model.items() if not k.startswith("_")})
+
+
 def _rename_selection(model, gi, old, new) -> None:
     geom = model["geometries"][gi]
     geom["selections"] = {(new if k == old else k): v for k, v in geom.get("selections", {}).items()}
@@ -612,6 +694,10 @@ def apply(model: dict, f: Field, value) -> Path | None:
         for mesh in model.get("meshes", []):
             if mesh.get("geometry") == old:
                 mesh["geometry"] = value
+    elif f.op in ("rename_parameter", "rename_field"):
+        old = get_at(model, key)
+        if value != old:
+            rename_identifier(model, old, value)
     elif f.op == "rename_mesh":
         old = get_at(model, key)
         set_at(model, key, value)
@@ -743,7 +829,15 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     """Possible operations on a node: [(identifier, label)]."""
     n = len(path)
     out: list[tuple[str, str]] = []
-    if path == ("geometries",):
+    if path == ("parameters",):
+        out.append(("add_parameter", "Add a parameter"))
+    elif path[:1] == ("parameters",) and n == 2:
+        out.append(("remove", "Remove"))
+    elif path == ("fields",):
+        out.append(("add_field", "Add a field"))
+    elif path[:1] == ("fields",) and n == 2:
+        out += [("add_field_value", "Add a value on a domain"), ("remove", "Remove")]
+    elif path == ("geometries",):
         out.append(("add_geometry", "Add a geometry"))
     elif path[:1] == ("geometries",) and n == 2:
         out += [("add_selection", "Add a selection"), ("add_mesh", "Add a mesh of this geometry")]
@@ -803,6 +897,20 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         else:
             del parent[path[-1]]
         return path[:-2] if path[-2] == "of" else path[:-1]
+    if action == "add_parameter":
+        params = model.setdefault("parameters", [])
+        taken = {p.get("name") for p in params} | {f.get("name") for f in model.get("fields", [])}
+        params.append({"name": unique_name(name or "p", taken), "value": 1.0, "description": ""})
+        return ("parameters", len(params) - 1)
+    if action == "add_field":
+        fields_ = model.setdefault("fields", [])
+        taken = {p.get("name") for p in model.get("parameters", [])} | {f.get("name") for f in fields_}
+        fields_.append({"name": unique_name(name or "f", taken), "description": "",
+                        "values": [{"selection": M.ALL, "value": 0.0}]})
+        return ("fields", len(fields_) - 1)
+    if action == "add_field_value":
+        model["fields"][path[1]].setdefault("values", []).append({"selection": M.ALL, "value": 0.0})
+        return path
     if action == "add_geometry":
         geoms = model.setdefault("geometries", [])
         gname = unique_name(name or "geometry", [g.get("name") for g in geoms])
@@ -868,6 +976,15 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
                    "expr": "1", "selection": M.ALL})
         return ("outputs", "quantities", len(qs) - 1)
     raise ValueError(f"unknown action {action!r}")
+
+
+def remove_at(model: dict, path: Path) -> None:
+    """Delete the item at path (dictionary key or list element)."""
+    parent = get_at(model, path[:-1])
+    if isinstance(parent, list):
+        del parent[path[-1]]
+    else:
+        parent.pop(path[-1], None)
 
 
 def needs_name(action: str) -> bool:

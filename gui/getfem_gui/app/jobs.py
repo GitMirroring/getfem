@@ -174,7 +174,7 @@ class GwflChecker(QObject):
     def running(self) -> bool:
         return self._proc is not None
 
-    def check(self, model: dict, key, folder: str | Path) -> None:
+    def check(self, model: dict, key, folder: str | Path | None = None) -> None:
         self.cancel()
         try:
             job = gwfl.prepare(model, self.python, folder)

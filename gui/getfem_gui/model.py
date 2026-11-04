@@ -111,6 +111,20 @@ forms from it):
                            traction {value: vector}, pressure {value} (on the outward normal)
                       GWFL macros: eps, sigma, von_mises, mu_L, lambda_L
 
+Parameters and fields
+---------------------
+"parameters": [{"name": "L", "value": 0.1, "description": "..."},
+               {"name": "a", "value": "L/10"}]
+    Named constants, evaluated in order (see parameters.py). The numerical
+    fields of geometries and meshes may be expressions of them ("L/2"), and
+    they are GetFEM data in the GWFL expressions of the physics.
+"fields": [{"name": "porosity", "description": "...",
+            "values": [{"selection": "all", "value": "0.1*(1+x)"},
+                       {"selection": "inclusion", "value": 0.3}]}]
+    User fields, defined per domain selection like material properties (the
+    last value listed wins), usable in every expression, including the
+    material properties, and exported with the results.
+
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
 Vector values are a list
@@ -125,6 +139,8 @@ import copy
 import json
 import re
 from pathlib import Path
+
+from . import parameters as P
 
 FORMAT_VERSION = 2
 
@@ -250,8 +266,8 @@ def load(path: str | Path) -> dict:
     return model
 
 
-_TOP_ORDER = ("format_version", "name", "geometries", "meshes", "discretization",
-              "materials", "physics", "study", "outputs")
+_TOP_ORDER = ("format_version", "name", "parameters", "geometries", "meshes", "discretization",
+              "fields", "materials", "physics", "study", "outputs")
 
 
 def save(model: dict, path: str | Path) -> None:
@@ -329,7 +345,7 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
     src = geom.get("source", {})
     if src.get("type") == "box":
         dim = len(src.get("size", []))
-        origin, size = src.get("origin", []), src.get("size", [])
+        origin, size = _numbers(model, src.get("origin", [])), _numbers(model, src.get("size", []))
         for i, name in enumerate(box_boundary_names(dim)):
             axis, sign = divmod(i, 2)
             normal = [0.0] * dim
@@ -348,6 +364,21 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
     for name, sel in geom.get("selections", {}).items():
         table[name] = {"kind": sel.get("kind"), "builtin": False, "criteria": sel.get("criteria", {})}
     return table
+
+
+def _numbers(model: dict, values: list) -> list:
+    """Numbers of a list that may hold expressions of parameters (0 if invalid:
+    validation reports it)."""
+    if all(isinstance(v, (int, float)) for v in values):
+        return list(values)
+    vals, _ = P.values(model)
+    out = []
+    for v in values:
+        try:
+            out.append(P.evaluate(v, vals))
+        except P.ParameterError:
+            out.append(0.0)
+    return out
 
 
 # ------------------------------------------------------------------ validation
@@ -524,11 +555,45 @@ def _validate_mesh(model, mesh, where, errors):
         errors.append(f"{where}.order: 1, 2 or 3 expected")
 
 
+def _validate_parameters(model: dict, errors: list[str]) -> None:
+    spec = PHYSICS_SPECS.get(model.get("physics", {}).get("type"), {})
+    taken = set(P.GWFL_NAMES) | set(COORDINATES) | set(spec.get("macros", ()))
+    var = model.get("physics", {}).get("variable", spec.get("variable"))
+    seen: set[str] = set()
+    for i, p in enumerate(model.get("parameters", [])):
+        name = p.get("name") if isinstance(p, dict) else None
+        where = f"parameters[{i}].name"
+        if not isinstance(name, str) or not _IDENT.match(name):
+            errors.append(f"{where}: identifier expected, got {name!r}")
+        elif name in seen:
+            errors.append(f"{where}: name {name!r} used more than once")
+        elif name in COORDINATES:
+            errors.append(f"{where}: {name!r} is reserved for the coordinates")
+        elif name in taken:
+            errors.append(f"{where}: {name!r} is a reserved name (GWFL or physics)")
+        elif name == var:
+            errors.append(f"{where}: {name!r} is the name of the unknown")
+        else:
+            seen.add(name)
+
+
+def parameter_names(model: dict) -> set[str]:
+    return {p.get("name") for p in model.get("parameters", []) if isinstance(p, dict)}
+
+
 def validate(model: dict) -> list[str]:
     """Return the list of errors (empty if the model is valid)."""
     errors: list[str] = []
     if model.get("format_version") != FORMAT_VERSION:
         errors.append(f"format_version: {FORMAT_VERSION} expected, got {model.get('format_version')!r}")
+
+    # --- Parameters; the numerical fields of geometries and meshes may be
+    # expressions of them: the rest of the validation works on their values.
+    _validate_parameters(model, errors)
+    resolved, perrors = P.resolve(model)
+    if perrors:
+        return errors + perrors
+    model = resolved
 
     # --- Geometries and meshes
     for key in ("geometries", "meshes"):
@@ -584,6 +649,31 @@ def validate(model: dict) -> list[str]:
         errors.append(f"physics.variable: {var!r} is a reserved name for this physics")
     reserved = set(spec["macros"]) | {str(var)}
 
+    # --- User fields (defined before the materials, which may use them)
+    field_names: set[str] = set()
+    params = parameter_names(model)
+    for i, f in enumerate(model.get("fields", [])):
+        where = f"fields[{i}]"
+        name = f.get("name")
+        if not isinstance(name, str) or not _IDENT.match(name):
+            errors.append(f"{where}.name: identifier expected, got {name!r}")
+        elif name in field_names:
+            errors.append(f"{where}.name: name {name!r} used more than once")
+        elif name in COORDINATES:
+            errors.append(f"{where}.name: {name!r} is reserved for the coordinates")
+        elif name in reserved or name in P.GWFL_NAMES:
+            errors.append(f"{where}.name: {name!r} is a reserved name (GWFL or physics)")
+        elif name in params:
+            errors.append(f"{where}.name: {name!r} is already a parameter")
+        else:
+            field_names.add(name)
+        values = f.get("values", [])
+        if not values:
+            errors.append(f"{where}.values: at least one value (on a domain selection) is required")
+        for j, v in enumerate(values):
+            check_sel(v.get("selection", ALL), DOMAIN, f"{where}.values[{j}].selection")
+            _check_value(v.get("value"), f"{where}.values[{j}].value", errors)
+
     # --- Materials
     materials = model.get("materials", [])
     if not materials:
@@ -607,6 +697,10 @@ def validate(model: dict) -> list[str]:
                 errors.append(f"{where}.properties: invalid name {prop!r}")
             elif prop in COORDINATES:
                 errors.append(f"{where}.properties: {prop!r} is reserved for the coordinates")
+            elif prop in parameter_names(model):
+                errors.append(f"{where}.properties: {prop!r} is already a parameter")
+            elif prop in field_names:
+                errors.append(f"{where}.properties: {prop!r} is already a field")
             elif prop in reserved:
                 errors.append(f"{where}.properties: {prop!r} is a reserved name for this physics")
             _check_value(v, f"{where}.properties.{prop}", errors)
@@ -677,6 +771,9 @@ def with_defaults(model: dict) -> dict:
     phys.setdefault("boundary_conditions", [])
     for mat in m.get("materials", []):
         mat.setdefault("selection", ALL)
+    for f in m.get("fields", []):
+        for v in f.get("values", []):
+            v.setdefault("selection", ALL)
     for src in phys["sources"]:
         src.setdefault("selection", ALL)
     out = m.setdefault("outputs", {})

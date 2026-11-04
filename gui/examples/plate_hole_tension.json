@@ -1,6 +1,33 @@
 {
   "format_version": 2,
   "name": "Plate with a hole in tension (quarter, symmetry)",
+  "parameters": [
+    {
+      "name": "L",
+      "value": 0.1,
+      "description": "half length of the plate"
+    },
+    {
+      "name": "H",
+      "value": 0.05,
+      "description": "half height of the plate"
+    },
+    {
+      "name": "a",
+      "value": 0.01,
+      "description": "radius of the hole"
+    },
+    {
+      "name": "h",
+      "value": 0.004,
+      "description": "element size (coarse mesh)"
+    },
+    {
+      "name": "S",
+      "value": 100000000.0,
+      "description": "applied stress"
+    }
+  ],
   "geometries": [
     {
       "name": "quarter_plate",
@@ -17,8 +44,8 @@
                 0.0
               ],
               "max": [
-                0.1,
-                0.05
+                "L",
+                "H"
               ]
             },
             {
@@ -27,7 +54,7 @@
                 0.0,
                 0.0
               ],
-              "radius": 0.01
+              "radius": "a"
             }
           ]
         }
@@ -66,7 +93,7 @@
           "criteria": {
             "type": "plane",
             "point": [
-              0.1,
+              "L",
               0.0
             ],
             "normal": [
@@ -83,14 +110,14 @@
       "name": "coarse",
       "geometry": "quarter_plate",
       "mesher": "getfem",
-      "h": 0.004,
+      "h": "h",
       "order": 2
     },
     {
       "name": "fine",
       "geometry": "quarter_plate",
       "mesher": "gmsh",
-      "size": 0.001,
+      "size": "h/4",
       "order": 2
     }
   ],
@@ -126,7 +153,7 @@
         "type": "traction",
         "selection": "loaded_edge",
         "value": [
-          100000000.0,
+          "S",
           0.0
         ]
       }
