@@ -1072,7 +1072,8 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
     """Add or remove an edge (side reference) in the support of the item at
     path. Its selection is edited in place when it is an 'edges' selection
     used by this item only; otherwise a new selection is created, starting
-    from the current support, named after the item. Returns (selection name,
+    from the current support (empty if it is the whole boundary), named
+    after the item. Returns (selection name,
     created)."""
     from . import geometry2d as G
     item = get_at(model, path)
@@ -1089,7 +1090,9 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
         return name, False
     shape = G.shape_of(rgeom["source"])
     start: list[dict] = []
-    for p in G.pieces_matching(shape, name, table) or []:
+    # from the whole boundary (the default of a new condition), a click means
+    # "this edge", not "everything but this edge"
+    for p in (G.pieces_matching(shape, name, table) or []) if name != M.BOUNDARY else []:
         if p.side.ref not in start:
             start.append(p.side.ref)
     criteria = G.toggle_edge({"type": "edges", "edges": start}, ref)

@@ -41,7 +41,7 @@ from pathlib import Path
 from . import geometry2d as G, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 6
+SCRIPT_VERSION = 7
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -93,6 +93,11 @@ def _gf_shape(shape, w) -> str:
     elif t == "cylinder":
         w(f"{v} = gf.MesherObject('cylinder', {_floats(shape['origin'])}, {_floats(shape['axis'])}, "
           f"{float(shape['length'])!r}, {float(shape['radius'])!r})")
+    elif t == "difference" and len(parts) > 2:
+        # a minus b minus c...: a minus the union of the others (some versions of
+        # GetFEM only use the first two objects of 'set minus')
+        w(f"{v} = gf.MesherObject('set minus', {parts[0]}, "
+          f"gf.MesherObject('union', {', '.join(parts[1:])}))")
     else:
         w(f"{v} = gf.MesherObject({GF_SHAPES[t]!r}, {', '.join(parts)})")
     return v
@@ -138,7 +143,13 @@ def _occ_shape(shape, dim, w) -> str:
         d = [x / n * L for x in a]
         w(f"{v} = [(3, {occ}.addCylinder({o[0]!r}, {o[1]!r}, {o[2]!r}, "
           f"{d[0]!r}, {d[1]!r}, {d[2]!r}, {float(shape['radius'])!r}))]")
-    else:
+    elif t == "intersection":
+        # OpenCASCADE intersects the object with the union of the tools:
+        # intersect the shapes two by two
+        w(f"{v} = {parts[0]}")
+        for q in parts[1:]:
+            w(f"{v}, _ = {occ}.intersect({v}, {q})")
+    else:          # fuse(a, b + c), cut(a, b + c): a with or without b and c
         w(f"{v}, _ = {occ}.{OCC_BOOLEANS[t]}({parts[0]}, {' + '.join(parts[1:])})")
     return v
 

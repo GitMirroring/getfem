@@ -232,6 +232,30 @@ def test_handles_numbers_parameters_and_locked_values():
     assert E.get_at(m, b + ("center",)) == [0.25, 0.15]
 
 
+def test_a_hole_drawn_in_a_difference_is_meshed():
+    """Subtracting a disk from a geometry that is already a difference gives
+    a third operand: all of them must reach the mesher (and a condition on
+    the new hole, picked from a new condition, must select its faces)."""
+    from getfem_gui import runner
+    m = load("plate_hole_tension.json")
+    with tempfile.TemporaryDirectory() as tmp:
+        before = mesher.ensure_mesh(m, "coarse", tmp).info["nb_elements"]
+        E.add_shape_2d(m, 0, ball(0.06, 0.025, 0.01), "difference")
+        assert len(m["geometries"][0]["source"]["shape"]["of"]) == 3
+        E.do_action(m, ("physics",), "add_bc")
+        bc = ("physics", "boundary_conditions", len(m["physics"]["boundary_conditions"]) - 1)
+        E.apply(m, E.Field(bc + ("type",), "", "choice", op="bc_type"), "fixed")
+        assert E.get_at(m, bc + ("selection",)) == "boundary"      # the default
+        name, _ = E.pick_edge_for_item(m, bc, {"shape": [2], "side": "circle"})
+        assert m["geometries"][0]["selections"][name]["criteria"]["edges"] == [
+            {"shape": [2], "side": "circle"}]                         # this edge only
+        res = runner.run(m, tmp)
+        assert res.ok, res.error
+        n = res.mesh.info
+        assert n["nb_elements"] < before                             # the hole is there
+        assert 0 < n["sizes"][name] < n["sizes"]["loaded_edge"] * 3   # its circle only
+
+
 def test_picking_from_a_condition_edits_its_support():
     m = load("plate_hole_tension.json")
     bc = ("physics", "boundary_conditions", 2)
