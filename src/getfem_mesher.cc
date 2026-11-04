@@ -1202,8 +1202,11 @@ namespace getfem {
         size_type iB = edges_mesh.ind_points_of_convex(ie)[1];
         base_node bar = pts[iB]-pts[iA];
         scalar_type F = std::max(L0[ie]-L[ie], 0.);
-        
-        if (F) {
+
+        // Two points at the same place (L = 0): no direction to push them
+        // apart (bar*(F/L) would be 0*inf = NaN, and NaN coordinates break
+        // the whole mesh); they are merged by the next cleanup of the points.
+        if (F && L[ie] > 0) {
           base_node Fbar = (bar)*(F/L[ie]);
           
           if (!pts_attr[iA]->fixed) // pts[iA] -= deltat*Fbar; 
