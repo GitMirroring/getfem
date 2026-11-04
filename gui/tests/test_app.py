@@ -98,6 +98,21 @@ def button(win, ident):
 
 # ------------------------------------------------------------------ tests
 
+def test_missing_pyside_message():
+    """Without PySide6, the message names the interpreter and the real error."""
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        fake = Path(tmp) / "PySide6"
+        fake.mkdir()
+        (fake / "__init__.py").write_text("raise ImportError('broken for the test')\n")
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([tmp, str(EXAMPLES.parent),
+                                                           os.environ.get("PYTHONPATH", "")]))
+        proc = subprocess.run([sys.executable, "-m", "getfem_gui", "gui", "--no-splash"],
+                              capture_output=True, text=True, env=env, cwd=tmp)
+    assert proc.returncode == 1
+    assert "broken for the test" in proc.stderr and sys.executable in proc.stderr
+
+
 def test_tree_shows_the_model():
     win = window()
     assert not (EXAMPLES / "plate_work").exists()       # opening creates nothing

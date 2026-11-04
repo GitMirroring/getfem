@@ -30,8 +30,13 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
     try:
         from PySide6.QtCore import QElapsedTimer, QTimer
         from PySide6.QtWidgets import QApplication
-    except ImportError:
-        print("error: the graphical interface requires PySide6 (pip install pyside6 pyvistaqt)",
+    except ImportError as exc:
+        # say which interpreter, and why: PySide6 may be installed for another
+        # Python, or installed but not loadable (architecture, Python version)
+        print(f"error: the graphical interface requires PySide6, which cannot be imported by\n"
+              f"    {sys.executable} (Python {sys.version.split()[0]})\n"
+              f"    {type(exc).__name__}: {exc}\n"
+              f"Install it for this interpreter: {sys.executable} -m pip install pyside6 pyvista pyvistaqt",
               file=sys.stderr)
         return 1
     from .viewer import prepare_opengl
