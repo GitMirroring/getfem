@@ -19,6 +19,7 @@
 ===========================================================================*/
 // $Id$
 #include <map>
+#include <set>
 #include <getfemint_misc.h>
 #include <getfem/getfem_export.h>
 #include <getfem/getfem_mesh.h>
@@ -85,12 +86,10 @@ transform_edge_list(const getfem::mesh &m, unsigned N, const bgeot::edge_list &e
   }
 }
 
-typedef dal::dynamic_tree_sorted<convex_face> mesh_faces_list;
-
 static void
 faces_from_pid(const getfem::mesh &m, mexargs_in &in, mexargs_out &out)
 {
-  mesh_faces_list lst;
+  std::vector<convex_face> lst;
   dal::bit_vector convex_tested, pts = in.pop().to_bit_vector(&m.points().index());
 
   for (dal::bv_visitor ip(pts); !ip.finished(); ++ip) {
@@ -112,7 +111,7 @@ faces_from_pid(const getfem::mesh &m, mexargs_in &in, mexargs_out &out)
               ok = false; break;
             }
           }
-          if (ok) lst.add(convex_face(ic,f));
+          if (ok) lst.push_back(convex_face(ic,f));
         }
       }
     }
@@ -127,7 +126,7 @@ faces_from_pid(const getfem::mesh &m, mexargs_in &in, mexargs_out &out)
 
 struct mesh_faces_by_pts_list_elt  {
   std::vector<size_type> ptid; // point numbers of faces
-  int cnt; // number of convexes sharing that face
+  mutable int cnt; // number of convexes sharing that face (not in the key)
   size_type cv;
   short_type f;
   inline bool operator < (const mesh_faces_by_pts_list_elt &e) const
@@ -147,16 +146,16 @@ struct mesh_faces_by_pts_list_elt  {
 //     cerr << "]\n";
     ptid = p;
   }
-  mesh_faces_by_pts_list_elt() {}
 };
-typedef dal::dynamic_tree_sorted<mesh_faces_by_pts_list_elt> mesh_faces_by_pts_list;
 
 
 static void
 outer_faces(const getfem::mesh &m, mexargs_in &in, mexargs_out &out,
             const std::string &condition="")
 {
-  mesh_faces_by_pts_list lst;
+  std::set<mesh_faces_by_pts_list_elt> faces; // unique faces
+  // faces in their order of first appearance
+  std::vector<const mesh_faces_by_pts_list_elt *> lst;
   dal::bit_vector cvlst, checked_pids, rejected_pids;
 
   bool with_normal(condition == "direction");
@@ -201,8 +200,9 @@ outer_faces(const getfem::mesh &m, mexargs_in &in, mexargs_out &out,
         bgeot::mesh_structure::ind_pt_face_ct pt
           = m.ind_points_of_face_of_convex(ic, f);
         std::vector<size_type> p(pt.begin(), pt.end());
-        size_type idx = lst.add_norepeat(mesh_faces_by_pts_list_elt(ic,f,p));
-        lst[idx].cnt++;
+        auto res = faces.insert(mesh_faces_by_pts_list_elt(ic,f,p));
+        if (res.second) lst.push_back(&(*res.first));
+        res.first->cnt++;
       }
     }
 //     else { // DEPRECATED
@@ -215,15 +215,15 @@ outer_faces(const getfem::mesh &m, mexargs_in &in, mexargs_out &out,
   }
   size_type fcnt = 0;
   for (size_type i = 0; i < lst.size(); i++) {
-    if (lst[i].cnt == 1) {
+    if (lst[i]->cnt == 1) {
       if (with_normal) {
-        un = m.mean_normal_of_face_of_convex(lst[i].cv, lst[i].f);
+        un = m.mean_normal_of_face_of_convex(lst[i]->cv, lst[i]->f);
         if (gmm::vect_sp(normal_vector, un) < threshold - 1E-8) {
-          lst[i].cnt = -1;
+          lst[i]->cnt = -1;
         }
       } else if (with_box) {
-        for (std::vector<size_type>::const_iterator pid=lst[i].ptid.begin();
-             pid != lst[i].ptid.end(); ++pid) {
+        for (std::vector<size_type>::const_iterator pid=lst[i]->ptid.begin();
+             pid != lst[i]->ptid.end(); ++pid) {
           if (!checked_pids.is_in(*pid)) {
             checked_pids.add(*pid);
             for (size_type k=0; k < m.dim(); ++k)
@@ -234,13 +234,13 @@ outer_faces(const getfem::mesh &m, mexargs_in &in, mexargs_out &out,
               }
           }
           if (rejected_pids.is_in(*pid)) {
-            lst[i].cnt = -1;
+            lst[i]->cnt = -1;
             break;
           }
         }
       } else if (with_ball) {
-        for (std::vector<size_type>::const_iterator pid=lst[i].ptid.begin();
-             pid != lst[i].ptid.end(); ++pid) {
+        for (std::vector<size_type>::const_iterator pid=lst[i]->ptid.begin();
+             pid != lst[i]->ptid.end(); ++pid) {
           if (!checked_pids.is_in(*pid)) {
             checked_pids.add(*pid);
             scalar_type checked_radius = scalar_type(0.0);
@@ -255,12 +255,12 @@ outer_faces(const getfem::mesh &m, mexargs_in &in, mexargs_out &out,
               }
           }
           if (rejected_pids.is_in(*pid)) {
-            lst[i].cnt = -1;
+            lst[i]->cnt = -1;
             break;
           }
         }
       }
-      if (lst[i].cnt == 1) fcnt++;
+      if (lst[i]->cnt == 1) fcnt++;
     }
 
   }
@@ -268,9 +268,9 @@ outer_faces(const getfem::mesh &m, mexargs_in &in, mexargs_out &out,
   iarray w = out.pop().create_iarray(2,unsigned(fcnt));
   fcnt = 0;
   for (size_type j=0; j < lst.size(); j++) {
-    if (lst[j].cnt == 1) {
-      w(0,fcnt) = int(lst[j].cv+config::base_index());
-      w(1,fcnt) = int(short_type(lst[j].f+config::base_index()));
+    if (lst[j]->cnt == 1) {
+      w(0,fcnt) = int(lst[j]->cv+config::base_index());
+      w(1,fcnt) = int(short_type(lst[j]->f+config::base_index()));
       fcnt++;
     }
   }
