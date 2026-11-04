@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QInputDia
                                QPlainTextEdit, QProgressBar, QSplitter, QStyle, QTabWidget,
                                QTreeWidget, QTreeWidgetItem)
 
-from .. import editing as E, mesher, model as M
+from .. import editing as E, geometry2d as G, mesher, model as M, parameters as P
 from .jobs import GwflChecker, JobRunner
 from .properties import PropertiesPanel
 from .viewer import Viewer
@@ -97,6 +97,7 @@ class MainWindow(QMainWindow):
         self.props.removeProperty.connect(self._remove_property)
         self.props.viewChanged.connect(self._result_view_changed)
         self.viewer = Viewer()
+        self.viewer.edgeClicked.connect(self._edge_clicked)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.tree)
         split.addWidget(self.props)
@@ -520,9 +521,88 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 (unreadable or unexpected file)
             self.viewer.show_message(f"Cannot display {name}: {exc}")
 
+    def _preview(self, path):
+        """What the exact 2D preview shows for a node, or None when it does not
+        apply (mesh and result nodes, 3D or imported geometries):
+        (title, shape, pieces, highlighted pieces, domain highlighted, pickable)."""
+        if path[:1] in (("meshes",), (E.RESULTS,)):
+            return None
+        model = P.resolved(self.model)
+        geoms = model.get("geometries", [])
+        if path[:1] == ("geometries",) and len(path) >= 2:
+            gi = path[1]
+        else:
+            mesh = M.physics_mesh(model) or {}
+            gi = next((i for i, g in enumerate(geoms) if g.get("name") == mesh.get("geometry")), None)
+        if gi is None or gi >= len(geoms):
+            return None
+        geom = geoms[gi]
+        shape = G.shape_of(geom.get("source", {}))
+        if shape is None:
+            return None
+        try:
+            pieces = G.pieces(shape)
+            table = M.selection_table(model, geom)
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
+        title = f"Geometry {geom.get('name')!r}"
+        highlighted, domain, pickable = [], False, False
+        if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape"):
+            csg = tuple(path[5::2])             # ("of", j, "of", k) -> (j, k)
+            highlighted = [p for p in pieces if p.side.shape[:len(csg)] == csg]
+            title += " — shape highlighted"
+            return title, shape, pieces, highlighted, False, False
+        if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
+            sel = path[3]
+            pickable = not table.get(sel, {}).get("builtin") and table.get(sel, {}).get("kind") == M.BOUNDARY
+        else:
+            _, sel = E.highlighted_selection(self.model, path)
+        if sel is not None and sel in table:
+            if table[sel]["kind"] == M.DOMAIN:
+                domain = sel == M.ALL          # other domain selections: not drawn yet
+                title += f" — domain {sel!r}"
+            else:
+                found = G.pieces_matching(shape, sel, table, pieces)
+                highlighted = found or []
+                title += f" — boundary {sel!r}" + ("" if found is not None else " (shown on the mesh only)")
+        if pickable:
+            title += ": click edges to add or remove them"
+        return title, shape, pieces, highlighted, domain, pickable
+
+    def _edge_clicked(self, piece):
+        """A click on an edge of the preview: toggles it in the selected selection."""
+        path = self.current_path()
+        if not (path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections"):
+            return
+        sel = self.model["geometries"][path[1]]["selections"].get(path[3])
+        if sel is None:
+            return
+        before = copy.deepcopy(self.model)
+        replaced = sel.get("criteria", {}).get("type") != "edges"
+        sel["criteria"] = G.toggle_edge(sel.get("criteria", {}), piece.side.ref)
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=path)
+        shape = G.shape_of(P.resolved(self.model)["geometries"][path[1]]["source"])
+        what = G.side_label(shape, piece.side.ref)
+        self.state.setText(f"{what}: " + ("added" if any(
+            (tuple(r["shape"]), r["side"]) == (piece.side.shape, piece.side.side)
+            for r in sel["criteria"]["edges"]) else "removed")
+            + (" (the previous criterion was replaced by picked edges)" if replaced else ""))
+
     def update_view(self):
         path = self.current_path()
         if path[:1] == (E.RESULTS,):
+            return
+        preview = self._preview(path)
+        if preview is not None:
+            title, shape, pieces, highlighted, domain, pickable = preview
+            try:
+                self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
+                                          pickable=pickable)
+            except Exception as exc:  # noqa: BLE001
+                self.viewer.show_message(f"Cannot display the geometry: {exc}")
             return
         mesh_name = E.mesh_to_show(self.model, path)
         mesh_name2, sel = E.highlighted_selection(self.model, path)

@@ -378,7 +378,9 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
     crit = sel.get("criteria", {})
     ct = crit.get("type")
     c = base + ("criteria",)
-    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds]
+    from . import geometry2d as G
+    planar = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
+    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds and (t != "edges" or planar)]
     out = [Field(c + ("type",), "Criterion", "choice", tuple((t, t) for t in possible),
                  op="criteria_type")]
     if ct == "plane":
@@ -395,6 +397,12 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
                 Field(c + ("radius",), "Radius", "number")]
     elif ct == "physical":
         out.append(Field(c + ("tag",), "Physical group number", "int"))
+    elif ct == "edges":
+        shape = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+        labels = [G.side_label(shape, r) for r in crit.get("edges", [])] if shape else []
+        out.append(Field(c + ("edges",), "", "info",
+                         help=("Edges: " + ", ".join(labels) if labels else "No edge yet.")
+                         + "\nClick edges in the view to add or remove them."))
     elif ct == "union":
         geom = model["geometries"][gi]
         table = M.selection_table(model, geom)
@@ -613,6 +621,7 @@ def _default_criteria(t: str, dim: int, kind: str) -> dict:
         "in_ball": {"type": "in_ball", "center": [0.0] * dim, "radius": 0.5},
         "physical": {"type": "physical", "tag": 1},
         "union": {"type": "union", "of": []},
+        "edges": {"type": "edges", "edges": []},
     }[t]
 
 

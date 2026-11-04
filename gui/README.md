@@ -84,8 +84,14 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   (`PHYSICS_SPECS`, meshers, criteria): adding a physics or a boundary
   condition type does not require any interface code. Values are numbers or
   GWFL expressions (with the coordinates x, y, z); vectors are edited per component.
-- Selecting a selection, a material, a source, a boundary condition or an
-  output highlights its support on the mesh.
+- 2D box and CSG geometries are drawn exactly, without meshing: selecting a
+  geometry, a shape, a selection, a boundary condition... shows the geometry
+  with the support highlighted. With a selection node selected, **clicking an
+  edge adds or removes it** (the left button still pans the view: a click is
+  a press and release without moving). Picked edges are stored as sides of
+  primitives (see `geometry2d.py`), so that a selection follows the changes
+  of the geometry, e.g. a parameter for the radius of a hole. Other
+  geometries (CAD, imported meshes, 3D) are shown through their mesh.
 - **Build mesh** (F7) and **Compute** (F8) run in separate processes, whose
   output appears in *Messages*; **Stop** interrupts them. Meshes and results
   go to `<model>_work/` next to the model file (a temporary folder for an
@@ -115,6 +121,7 @@ widget itself needs a real display.
 | `getfem_gui/cli.py` | command line interface |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
+| `getfem_gui/geometry2d.py` | exact 2D geometry: boundary pieces of CSG shapes, picked edges |
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
@@ -123,6 +130,7 @@ widget itself needs a real display.
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
 | `tests/test_elasticity.py` | 11 linear elasticity cases |
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
+| `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
@@ -150,7 +158,9 @@ Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 `xmin … zmax`, a `.msh` file brings its named physical groups. Other
 selections are defined by criteria evaluated *on the mesh*, which makes them
 independent of the mesher and robust to remeshing: `plane`, `normal`,
-`in_box`, `in_ball`, `physical`, `union`. An empty selection is an explicit
+`in_box`, `in_ball`, `physical`, `union`, and `edges` (2D box or CSG: sides
+of primitives, as picked in the view, e.g.
+`{"type": "edges", "edges": [{"shape": [1], "side": "circle"}]}`). An empty selection is an explicit
 error.
 
 Beware: `normal` picks *all* boundary faces oriented in the given direction,

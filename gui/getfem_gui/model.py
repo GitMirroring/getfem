@@ -91,6 +91,11 @@ User selections: {"kind": "domain" | "boundary", "criteria": {...}} with
 - {"type": "in_ball", "center": [...], "radius": r}     boundary faces inside the ball
 - {"type": "physical", "tag": n}                         physical group of an imported mesh
 - {"type": "union", "of": ["name1", "name2", ...]}       union of selections of the same kind
+- {"type": "edges", "edges": [{"shape": [1], "side": "circle"}, ...]}
+                                                         2D box or csg: sides of primitives (the
+                                                         parts on the boundary); "shape" is the path
+                                                         of the primitive in the CSG tree (indices in
+                                                         "of"), "side" xmin, xmax, ymin, ymax or circle
 Criteria are evaluated on the mesh, so they survive remeshing.
 
 Physics
@@ -165,6 +170,7 @@ CRITERIA = {
     "in_ball": (BOUNDARY,),
     "physical": (BOUNDARY, DOMAIN),
     "union": (BOUNDARY, DOMAIN),
+    "edges": (BOUNDARY,),
 }
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
 
@@ -514,6 +520,8 @@ def _validate_geometry(model, geom, where, errors):
                 errors.append(f"{w}: criterion 'physical' requires a mesh_file geometry")
             if not isinstance(crit.get("tag"), int):
                 errors.append(f"{w}.criteria.tag: integer expected")
+        elif ct == "edges":
+            _check_edges(src, crit, w, errors)
         elif ct == "union":
             for other in crit.get("of", []):
                 if other not in table or other == name:
@@ -524,6 +532,31 @@ def _validate_geometry(model, geom, where, errors):
                     errors.append(f"{w}.criteria.of: union of unions not supported ({other!r})")
             if not crit.get("of"):
                 errors.append(f"{w}.criteria.of: list of selections expected")
+
+
+def _check_edges(src, crit, where, errors):
+    from . import geometry2d as G
+    shape = G.shape_of(src)
+    if shape is None:
+        errors.append(f"{where}: criterion 'edges' requires a 2D box or csg geometry")
+        return
+    edges = crit.get("edges")
+    if not isinstance(edges, list) or not edges:
+        errors.append(f"{where}.criteria.edges: no edge: click edges of the geometry in the view")
+        return
+    try:
+        all_pieces = G.pieces(shape)
+    except (KeyError, TypeError, ValueError):
+        return                       # invalid shape: reported elsewhere
+    for j, ref in enumerate(edges):
+        w = f"{where}.criteria.edges[{j}]"
+        prim = G.primitive_at(shape, ref.get("shape", []) if isinstance(ref, dict) else None)
+        if not isinstance(ref, dict) or prim is None or prim.get("type") in G.BOOLEANS:
+            errors.append(f"{w}: no such primitive shape {ref.get('shape') if isinstance(ref, dict) else ref!r}")
+        elif ref.get("side") not in (G.RECTANGLE_SIDES if prim["type"] == "rectangle" else ("circle",)):
+            errors.append(f"{w}: a {prim['type']} has no side {ref.get('side')!r}")
+        elif not G.pieces_of(shape, ref, all_pieces):
+            errors.append(f"{w}: the {G.side_label(shape, ref)} is not on the boundary")
 
 
 def _validate_mesh(model, mesh, where, errors):

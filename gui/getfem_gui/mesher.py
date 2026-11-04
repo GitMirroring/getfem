@@ -38,10 +38,10 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import model as M, parameters as P
+from . import geometry2d as G, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 4
+SCRIPT_VERSION = 5
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -187,7 +187,7 @@ def _drop_z(w):
 
 # ------------------------------------------------------------------ selections
 
-def _selection_code(name, sel, w):
+def _selection_code(name, sel, w, shape=None):
     kind, c = sel["kind"], sel.get("criteria", {})
     t = c.get("type")
     if name == M.ALL:
@@ -215,6 +215,13 @@ def _selection_code(name, sel, w):
             w(f"SEL[{name!r}] = ('boundary', imported[{tag}])")
         else:
             w(f"SEL[{name!r}] = ('domain', cvs(imported[{tag}]))")
+    elif t == "edges":
+        # sides of primitives, resolved here into the parts on the boundary
+        all_pieces = G.pieces(shape)
+        found = [pc.criterion() for ref in c["edges"] for pc in G.pieces_of(shape, ref, all_pieces)]
+        labels = ", ".join(G.side_label(shape, ref) for ref in c["edges"])
+        w(f"# {name}: {labels}")
+        w(f"SEL[{name!r}] = ('boundary', faces_on_pieces({found!r}))")
     elif t == "union":
         parts = ", ".join(f"SEL[{o!r}][1]" for o in c["of"])
         if kind == M.BOUNDARY:
@@ -253,6 +260,33 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     w("            if np.all(np.abs((P[:, m.pid_in_faces(faces[:, j:j+1])].T - point) @ n) < tol)]")
     w("    return faces[:, keep]")
 
+    w("")
+    w("def on_piece(Q, piece, tol):")
+    w("    \"\"\"Whether all the points Q (n x 2) lie on a segment or on an arc.\"\"\"")
+    w("    if 'segment' in piece:")
+    w("        a, b = (np.asarray(x, float) for x in piece['segment'])")
+    w("        d = b - a")
+    w("        L = np.linalg.norm(d)")
+    w("        s = (Q - a) @ d / L**2")
+    w("        h = np.abs((Q - a) @ np.array([-d[1], d[0]])) / L")
+    w("        return bool(np.all(h < tol) and np.all(s > -tol / L) and np.all(s < 1 + tol / L))")
+    w("    arc = piece['arc']")
+    w("    D = Q - np.asarray(arc['center'], float)")
+    w("    if not np.all(np.abs(np.linalg.norm(D, axis=1) - arc['radius']) < tol):")
+    w("        return False")
+    w("    angle = (np.degrees(np.arctan2(D[:, 1], D[:, 0])) - arc['from']) % 360.0")
+    w("    slack = np.degrees(tol / arc['radius'])")
+    w("    return bool(np.all((angle <= arc['sweep'] + slack) | (angle >= 360.0 - slack)))")
+    w("")
+    w("def faces_on_pieces(pieces):")
+    w("    \"\"\"Boundary faces whose nodes all lie on one of the pieces.\"\"\"")
+    w("    P = m.pts()")
+    w("    tol = 1e-6 * max(np.ptp(P, axis=1).max(), 1e-300)")
+    w("    faces = m.outer_faces()")
+    w("    keep = [j for j in range(faces.shape[1])")
+    w("            if any(on_piece(P[:, m.pid_in_faces(faces[:, j:j+1])].T, pc, tol) for pc in pieces)]")
+    w("    return faces[:, keep]")
+
     w.section(f"Mesh ({mesh['mesher']})")
     mesher = mesh["mesher"]
     if mesher == "structured":
@@ -270,8 +304,9 @@ def mesh_script(model: dict, mesh: dict, basename: str) -> str:
     w("SEL = {}")
     ordered = [n for n, s in table.items() if s.get("criteria", {}).get("type") != "union"]
     ordered += [n for n, s in table.items() if s.get("criteria", {}).get("type") == "union"]
+    shape = G.shape_of(geom.get("source", {}))
     for name in ordered:
-        _selection_code(name, table[name], w)
+        _selection_code(name, table[name], w, shape)
     user = [n for n, s in table.items() if not s["builtin"]]
     w("")
     w(f"for name in {user!r}:")

@@ -93,6 +93,58 @@ def test_result_field_and_deformed_shape():
         p.close()
 
 
+def test_preview_and_picking_in_the_window():
+    """The exact 2D preview, and edges picked with clicks (simulated at world
+    coordinates, with an off-screen plotter in place of the embedded one)."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(EXAMPLES / "plate_hole_tension.json", tmp)
+        win = MainWindow(path)
+        try:
+            assert win.viewer.available
+            win.select(("geometries", 0))
+            assert win.viewer._last[0] == "geometry"                   # no mesh needed
+            win.select(("geometries", 0, "selections"))
+            win._panel_action("add_selection")
+            path_sel = win.current_path()
+            assert win.viewer._pieces, "the preview of a selection is pickable"
+            win.viewer.pick_world((0.0, 0.03))                        # left side, above the hole
+            win.viewer.pick_world((0.007, 0.007))                     # on the hole
+            sel = E_get(win, path_sel)
+            assert sel["criteria"] == {"type": "edges", "edges": [
+                {"shape": [0], "side": "xmin"}, {"shape": [1], "side": "circle"}]}
+            win.viewer.pick_world((0.007, 0.007))                     # again: removed
+            win.viewer.pick_world((0.05, 0.025))                      # inside: nothing
+            assert E_get(win, path_sel)["criteria"]["edges"] == [{"shape": [0], "side": "xmin"}]
+            win.undo()
+            assert len(E_get(win, path_sel)["criteria"]["edges"]) == 2
+            win.viewer.hover_world((0.1, 0.02))
+            assert win.viewer._hover.side.side == "xmax"
+            assert win.errors == []
+            # a boundary condition shows its support on the preview, without mesh
+            win.select(("physics", "boundary_conditions", 2))
+            last = win.viewer._last
+            assert last[0] == "geometry" and [p.side.side for p in last[3]] == ["xmax"]
+            img = win.viewer.plotter.screenshot(return_img=True)
+            assert highlight_pixels(img) > 20
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
+def E_get(win, path):
+    from getfem_gui import editing as E
+    return E.get_at(win.model, path)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

@@ -178,3 +178,75 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
     if title:
         plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
     _camera(plotter, ds, reset)
+
+
+# ------------------------------------------------------------------ 2D geometry preview
+
+HOVER = "#f2a65a"
+OUTLINE = "#33414f"
+FILL = "#cfe0ea"
+
+
+def _polyline(points: np.ndarray) -> pv.PolyData:
+    pts = np.column_stack([points, np.zeros(len(points))])
+    return pv.lines_from_points(pts)
+
+
+def _fill(shape: dict, n: int = 240) -> pv.DataSet:
+    """The domain, as the part of a fine grid where the distance is negative
+    (the boundary itself is drawn exactly, on top)."""
+    from .. import geometry2d as G
+    lo, hi = G.bounds(shape)
+    margin = 0.02 * (hi - lo).max()
+    lo, hi = lo - margin, hi + margin
+    h = (hi - lo).max() / n
+    dims = np.maximum(np.ceil((hi - lo) / h).astype(int) + 1, 2)
+    grid = pv.ImageData(dimensions=(int(dims[0]), int(dims[1]), 1), spacing=(h, h, 1.0),
+                        origin=(lo[0], lo[1], 0.0))
+    grid.point_data["d"] = G.sdf(shape, grid.points[:, :2])
+    return grid.clip_scalar(scalars="d", value=0.0, invert=True)
+
+
+def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain: bool = False,
+                     title: str = "", reset: bool = True) -> None:
+    """Exact preview of a 2D geometry: the domain, its boundary pieces, some of
+    them highlighted (a boundary selection); domain=True highlights the domain."""
+    clear(plotter)
+    plotter.add_mesh(_fill(shape), color=HIGHLIGHT if domain else FILL, opacity=0.55 if domain else 1.0,
+                     lighting=False, name="fill")
+    for i, p in enumerate(pieces):
+        plotter.add_mesh(_polyline(p.points()), color=OUTLINE, line_width=2, lighting=False,
+                         name=f"piece{i}")
+    for i, p in enumerate(highlighted):
+        plotter.add_mesh(_polyline(p.points()), color=HIGHLIGHT, line_width=5, lighting=False,
+                         name=f"selected{i}")
+    if title:
+        plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
+    if reset:
+        plotter.view_xy()
+        plotter.enable_parallel_projection()
+        set_style(plotter, True)
+        plotter.reset_camera()
+
+
+def show_hover(plotter, piece) -> None:
+    """Highlight the piece under the mouse (None: remove)."""
+    plotter.remove_actor("hover")
+    if piece is not None:
+        plotter.add_mesh(_polyline(piece.points()), color=HOVER, line_width=6, lighting=False,
+                         name="hover")
+
+
+def display_to_world(plotter, x: float, y: float) -> np.ndarray:
+    """World point (in the z = 0 plane for a 2D view) under display pixel (x, y)."""
+    ren = plotter.renderer
+    ren.SetDisplayPoint(float(x), float(y), 0.0)
+    ren.DisplayToWorld()
+    w = np.asarray(ren.GetWorldPoint(), float)
+    return w[:3] / (w[3] if w[3] else 1.0)
+
+
+def pixel_size(plotter) -> float:
+    """World length of one pixel (parallel projection)."""
+    a, b = display_to_world(plotter, 0, 0), display_to_world(plotter, 1, 0)
+    return float(np.linalg.norm(b - a)) or 1e-9

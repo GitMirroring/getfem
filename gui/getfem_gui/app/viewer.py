@@ -31,7 +31,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 
@@ -98,6 +98,9 @@ def _load_plotter(parent):
 
 
 class Viewer(QWidget):
+    edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
+
+    PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
@@ -124,10 +127,12 @@ class Viewer(QWidget):
         self._last = None
         self._shown_key = None
         self.error = ""            # why the 3D view is unavailable (with the traceback)
+        self._pieces, self._hover, self._press = [], None, None     # picking state
         try:
             self.plotter, self.view_widget = _load_plotter(self)
             layout.addWidget(self.view_widget, 1)
             self.placeholder = None
+            self._install_picking()
         except Exception as exc:  # noqa: BLE001 (missing package, no OpenGL, ...)
             self.plotter = None
             self.error = traceback.format_exc()
@@ -156,6 +161,7 @@ class Viewer(QWidget):
     def show_message(self, text: str) -> None:
         self.status.setText(text)
         self._last = ("message", text)
+        self._pieces = []
         self._shown_key = None
         if self.plotter is not None:
             from . import scene
@@ -168,6 +174,7 @@ class Viewer(QWidget):
                   status: str = "") -> None:
         self.status.setText(status)
         self._last = ("mesh", mesh_file, selection_file, status)
+        self._pieces = []
         if self.plotter is None:
             self._placeholder(status or str(mesh_file))
             return
@@ -179,10 +186,83 @@ class Viewer(QWidget):
         self._shown_key = key
         self.plotter.render()
 
+    def show_geometry(self, shape: dict, pieces: list, highlighted=(), domain=False,
+                      status: str = "", pickable: bool = False) -> None:
+        """Exact preview of a 2D geometry; with pickable, clicks on its boundary
+        pieces are reported by edgeClicked."""
+        self.status.setText(status)
+        self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable)
+        self._pieces = pieces if pickable else []
+        self._hover = None
+        if self.plotter is None:
+            self._placeholder(status)
+            return
+        from . import scene
+        key = ("geometry", repr(shape))
+        scene.show_geometry_2d(self.plotter, shape, pieces, highlighted, domain,
+                               reset=key != self._shown_key)
+        self._shown_key = key
+        self.plotter.render()
+
+    # -------------------------------------------------------------- picking
+
+    def _install_picking(self):
+        iren = getattr(self.plotter, "iren", None)
+        if iren is None:              # off-screen plotter: see pick_world / hover_world
+            return
+        iren.add_observer("LeftButtonPressEvent", self._on_press)
+        iren.add_observer("LeftButtonReleaseEvent", self._on_release)
+        iren.add_observer("MouseMoveEvent", self._on_move)
+
+    def _event_world(self):
+        from . import scene
+        x, y = self.plotter.iren.interactor.GetEventPosition()
+        return (x, y), scene.display_to_world(self.plotter, x, y)
+
+    def _on_press(self, *args):
+        if self._pieces:
+            self._press = self.plotter.iren.interactor.GetEventPosition()
+
+    def _on_release(self, *args):
+        # a click, not the end of a drag (the left button also pans the view)
+        if not self._pieces or self._press is None:
+            return
+        (x, y), world = self._event_world()
+        x0, y0 = self._press
+        self._press = None
+        if abs(x - x0) + abs(y - y0) <= 4:
+            self.pick_world(world)
+
+    def _on_move(self, *args):
+        if self._pieces:
+            self.hover_world(self._event_world()[1])
+
+    def _nearest(self, world):
+        from .. import geometry2d as G
+        from . import scene
+        return G.nearest(self._pieces, world, self.PICK_PIXELS * scene.pixel_size(self.plotter))
+
+    def pick_world(self, world) -> None:
+        """A click at a point of the 2D view (world coordinates)."""
+        piece = self._nearest(world) if self._pieces else None
+        if piece is not None:
+            self.edgeClicked.emit(piece)
+
+    def hover_world(self, world) -> None:
+        from . import scene
+        piece = self._nearest(world) if self._pieces else None
+        if piece != self._hover:
+            self._hover = piece
+            scene.show_hover(self.plotter, piece)
+            self.plotter.render()
+
+    # -------------------------------------------------------------- results
+
     def show_field(self, result_file: Path, name: str, component=None, warp=None,
                    scale=1.0, status: str = "") -> None:
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status)
+        self._pieces = []
         if self.plotter is None:
             self._placeholder(status or name)
             return
@@ -222,6 +302,8 @@ class Viewer(QWidget):
             return
         if last[0] == "mesh":
             self.show_mesh(*last[1:])
+        elif last[0] == "geometry":
+            self.show_geometry(*last[1:])
         elif last[0] == "field":
             self.show_field(*last[1:])
         else:
