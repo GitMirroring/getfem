@@ -69,15 +69,26 @@ def field_names(ds: pv.DataSet) -> dict[str, int]:
     return out
 
 
+def set_style(plotter, planar: bool) -> None:
+    """Mouse interaction: pan and zoom for a planar model (rotation only with
+    Ctrl), free rotation in 3D. Nothing to do for an off-screen plotter."""
+    try:
+        plotter.enable_2d_style() if planar else plotter.enable_trackball_style()
+    except (AttributeError, TypeError):
+        pass
+
+
 def _camera(plotter, ds, reset: bool) -> None:
     if not reset:
         return
-    if is_planar(ds):
+    planar = is_planar(ds)
+    if planar:
         plotter.view_xy()
         plotter.enable_parallel_projection()
     else:
         plotter.disable_parallel_projection()
         plotter.view_isometric()
+    set_style(plotter, planar)
     plotter.reset_camera()
 
 

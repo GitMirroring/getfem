@@ -88,7 +88,12 @@ def _load_plotter(parent):
     from . import scene  # noqa: F401, PLC0415  (fails early if pyvista is missing)
     plotter = QtInteractor(parent)
     plotter.set_background("white", top="#dfe6ee")
-    plotter.enable_anti_aliasing("fxaa")
+    # Multi-sampling renders thin lines (element edges) much better than FXAA,
+    # which is only a fallback for drivers without multi-sampled framebuffers.
+    try:
+        plotter.enable_anti_aliasing("msaa", multi_samples=8)
+    except Exception:  # noqa: BLE001
+        plotter.enable_anti_aliasing("fxaa")
     return plotter, plotter
 
 
@@ -105,8 +110,8 @@ class Viewer(QWidget):
         bar.addWidget(self.status, 1)
         self._buttons = []
         for text, tip, slot in (("Fit", "Zoom to fit (F)", self.fit),
-                                ("XY", "View the XY plane", lambda: self._view("view_xy")),
-                                ("3D", "Isometric view", lambda: self._view("view_isometric")),
+                                ("XY", "View the XY plane (pan and zoom; Ctrl + drag to rotate)", lambda: self._view("view_xy")),
+                                ("3D", "Isometric view, free rotation", lambda: self._view("view_isometric")),
                                 ("Edges", "Show or hide the element edges", self.toggle_edges)):
             b = QToolButton()
             b.setText(text)
@@ -198,9 +203,11 @@ class Viewer(QWidget):
 
     def _view(self, method):
         if self.plotter is not None:
+            from . import scene
             getattr(self.plotter, method)()
             if method == "view_isometric":
                 self.plotter.disable_parallel_projection()
+            scene.set_style(self.plotter, planar=method == "view_xy")
             self.plotter.reset_camera()
             self.plotter.render()
 
