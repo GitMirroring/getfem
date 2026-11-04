@@ -147,6 +147,13 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
        out.pop().from_integer(int(GETFEM_PARA_LEVEL));
      );
 
+  /*@FUNC v = ('version')
+    Returns the version of GetFEM, as a string (e.g. "5.5").@*/
+  sub_command
+    ("version", 0, 0, 0, 1,
+     out.pop().from_string(GETFEM_VERSION);
+     );
+
   /*@FUNC tl = ('mumps linked')
     Returns 1 if mumps is linked in GetFEM and 0 otherwise.
   @*/
