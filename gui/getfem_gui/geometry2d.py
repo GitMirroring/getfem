@@ -191,52 +191,181 @@ class Piece:
         return float(np.min(np.linalg.norm(a + s[:, None] * d - q, axis=1)))
 
 
-def _on_boundary(shape, side: Side, t, eps) -> np.ndarray:
-    """True where the side separates the inside from the outside."""
+def _separates(level, side: Side, t, eps) -> np.ndarray:
+    """True where the side separates level < 0 from level >= 0."""
     P, N = side.points(t), side.normals(t)
-    return (sdf(shape, P + eps * N) < 0) != (sdf(shape, P - eps * N) < 0)
+    return (level(P + eps * N) < 0) != (level(P - eps * N) < 0)
 
 
-def pieces(shape: dict, samples: int = 720) -> list[Piece]:
+def _runs(side: Side, test, samples: int) -> list[Piece]:
+    """The parts of a side where test(t) (boolean array) is true, as pieces
+    whose ends are refined by bisection."""
+    t = (np.arange(samples) + 0.5) / samples
+    on = test(t)
+    if not on.any():
+        return []
+    if on.all():
+        return [Piece(side, 0.0, 1.0)]
+    changes = np.flatnonzero(on[1:] != on[:-1])
+
+    def refine(i):              # transition between samples i and i + 1
+        lo, hi = t[i], t[i + 1]
+        state = on[i]
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            if test(np.array([mid]))[0] == state:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+    ends = [refine(i) for i in changes]
+    starts = ends[0::2] if not on[0] else [0.0] + ends[1::2]
+    stops = ends[1::2] if not on[0] else ends[0::2]
+    if on[-1]:
+        stops = list(stops) + [1.0]
+    runs = list(zip(starts, stops))
+    if side.kind == "arc" and on[0] and on[-1] and len(runs) > 1:   # through angle 0
+        (s0, e0), (sl, el) = runs[0], runs[-1]
+        runs = [(sl, 1.0 + e0)] + runs[1:-1]
+    return [Piece(side, a, b) for a, b in runs if b > a]
+
+
+def pieces(shape: dict, samples: int = 720, level=None) -> list[Piece]:
     """The boundary of the domain, as parts of the sides of the primitives.
 
     A point of a side is on the boundary if it separates inside and outside,
     tested at a distance eps on each side; where two sides are tangent, this
-    overestimates a piece by about sqrt(2 eps), hence a small eps."""
+    overestimates a piece by about sqrt(2 eps), hence a small eps.
+    level: another function negative inside (e.g. region_level) whose
+    boundary is wanted instead (it must be made of sides of the primitives)."""
+    eps = 1e-9 * size(shape)
+    level = level or (lambda P: sdf(shape, P))
+    out = []
+    for side in sides(shape):
+        out += _runs(side, lambda t, side=side: _separates(level, side, t, eps), samples)
+    return out
+
+
+def interfaces(shape: dict, samples: int = 720) -> list[Piece]:
+    """The parts of the sides of the primitives that lie inside the domain:
+    the interfaces between its regions (e.g. the circle of an inclusion)."""
     eps = 1e-9 * size(shape)
     out = []
     for side in sides(shape):
-        t = (np.arange(samples) + 0.5) / samples
-        on = _on_boundary(shape, side, t, eps)
-        if not on.any():
-            continue
-        if on.all():
-            out.append(Piece(side, 0.0, 1.0))
-            continue
-        # runs of boundary samples; their ends are refined by bisection
-        changes = np.flatnonzero(on[1:] != on[:-1])
-
-        def refine(i):              # transition between samples i and i + 1
-            lo, hi = t[i], t[i + 1]
-            state = on[i]
-            for _ in range(40):
-                mid = 0.5 * (lo + hi)
-                if _on_boundary(shape, side, [mid], eps)[0] == state:
-                    lo = mid
-                else:
-                    hi = mid
-            return 0.5 * (lo + hi)
-        ends = [refine(i) for i in changes]
-        starts = ends[0::2] if not on[0] else [0.0] + ends[1::2]
-        stops = ends[1::2] if not on[0] else ends[0::2]
-        if on[-1]:
-            stops = list(stops) + [1.0]
-        runs = list(zip(starts, stops))
-        if side.kind == "arc" and on[0] and on[-1] and len(runs) > 1:   # through angle 0
-            (s0, e0), (sl, el) = runs[0], runs[-1]
-            runs = [(sl, 1.0 + e0)] + runs[1:-1]
-        out += [Piece(side, a, b) for a, b in runs if b > a]
+        def inside(t, side=side):
+            P, N = side.points(t), side.normals(t)
+            return (sdf(shape, P + eps * N) < 0) & (sdf(shape, P - eps * N) < 0)
+        out += _runs(side, inside, samples)
     return out
+
+
+def interface_points(shape: dict, h: float) -> np.ndarray:
+    """Points every h or so along the interfaces, ends included (2 x n): given
+    to the GetFEM mesher as fixed vertices, they make the mesh follow the
+    interfaces, so that each element is in one region."""
+    pts = []
+    for pc in interfaces(shape):
+        side = pc.side
+        length = (pc.t1 - pc.t0) * (2 * math.pi * side.b[0] if side.kind == "arc"
+                                     else float(np.linalg.norm(np.subtract(side.b, side.a))))
+        n = max(1, int(math.ceil(length / h)))
+        closed = side.kind == "arc" and pc.t1 - pc.t0 >= 1.0 - 1e-12
+        t = np.linspace(pc.t0, pc.t1, n + 1)[:-1 if closed else None]
+        if closed and n < 8:
+            t = np.linspace(0.0, 1.0, 8, endpoint=False)
+        pts += list(side.points(t))
+    kept: list[np.ndarray] = []
+    for p in pts:                      # ends shared by two interfaces: once
+        if all(np.linalg.norm(p - q) > 0.25 * h for q in kept):
+            kept.append(p)
+    return np.array(kept, float).T.reshape(2, -1)
+
+
+# ------------------------------------------------------------------ regions
+
+def _paths(shape: dict) -> list[tuple]:
+    return [p for p, _ in primitives(shape)]
+
+
+def region_at(shape: dict, point) -> list[list[int]] | None:
+    """The region of a point of the domain: the paths of the primitives that
+    contain it (None outside the domain). A region is stored this way, e.g.
+    [[0], [1]] for "in rectangle 1 and in disk 2" (and in no other primitive)."""
+    P = np.asarray(point, float)[None, :2]
+    if sdf(shape, P)[0] >= 0:
+        return None
+    return [list(path) for path, prim in primitives(shape) if sdf(prim, P)[0] < 0]
+
+
+def region_level(shape: dict, regions: list) -> callable:
+    """Function of the points (n x 2), negative exactly in the given regions
+    (each one a list of paths, see region_at)."""
+    prims = list(primitives(shape))
+
+    def level(P):
+        d = sdf(shape, P)
+        each = {path: sdf(prim, P) for path, prim in prims}
+        out = np.full(len(P), np.inf)
+        for reg in regions:
+            inside = {tuple(p) for p in reg}
+            r = d.copy()
+            for path, v in each.items():
+                r = np.maximum(r, v if path in inside else -v)
+            out = np.minimum(out, r)
+        return out
+    return level
+
+
+def region_label(shape: dict, region: list) -> str:
+    """'rectangle 1 + ball 2': the primitives containing the region."""
+    names = _paths(shape)
+    parts = []
+    for p in region:
+        prim = primitive_at(shape, p)
+        if tuple(p) in names and prim is not None:
+            parts.append(f"{prim['type']} {names.index(tuple(p)) + 1}")
+        else:
+            parts.append("a missing shape")
+    return " + ".join(parts) or "no shape"
+
+
+def toggle_region(criteria: dict, region: list) -> dict:
+    """Criteria after a click in a region: added, or removed if already there
+    (another kind of criterion is replaced by the clicked region)."""
+    key = sorted(tuple(p) for p in region)
+    if criteria.get("type") != "regions":
+        return {"type": "regions", "regions": [[list(p) for p in key]]}
+    regs = [[list(p) for p in r] for r in criteria.get("regions", [])]
+    kept = [r for r in regs if sorted(tuple(p) for p in r) != key]
+    if len(kept) == len(regs):
+        kept.append([list(p) for p in key])
+    return {"type": "regions", "regions": kept}
+
+
+def domain_level(shape: dict, selection: str, table: dict):
+    """Function negative in a domain selection (table: model.selection_table),
+    for the preview; None if it cannot be evaluated on the geometry."""
+    sel = table.get(selection)
+    if sel is None or sel.get("kind") != "domain":
+        return None
+    if selection == "all":
+        return lambda P: sdf(shape, P)
+    crit = sel.get("criteria", {})
+    t = crit.get("type")
+    try:
+        if t == "regions":
+            return region_level(shape, crit.get("regions", []))
+        if t == "in_box":
+            box = {"type": "rectangle", "min": crit["min"][:2], "max": crit["max"][:2]}
+            return lambda P: np.maximum(sdf(shape, P), sdf(box, P))
+        if t == "union":
+            parts = [domain_level(shape, o, table) for o in crit.get("of", [])]
+            if not parts or any(p is None for p in parts):
+                return None
+            return lambda P: np.min([p(P) for p in parts], axis=0)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+    return None
 
 
 def pieces_of(shape: dict, ref: dict, all_pieces: list[Piece] | None = None) -> list[Piece]:

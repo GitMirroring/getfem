@@ -396,3 +396,82 @@ if __name__ == "__main__":
                 failed += 1
                 print(f"FAILED   {name}: {exc}")
     sys.exit(1 if failed else 0)
+
+
+# ------------------------------------------------------------------ regions (subdomains)
+
+def layered_model(h=0.1):
+    """Bar [0, 1] x [0, 0.5] made of two materials, k = 1 for x < 0.5 and k = 3
+    beyond (a second rectangle): T = 0 at x = 0, T = 1 at x = 1. The exact
+    solution is piecewise linear, with a kink at the interface x = 0.5."""
+    m = M.default_model()
+    m["geometries"][0] = {
+        "name": "bar",
+        "source": {"type": "csg", "dim": 2, "shape": {"type": "union", "of": [
+            {"type": "rectangle", "min": [0.0, 0.0], "max": [1.0, 0.5]},
+            {"type": "rectangle", "min": [0.5, 0.0], "max": [1.0, 0.5]}]}},
+        "selections": {
+            "left": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0]]]}},
+            "right": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0], [1]]]}},
+            "x0": {"kind": "boundary", "criteria": {"type": "plane", "point": [0, 0], "normal": [1, 0]}},
+            "x1": {"kind": "boundary", "criteria": {"type": "plane", "point": [1, 0], "normal": [1, 0]}},
+        },
+    }
+    m["meshes"] = [{"name": "mesh", "geometry": "bar", "mesher": "getfem", "h": h, "order": 1}]
+    m["discretization"]["degree"] = 1
+    m["materials"] = [{"name": "soft", "selection": "left", "properties": {"k": 1.0}},
+                      {"name": "hard", "selection": "right", "properties": {"k": 3.0}}]
+    m["physics"]["sources"] = []
+    m["physics"]["boundary_conditions"] = [
+        {"type": "temperature", "selection": "x0", "value": 0.0},
+        {"type": "temperature", "selection": "x1", "value": 1.0}]
+    q = 1.0 / (0.5 / 1.0 + 0.5 / 3.0)
+    error_quantity(m, f"{q}*X(1) - {2 * q / 3}*pos_part(X(1) - 0.5)")
+    m["outputs"]["quantities"] += [
+        {"name": "area_left", "expr": "1", "selection": "left"},
+        {"name": "area_right", "expr": "1", "selection": "right"}]
+    return m
+
+
+def test_regions_follow_the_interface():
+    """The GetFEM mesher follows the side of the inner rectangle: P1 elements
+    give the exact (piecewise linear) solution, and the areas are exact."""
+    r = solve(layered_model())
+    assert abs(r["quantities"]["area_left"] - 0.25) < 1e-12, r["quantities"]
+    assert abs(r["quantities"]["area_right"] - 0.25) < 1e-12, r["quantities"]
+    assert l2_error(r) < 1e-8, l2_error(r)
+
+
+def test_disk_inclusion_regions():
+    """A disk inside a square: the elements of the two regions are on either
+    side of the circle (no element crosses it), and they tile the square."""
+    import numpy as np
+    import getfem as gf
+    m = M.default_model()
+    m["geometries"][0] = {
+        "name": "g",
+        "source": {"type": "csg", "dim": 2, "shape": {"type": "union", "of": [
+            {"type": "rectangle", "min": [0.0, 0.0], "max": [1.0, 1.0]},
+            {"type": "ball", "center": [0.5, 0.5], "radius": 0.25}]}},
+        "selections": {
+            "matrix": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0]]]}},
+            "inclusion": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0], [1]]]}},
+        },
+    }
+    m["meshes"] = [{"name": "mesh", "geometry": "g", "mesher": "getfem", "h": 0.08, "order": 1}]
+    m["physics"]["sources"] = []
+    m["physics"]["boundary_conditions"] = [{"type": "temperature", "selection": "boundary", "value": 0.0}]
+    with tempfile.TemporaryDirectory() as tmp:
+        res = mesher.ensure_mesh(m, "mesh", tmp)
+        assert res.ok, res.error
+        mesh = gf.Mesh("load", str(res.path))
+        regions = res.info["regions"]
+        cv_in = mesh.region(regions["inclusion"])[0]
+        cv_out = mesh.region(regions["matrix"])[0]
+        assert len(set(cv_in) & set(cv_out)) == 0
+        assert len(cv_in) + len(cv_out) == mesh.nbcvs()
+        P = mesh.pts()
+        for cvs, sign in ((cv_in, -1), (cv_out, 1)):
+            for cv in cvs:
+                d = np.linalg.norm(P[:, mesh.pid_from_cvid(cv)[0]].T - 0.5, axis=1) - 0.25
+                assert np.all(sign * d > -1e-9), (cv, d)

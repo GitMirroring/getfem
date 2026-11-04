@@ -38,10 +38,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from . import geometry2d as G, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 7
+SCRIPT_VERSION = 8
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -113,8 +115,17 @@ def _build_getfem(model, geom, mesh, w):
     shape = _box_as_shape(src) if src["type"] == "box" else src["shape"]
     w("# Implicit description of the geometry (MesherObject)")
     top = _gf_shape(shape, w)
+    h, K = float(mesh['h']), int(mesh.get('order', 1))
+    V = G.interface_points(shape, h) if src["type"] == "csg" and src.get("dim") == 2 else np.zeros((2, 0))
     w("# GetFEM experimental mesher: element size h, geometric degree K")
-    w(f"m = gf.Mesh('generate', {top}, {float(mesh['h'])!r}, {int(mesh.get('order', 1))})")
+    if V.shape[1] == 0:
+        w(f"m = gf.Mesh('generate', {top}, {h!r}, {K})")
+        return
+    w("# Fixed vertices along the interfaces between regions (sides of shapes")
+    w("# inside the domain): the elements follow them, each one is in one region")
+    rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in V)
+    w(f"interface_vertices = np.array([{rows}])")
+    w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices)")
 
 
 def _occ_shape(shape, dim, w) -> str:
@@ -233,6 +244,19 @@ def _selection_code(name, sel, w, shape=None):
         labels = ", ".join(G.side_label(shape, ref) for ref in c["edges"])
         w(f"# {name}: {labels}")
         w(f"SEL[{name!r}] = ('boundary', faces_on_pieces({found!r}))")
+    elif t == "regions":
+        prims = [(path, p) for path, p in G.primitives(shape)]
+        w(f"# {name}: " + "; ".join(G.region_label(shape, r) for r in c["regions"]))
+        w("PRIMITIVES = [")
+        for path, p in prims:
+            if p["type"] == "rectangle":
+                w(f"    ('rectangle', {_floats(p['min'])}, {_floats(p['max'])}),")
+            else:
+                w(f"    ('ball', {_floats(p['center'])}, {float(p['radius'])!r}),")
+        w("]")
+        paths = [tuple(path) for path, _ in prims]
+        bits = [[tuple(q) in {tuple(x) for x in reg} for q in paths] for reg in c["regions"]]
+        w(f"SEL[{name!r}] = ('domain', cvs_in_regions(PRIMITIVES, {bits!r}))")
     elif t == "union":
         parts = ", ".join(f"SEL[{o!r}][1]" for o in c["of"])
         if kind == M.BOUNDARY:
@@ -306,6 +330,25 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    keep = [j for j in range(faces.shape[1])")
     w("            if any(on_piece(P[:, m.pid_in_faces(faces[:, j:j+1])].T, pc, tol) for pc in pieces)]")
     w("    return faces[:, keep]")
+
+    w("")
+    w("def cvs_in_regions(primitives, regions):")
+    w("    \"\"\"Elements whose center is in one of the regions; a region is given by")
+    w("    which primitives contain it (one boolean per primitive).\"\"\"")
+    w("    cv = m.cvid()")
+    w("    pid, idx = m.pid_from_cvid(cv)")
+    w("    C = np.add.reduceat(m.pts()[:2, pid], idx[:-1], axis=1) / np.diff(idx)")
+    w("    inside = []")
+    w("    for kind, a, b in primitives:")
+    w("        if kind == 'rectangle':")
+    w("            inside.append(np.all((C > np.c_[a]) & (C < np.c_[b]), axis=0))")
+    w("        else:")
+    w("            inside.append(np.linalg.norm(C - np.c_[a], axis=0) < b)")
+    w("    inside = np.array(inside).reshape(len(primitives), -1)")
+    w("    keep = np.zeros(cv.size, bool)")
+    w("    for bits in regions:")
+    w("        keep |= np.all(inside == np.c_[bits], axis=0)")
+    w("    return cv[keep]")
 
     raw = f"{basename}_raw.mesh"
     if reuse_raw:

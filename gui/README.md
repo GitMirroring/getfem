@@ -115,6 +115,14 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   otherwise a new selection is created from the current support (named
   after the item, e.g. `traction_3`), leaving the previous one to the other
   items that use it.
+- **Subdomains**: the sides of the primitives that lie inside the domain
+  (the circle of an inclusion united with a plate) are drawn as thin lines:
+  they cut the domain into *regions*, each one given by the primitives that
+  contain it ("in rectangle 1 and in ball 2"). With a domain selection, a
+  material, a source or an output on a domain selected, its support is
+  highlighted, the region under the mouse too, and **clicking a region adds
+  or removes it**, with the same rules as for edges (a material on `all`
+  gets a new selection named after it). See `examples/plate_inclusion.json`.
 - **Build mesh** (F7) and **Compute** (F8) run in separate processes, whose
   output appears in *Messages*; **Stop** interrupts them. Meshes and results
   go to `<model>_work/` next to the model file (a temporary folder for an
@@ -146,7 +154,7 @@ widget itself needs a real display.
 | `getfem_gui/cli.py` | command line interface |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
-| `getfem_gui/geometry2d.py` | exact 2D geometry: boundary pieces of CSG shapes, picked edges |
+| `getfem_gui/geometry2d.py` | exact 2D geometry: boundary pieces of CSG shapes, picked edges, regions and interfaces |
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
@@ -160,7 +168,7 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
-| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry) |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions) |
 
 ## Geometry, selections, meshes
 
@@ -183,10 +191,23 @@ Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 `xmin … zmax`, a `.msh` file brings its named physical groups. Other
 selections are defined by criteria evaluated *on the mesh*, which makes them
 independent of the mesher and robust to remeshing: `plane`, `normal`,
-`in_box`, `in_ball`, `physical`, `union`, and `edges` (2D box or CSG: sides
+`in_box`, `in_ball`, `physical`, `union`, `edges` (2D box or CSG: sides
 of primitives, as picked in the view, e.g.
-`{"type": "edges", "edges": [{"shape": [1], "side": "circle"}]}`). An empty selection is an explicit
+`{"type": "edges", "edges": [{"shape": [1], "side": "circle"}]}`) and
+`regions` (2D box or CSG: elements in regions, as picked in the view, each
+region being the list of the paths of the primitives that contain it, e.g.
+`{"type": "regions", "regions": [[[0], [1]]]}` for "in rectangle 1 and in
+ball 2"; an element belongs to the region of its center). An empty selection is an explicit
 error.
+
+**Conforming subdomains**: for a 2D CSG geometry, the GetFEM mesher is given
+fixed vertices every `h` along the interfaces between regions, which makes the
+elements follow them: no element crosses the circle of an inclusion, and a
+material jump is represented exactly (`test_regions_follow_the_interface`
+recovers the piecewise linear solution of a layered bar with P1 elements).
+With Gmsh, the shapes are still fused: a region is then approximated by the
+elements whose center is in it (a staircase); fragmenting the shapes
+(`occ.fragment`) is left for later.
 
 Beware: `normal` picks *all* boundary faces oriented in the given direction,
 including those of a hole (the right edge of a hole has a −x outward normal,

@@ -26,6 +26,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from getfem_gui import editing as E, geometry2d as G, mesher, model as M, parameters as P  # noqa: E402
@@ -298,3 +300,80 @@ if __name__ == "__main__":
                 failed += 1
                 print(f"FAILED   {name}: {exc!r}")
     sys.exit(1 if failed else 0)
+
+
+# ------------------------------------------------------------------ regions
+
+def test_regions_and_interfaces():
+    plate = {"type": "difference", "of": [
+        {"type": "union", "of": [rect(0, 0, 1, 1), ball(0.5, 0.5, 0.2), ball(1.0, 0.5, 0.2)]},
+        ball(0.5, 0.5, 0.05)]}
+    assert G.region_at(plate, (0.1, 0.1)) == [[0, 0]]
+    assert G.region_at(plate, (0.5, 0.62)) == [[0, 0], [0, 1]]
+    assert G.region_at(plate, (1.1, 0.5)) == [[0, 2]]                # outside the rectangle
+    assert G.region_at(plate, (0.5, 0.5)) is None                    # in the hole
+    assert G.region_at(plate, (2, 2)) is None
+    # interfaces: the circle of the inclusion, the arc of the half disk, the
+    # part of xmax inside it; not the hole (a boundary)
+    found = {(p.side.shape, p.side.side): (p.t0, p.t1) for p in G.interfaces(plate)}
+    assert set(found) == {((0, 1), "circle"), ((0, 0), "xmax"), ((0, 2), "circle")}
+    t0, t1 = found[((0, 0), "xmax")]
+    assert abs(t0 - 0.3) < 1e-9 and abs(t1 - 0.7) < 1e-9
+    V = G.interface_points(plate, 0.05)
+    assert V.shape[0] == 2
+    d = np.linalg.norm(V[:, :, None] - V[:, None, :], axis=0) + np.eye(V.shape[1])
+    assert d.min() > 0.0125                                          # shared ends once
+    level = G.region_level(plate, [[[0, 0], [0, 1]], [[0, 2]]])
+    v = level(np.array([[0.5, 0.62], [1.1, 0.5], [0.1, 0.1], [0.5, 0.5]]))
+    assert v[0] < 0 and v[1] < 0 and v[2] > 0 and v[3] > 0
+    outline = sides_of(G.pieces(plate, level=G.region_level(plate, [[[0, 0], [0, 1]]])))
+    assert outline == [((0, 1), "circle"), ((1,), "circle")]
+    assert G.region_label(plate, [[0, 0], [0, 1]]) == "rectangle 1 + ball 2"
+
+
+def test_toggle_region_and_domain_level():
+    c = G.toggle_region({"type": "in_box"}, [[1], [0]])
+    assert c == {"type": "regions", "regions": [[[0], [1]]]}
+    c = G.toggle_region(c, [[0]])
+    assert c["regions"] == [[[0], [1]], [[0]]]
+    assert G.toggle_region(c, [[1], [0]])["regions"] == [[[0]]]
+    m = load("plate_inclusion.json")
+    r = P.resolved(m)
+    geom = r["geometries"][0]
+    shape, table = G.shape_of(geom["source"]), M.selection_table(r, geom)
+    P_ = np.array([[0.05, 0.05], [0.01, 0.01]])
+    assert list(G.domain_level(shape, "inclusion", table)(P_) < 0) == [True, False]
+    assert list(G.domain_level(shape, "matrix", table)(P_) < 0) == [False, True]
+    assert list(G.domain_level(shape, "all", table)(P_) < 0) == [True, True]
+    assert G.domain_level(shape, "cold", table) is None
+
+
+def test_regions_follow_the_geometry_edits():
+    """Regions are paths of primitives: they follow when the root of the
+    geometry is wrapped by a drawn shape, and validation checks them."""
+    m = load("plate_inclusion.json")
+    sels = m["geometries"][0]["selections"]
+    E.add_shape_2d(m, 0, ball(0.0, 0.0, 0.01), "difference")
+    assert sels["inclusion"]["criteria"]["regions"] == [[[0, 0], [0, 1]]]
+    assert sels["matrix"]["criteria"]["regions"] == [[[0, 0]]]
+    assert M.validate(m) == []
+    sels["matrix"]["criteria"]["regions"] = [[[5]]]
+    assert any("matrix" in e and "no such primitive" in e for e in M.validate(m))
+    sels["matrix"]["criteria"]["regions"] = []
+    assert any("no region" in e for e in M.validate(m))
+    sels["matrix"]["kind"] = "boundary"
+    assert any("only applies to domain" in e for e in M.validate(m))
+
+
+def test_mesh_script_has_interface_vertices():
+    m = load("plate_inclusion.json")
+    r = P.resolved(m)
+    script = mesher.mesh_script(r, r["meshes"][0], "mesh")
+    assert "interface_vertices = np.array(" in script
+    assert "cvs_in_regions(PRIMITIVES, [[True, True]])" in script
+    m = load("plate_with_hole.json")
+    r = P.resolved(m)
+    assert "interface_vertices" not in mesher.mesh_script(r, r["meshes"][0], "mesh")
+    m = load("plate_inclusion.json")
+    new = E.do_action(m, ("geometries", 0, "source", "shape"), "add_shape:ball")
+    assert E.get_at(m, new) == {"type": "ball", "center": [0.05, 0.05], "radius": 0.0125}

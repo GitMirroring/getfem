@@ -185,6 +185,7 @@ class ClickFilter(QObject):
 
 class Viewer(QWidget):
     edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
+    regionClicked = Signal(object)        # region (geometry2d.region_at) clicked in the preview
     shapeDrawn = Signal(object, str)      # primitive (model format), operation
     handleMoved = Signal(str, object)     # handle name, new position (snapped)
 
@@ -216,7 +217,8 @@ class Viewer(QWidget):
         self._last = None
         self._shown_key = None
         self.error = ""            # why the 3D view is unavailable (with the traceback)
-        self._pieces, self._hover = [], None     # picking state
+        self._pieces, self._hover = [], None     # picking state (edges)
+        self._regions_of = None                  # shape whose regions are picked
         try:
             self.plotter, self.view_widget = _load_plotter(self)
             layout.addWidget(self.view_widget, 1)
@@ -277,11 +279,14 @@ class Viewer(QWidget):
 
     def show_geometry(self, shape: dict, pieces: list, highlighted=(), domain=False,
                       status: str = "", pickable: bool = False, key: str | None = None) -> None:
-        """Exact preview of a 2D geometry; with pickable, clicks on its boundary
-        pieces are reported by edgeClicked."""
+        """Exact preview of a 2D geometry; domain: True (the whole domain) or a
+        function negative in the highlighted part (geometry2d.domain_level).
+        pickable: True or "edges", clicks on boundary pieces are reported by
+        edgeClicked; "regions", clicks in the domain by regionClicked."""
         self.status.setText(status)
         self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable, key)
-        self._pieces = pieces if pickable else []
+        self._pieces = pieces if pickable in (True, "edges") else []
+        self._regions_of = shape if pickable == "regions" else None
         self._hover = None
         if self.plotter is None:
             self._placeholder(status)
@@ -317,7 +322,7 @@ class Viewer(QWidget):
     def _on_click(self, widget, x, y):
         """A click on the view (Qt logical coordinates), converted to VTK display
         coordinates as the render window interactor does (origin at the bottom)."""
-        if not self._pieces:
+        if not self._pieces and self._regions_of is None:
             return
         from . import scene
         scale = widget.devicePixelRatioF()
@@ -326,7 +331,7 @@ class Viewer(QWidget):
         self.pick_world(world)
 
     def _on_move(self, *args):
-        if self._pieces:
+        if self._pieces or self._regions_of is not None:
             self.hover_world(self._event_world()[1])
 
     def _nearest(self, world):
@@ -336,12 +341,26 @@ class Viewer(QWidget):
 
     def pick_world(self, world) -> None:
         """A click at a point of the 2D view (world coordinates)."""
+        if self._regions_of is not None:
+            from .. import geometry2d as G
+            region = G.region_at(self._regions_of, world)
+            if region is not None:
+                self.regionClicked.emit(region)
+            return
         piece = self._nearest(world) if self._pieces else None
         if piece is not None:
             self.edgeClicked.emit(piece)
 
     def hover_world(self, world) -> None:
         from . import scene
+        if self._regions_of is not None:
+            from .. import geometry2d as G
+            region = G.region_at(self._regions_of, world)
+            if region != self._hover:
+                self._hover = region
+                scene.show_region_hover(self.plotter, self._regions_of, region)
+                self.plotter.render()
+            return
         piece = self._nearest(world) if self._pieces else None
         if piece != self._hover:
             self._hover = piece

@@ -96,6 +96,14 @@ User selections: {"kind": "domain" | "boundary", "criteria": {...}} with
                                                          parts on the boundary); "shape" is the path
                                                          of the primitive in the CSG tree (indices in
                                                          "of"), "side" xmin, xmax, ymin, ymax or circle
+- {"type": "regions", "regions": [[[0], [1]], [[0]]]}
+                                                         2D box or csg: elements in regions of the
+                                                         domain; a region is given by the paths of the
+                                                         primitives containing it (here "in rectangle 1
+                                                         and in ball 2", then "in rectangle 1 only").
+                                                         The GetFEM mesher follows the interfaces between
+                                                         regions (the sides of primitives inside the
+                                                         domain); Gmsh does not yet (staircase)
 Criteria are evaluated on the mesh, so they survive remeshing.
 
 Physics
@@ -171,6 +179,7 @@ CRITERIA = {
     "physical": (BOUNDARY, DOMAIN),
     "union": (BOUNDARY, DOMAIN),
     "edges": (BOUNDARY,),
+    "regions": (DOMAIN,),
 }
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
 
@@ -522,6 +531,8 @@ def _validate_geometry(model, geom, where, errors):
                 errors.append(f"{w}.criteria.tag: integer expected")
         elif ct == "edges":
             _check_edges(src, crit, w, errors)
+        elif ct == "regions":
+            _check_regions(src, crit, w, errors)
         elif ct == "union":
             for other in crit.get("of", []):
                 if other not in table or other == name:
@@ -557,6 +568,27 @@ def _check_edges(src, crit, where, errors):
             errors.append(f"{w}: a {prim['type']} has no side {ref.get('side')!r}")
         elif not G.pieces_of(shape, ref, all_pieces):
             errors.append(f"{w}: the {G.side_label(shape, ref)} is not on the boundary")
+
+
+def _check_regions(src, crit, where, errors):
+    from . import geometry2d as G
+    shape = G.shape_of(src)
+    if shape is None:
+        errors.append(f"{where}: criterion 'regions' requires a 2D box or csg geometry")
+        return
+    regions = crit.get("regions")
+    if not isinstance(regions, list) or not regions:
+        errors.append(f"{where}.criteria.regions: no region: click in the geometry in the view")
+        return
+    for j, reg in enumerate(regions):
+        w = f"{where}.criteria.regions[{j}]"
+        if not isinstance(reg, list) or not reg:
+            errors.append(f"{w}: list of primitive paths expected")
+            continue
+        for path in reg:
+            prim = G.primitive_at(shape, path) if isinstance(path, list) else None
+            if prim is None or prim.get("type") in G.BOOLEANS:
+                errors.append(f"{w}: no such primitive shape {path!r}")
 
 
 def _validate_mesh(model, mesh, where, errors):

@@ -382,7 +382,7 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
     c = base + ("criteria",)
     from . import geometry2d as G
     planar = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
-    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds and (t != "edges" or planar)]
+    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds and (t not in ("edges", "regions") or planar)]
     out = [Field(c + ("type",), "Criterion", "choice", tuple((t, t) for t in possible),
                  op="criteria_type")]
     if ct == "plane":
@@ -405,6 +405,12 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
         out.append(Field(c + ("edges",), "", "info",
                          help=("Edges: " + ", ".join(labels) if labels else "No edge yet.")
                          + "\nClick edges in the view to add or remove them."))
+    elif ct == "regions":
+        shape = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+        labels = [G.region_label(shape, r) for r in crit.get("regions", [])] if shape else []
+        out.append(Field(c + ("regions",), "", "info",
+                         help=("Regions (in the shapes): " + "; ".join(labels) if labels else "No region yet.")
+                         + "\nClick in the view to add or remove the region under the mouse."))
     elif ct == "union":
         geom = model["geometries"][gi]
         table = M.selection_table(model, geom)
@@ -606,6 +612,27 @@ def _default_shape(t: str, dim: int) -> dict:
     return {"type": t, "of": [_default_shape("rectangle", dim), _default_shape("ball", dim)]}
 
 
+def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
+    """A new primitive for a 2D geometry: in its middle, at its scale (the
+    default shape otherwise)."""
+    import numpy as np
+    from . import geometry2d as G
+    dim = geometry_dim(model, gi)
+    try:
+        lo, hi = G.bounds(G.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        return _default_shape(t, dim)
+    if dim != 2 or not np.all(np.isfinite([*lo, *hi])) or np.any(hi <= lo):
+        return _default_shape(t, dim)
+    r = lambda v: float(f"{v:.3g}")          # noqa: E731
+    c, e = (lo + hi) / 2, float((hi - lo).min())
+    if t == "rectangle":
+        return {"type": "rectangle", "min": [r(x - e / 8) for x in c], "max": [r(x + e / 8) for x in c]}
+    if t == "ball":
+        return {"type": "ball", "center": [r(x) for x in c], "radius": r(e / 8)}
+    return _default_shape(t, dim)
+
+
 def _default_source(t: str, dim: int) -> dict:
     if t == "box":
         return {"type": "box", "origin": [0.0] * dim, "size": [1.0] * dim}
@@ -624,6 +651,7 @@ def _default_criteria(t: str, dim: int, kind: str) -> dict:
         "physical": {"type": "physical", "tag": 1},
         "union": {"type": "union", "of": []},
         "edges": {"type": "edges", "edges": []},
+        "regions": {"type": "regions", "regions": []},
     }[t]
 
 
@@ -938,8 +966,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return ("geometries", gi, "selections", sname)
     if action.startswith("add_shape:"):
         shape = get_at(model, path)
-        shape.setdefault("of", []).append(_default_shape(action.split(":", 1)[1],
-                                                         geometry_dim(model, path[1])))
+        shape.setdefault("of", []).append(_shape_in_geometry(model, path[1], action.split(":", 1)[1]))
         return path + ("of", len(shape["of"]) - 1)
     if action == "add_mesh":
         meshes = model.setdefault("meshes", [])
@@ -1106,6 +1133,67 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
     return new, True
 
 
+# ------------------------------------------------------------------ picking regions for an item
+
+def can_pick_regions(model: dict, path: Path) -> bool:
+    """Whether clicks in the domain edit the support of the item at path (a
+    material, a source or an output on a domain), or the selection at path
+    (a domain selection of a 2D box or csg geometry)."""
+    from . import geometry2d as G
+    if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
+        geom = model["geometries"][path[1]]
+        sel = geom.get("selections", {}).get(path[3], {})
+        gi = path[1]
+    elif (path[:1] == ("materials",) and len(path) == 2) or \
+            (path[:2] in (("physics", "sources"), ("outputs", "quantities")) and len(path) == 3):
+        geom = physics_geometry(model)
+        if geom is None:
+            return False
+        gi = model["geometries"].index(geom)
+        name = get_at(model, path + ("selection",), M.ALL)
+        sel = M.selection_table(model, geom).get(name, {})
+    else:
+        return False
+    if G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is None:
+        return False
+    return sel.get("kind") == M.DOMAIN
+
+
+def pick_region_for_item(model: dict, path: Path, region: list) -> tuple[str, bool]:
+    """Add or remove a region (see geometry2d.region_at) in the selection at
+    path, or in the support of the item at path. The selection of an item is
+    edited in place when it is a 'regions' selection used by this item only;
+    otherwise a new selection is created, starting from the current support
+    when it is made of regions (empty if it is the whole domain), named after
+    the item. Returns (selection name, created)."""
+    from . import geometry2d as G
+    if path[:1] == ("geometries",):
+        sel = model["geometries"][path[1]]["selections"][path[3]]
+        sel["criteria"] = G.toggle_region(sel.get("criteria", {}), region)
+        return path[3], False
+    item = get_at(model, path)
+    geom = physics_geometry(model)
+    name = item.get("selection", M.ALL)
+    sel = geom.get("selections", {}).get(name)
+    if sel is not None and sel.get("criteria", {}).get("type") == "regions" \
+            and selection_uses(model, name) == 1:
+        sel["criteria"] = G.toggle_region(sel["criteria"], region)
+        return name, False
+    start = copy.deepcopy(sel["criteria"]) if sel is not None and \
+        sel.get("criteria", {}).get("type") == "regions" else {"type": "regions", "regions": []}
+    criteria = G.toggle_region(start, region)
+    if path[0] == "materials":
+        base = item.get("name", "material")
+    elif path[0] == "physics":
+        base = f"source_{path[2] + 1}"
+    else:
+        base = f"{item.get('name', 'output')}_support"
+    new = unique_name(base, M.selection_table(model, geom))
+    geom.setdefault("selections", {})[new] = {"kind": M.DOMAIN, "criteria": criteria}
+    item["selection"] = new
+    return new, True
+
+
 # ------------------------------------------------------------------ drawing shapes
 
 def can_draw(model: dict, path: Path) -> int | None:
@@ -1123,12 +1211,15 @@ def can_draw(model: dict, path: Path) -> int | None:
 
 
 def _prefix_edge_refs(geom: dict, prefix: tuple) -> None:
-    """The CSG root moved under a boolean at `prefix`: update the edges refs."""
+    """The CSG root moved under a boolean at `prefix`: update the edges refs
+    and the regions (paths of primitives)."""
     for sel in geom.get("selections", {}).values():
         crit = sel.get("criteria", {})
         if crit.get("type") == "edges":
             for ref in crit.get("edges", []):
                 ref["shape"] = list(prefix) + list(ref.get("shape", []))
+        elif crit.get("type") == "regions":
+            crit["regions"] = [[list(prefix) + list(p) for p in reg] for reg in crit.get("regions", [])]
 
 
 def _box_to_csg(model: dict, gi: int) -> list[str]:

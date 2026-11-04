@@ -185,6 +185,7 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
 HOVER = "#f2a65a"
 OUTLINE = "#33414f"
 FILL = "#cfe0ea"
+INTERFACE = "#7d8a96"
 
 
 def _polyline(points: np.ndarray) -> pv.PolyData:
@@ -192,9 +193,9 @@ def _polyline(points: np.ndarray) -> pv.PolyData:
     return pv.lines_from_points(pts)
 
 
-def _fill(shape: dict, n: int = 240) -> pv.DataSet:
-    """The domain, as the part of a fine grid where the distance is negative
-    (the boundary itself is drawn exactly, on top)."""
+def _fill(shape: dict, n: int = 240, level=None) -> pv.DataSet:
+    """The domain (or where level < 0), as the part of a fine grid where the
+    distance is negative (the boundary itself is drawn exactly, on top)."""
     from .. import geometry2d as G
     lo, hi = G.bounds(shape)
     margin = 0.02 * (hi - lo).max()
@@ -203,21 +204,33 @@ def _fill(shape: dict, n: int = 240) -> pv.DataSet:
     dims = np.maximum(np.ceil((hi - lo) / h).astype(int) + 1, 2)
     grid = pv.ImageData(dimensions=(int(dims[0]), int(dims[1]), 1), spacing=(h, h, 1.0),
                         origin=(lo[0], lo[1], 0.0))
-    grid.point_data["d"] = G.sdf(shape, grid.points[:, :2])
+    grid.point_data["d"] = (level or (lambda P: G.sdf(shape, P)))(grid.points[:, :2])
     return grid.clip_scalar(scalars="d", value=0.0, invert=True)
 
 
 def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain: bool = False,
                      title: str = "", reset: bool = True) -> None:
-    """Exact preview of a 2D geometry: the domain, its boundary pieces, some of
-    them highlighted (a boundary selection); domain=True highlights the domain."""
+    """Exact preview of a 2D geometry: the domain, the interfaces between its
+    regions, its boundary pieces, some of them highlighted (a boundary
+    selection); domain=True highlights the domain, a function the part where
+    it is negative (geometry2d.domain_level)."""
+    from .. import geometry2d as G
     clear(plotter)
-    plotter.add_mesh(_fill(shape), color=HIGHLIGHT if domain else FILL, opacity=0.55 if domain else 1.0,
+    whole = domain is True
+    plotter.add_mesh(_fill(shape), color=HIGHLIGHT if whole else FILL, opacity=0.55 if whole else 1.0,
                      lighting=False, name="fill")
+    if callable(domain):
+        part = _fill(shape, level=domain)
+        if part.n_cells:
+            plotter.add_mesh(part, color=HIGHLIGHT, opacity=0.55, lighting=False, name="part")
+    for i, p in enumerate(G.interfaces(shape)):
+        plotter.add_mesh(_polyline(p.points()), color=INTERFACE, line_width=1.5, lighting=False,
+                         name=f"interface{i}")
     for i, p in enumerate(pieces):
         plotter.add_mesh(_polyline(p.points()), color=OUTLINE, line_width=2, lighting=False,
                          name=f"piece{i}")
-    for i, p in enumerate(highlighted):
+    outline = G.pieces(shape, level=domain) if callable(domain) else []   # when made of sides
+    for i, p in enumerate(list(highlighted) + outline):
         plotter.add_mesh(_polyline(p.points()), color=HIGHLIGHT, line_width=5, lighting=False,
                          name=f"selected{i}")
     if title:
@@ -227,6 +240,16 @@ def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain:
         plotter.enable_parallel_projection()
         set_style(plotter, True)
         plotter.reset_camera()
+
+
+def show_region_hover(plotter, shape: dict, region) -> None:
+    """Highlight the region under the mouse (None: remove)."""
+    from .. import geometry2d as G
+    plotter.remove_actor("hover")
+    if region is not None:
+        part = _fill(shape, level=G.region_level(shape, [region]))
+        if part.n_cells:
+            plotter.add_mesh(part, color=HOVER, opacity=0.45, lighting=False, name="hover")
 
 
 def show_hover(plotter, piece) -> None:

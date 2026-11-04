@@ -98,6 +98,7 @@ class MainWindow(QMainWindow):
         self.props.viewChanged.connect(self._result_view_changed)
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
+        self.viewer.regionClicked.connect(self._region_clicked)
         self.viewer.shapeDrawn.connect(self._shape_drawn)
         self.viewer.handleMoved.connect(self._handle_moved)
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -564,15 +565,20 @@ class MainWindow(QMainWindow):
         else:
             _, sel = E.highlighted_selection(self.model, path)
             pickable = E.can_pick_edges(self.model, path)
+        if E.can_pick_regions(self.model, path):
+            pickable = "regions"
         if sel is not None and sel in table:
             if table[sel]["kind"] == M.DOMAIN:
-                domain = sel == M.ALL          # other domain selections: not drawn yet
-                title += f" — domain {sel!r}"
+                level = G.domain_level(shape, sel, table)
+                domain = True if sel == M.ALL else level
+                title += f" — domain {sel!r}" + ("" if level is not None else " (shown on the mesh only)")
             else:
                 found = G.pieces_matching(shape, sel, table, pieces)
                 highlighted = found or []
                 title += f" — boundary {sel!r}" + ("" if found is not None else " (shown on the mesh only)")
-        if pickable:
+        if pickable == "regions":
+            title += ": click regions to add or remove them"
+        elif pickable:
             title += ": click edges to add or remove them"
         return title, shape, pieces, highlighted, domain, pickable
 
@@ -662,6 +668,33 @@ class MainWindow(QMainWindow):
             (tuple(r["shape"]), r["side"]) == (piece.side.shape, piece.side.side)
             for r in sel["criteria"]["edges"]) else "removed")
             + (" (the previous criterion was replaced by picked edges)" if replaced else ""))
+
+    def _region_clicked(self, region):
+        """A click in a region of the preview: toggles it in the selected
+        domain selection, or in the support of the selected item."""
+        path = self.current_path()
+        if not E.can_pick_regions(self.model, path):
+            return
+        before = copy.deepcopy(self.model)
+        if path[:1] == ("geometries",):
+            replaced = self.model["geometries"][path[1]]["selections"][path[3]] \
+                .get("criteria", {}).get("type") != "regions"
+            gi = path[1]
+        else:
+            replaced = False
+            gi = self.model["geometries"].index(E.physics_geometry(self.model))
+        name, created = E.pick_region_for_item(self.model, path, region)
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=path)
+        shape = G.shape_of(P.resolved(self.model)["geometries"][gi]["source"])
+        crit = self.model["geometries"][gi]["selections"][name]["criteria"]
+        key = sorted(tuple(p) for p in region)
+        on = any(sorted(tuple(p) for p in r) == key for r in crit.get("regions", []))
+        self.state.setText(f"Region {G.region_label(shape, region)} {'added to' if on else 'removed from'} "
+                           f"{name!r}" + (" (new selection for this item)" if created else "")
+                           + (" (the previous criterion was replaced by picked regions)" if replaced else ""))
 
     def update_view(self):
         path = self.current_path()

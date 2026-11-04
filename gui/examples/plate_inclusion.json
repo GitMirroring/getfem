@@ -1,0 +1,58 @@
+{
+  "format_version": 2,
+  "name": "Plate with a conductive inclusion",
+  "parameters": [
+    {"name": "L", "value": 0.1, "description": "side of the plate (m)"},
+    {"name": "R", "value": 0.025, "description": "radius of the inclusion (m)"},
+    {"name": "h", "value": "L/40", "description": "element size (m)"}
+  ],
+  "geometries": [
+    {
+      "name": "plate",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "union",
+          "of": [
+            {"type": "rectangle", "min": [0.0, 0.0], "max": ["L", "L"]},
+            {"type": "ball", "center": ["L/2", "L/2"], "radius": "R"}
+          ]
+        }
+      },
+      "selections": {
+        "matrix": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0]]]}},
+        "inclusion": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0], [1]]]}},
+        "cold": {"kind": "boundary", "criteria": {"type": "edges", "edges": [{"shape": [0], "side": "xmin"}]}},
+        "hot": {"kind": "boundary", "criteria": {"type": "edges", "edges": [{"shape": [0], "side": "xmax"}]}}
+      }
+    }
+  ],
+  "meshes": [
+    {"name": "mesh", "geometry": "plate", "mesher": "getfem", "h": "h", "order": 1}
+  ],
+  "discretization": {"degree": 2},
+  "materials": [
+    {"name": "epoxy", "selection": "matrix", "properties": {"k": 0.2}},
+    {"name": "copper", "selection": "inclusion", "properties": {"k": 400.0}}
+  ],
+  "physics": {
+    "type": "heat_stationary",
+    "mesh": "mesh",
+    "variable": "T",
+    "sources": [],
+    "boundary_conditions": [
+      {"type": "temperature", "selection": "cold", "value": 20.0},
+      {"type": "temperature", "selection": "hot", "value": 80.0}
+    ]
+  },
+  "study": {"type": "stationary"},
+  "outputs": {
+    "vtu": "plate_inclusion.vtu",
+    "quantities": [
+      {"name": "heat_flow", "expr": "-k*Grad_T.Normal", "selection": "cold"},
+      {"name": "inclusion_area", "expr": "1", "selection": "inclusion"},
+      {"name": "mean_T_inclusion", "expr": "T / (pi*R*R)", "selection": "inclusion"}
+    ]
+  }
+}

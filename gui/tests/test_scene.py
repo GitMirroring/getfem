@@ -159,6 +159,72 @@ def test_preview_and_picking_in_the_window():
             win.close()
 
 
+def test_regions_picked_in_the_window():
+    """Domain selections drawn on the preview, and regions picked with clicks
+    (world coordinates, off-screen plotter), for a selection and a material."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(EXAMPLES / "plate_inclusion.json", tmp)
+        win = MainWindow(path)
+        try:
+            # the material of the inclusion: its region is highlighted
+            win.select(("materials", 1))
+            last = win.viewer._last
+            assert last[0] == "geometry" and callable(last[4]) and last[6] == "regions"
+            img = win.viewer.plotter.screenshot(return_img=True)
+            assert highlight_pixels(img) > 200
+            win.viewer.hover_world((0.05, 0.05))
+            assert win.viewer._hover == [[0], [1]]
+            # a click in the matrix: 'inclusion' is also used by outputs, so the
+            # material gets a new selection, starting from 'inclusion'
+            win.viewer.pick_world((0.01, 0.01))
+            sels = win.model["geometries"][0]["selections"]
+            assert win.model["materials"][1]["selection"] == "copper"
+            assert sels["copper"]["criteria"]["regions"] == [[[0], [1]], [[0]]]
+            assert sels["inclusion"]["criteria"]["regions"] == [[[0], [1]]]
+            win.viewer.pick_world((0.05, 0.05))                       # used once: edited in place
+            assert sels["copper"]["criteria"]["regions"] == [[[0]]]
+            win.viewer.pick_world((0.2, 0.2))                         # outside: nothing
+            win.undo()
+            win.undo()
+            assert win.model["materials"][1]["selection"] == "inclusion"
+            assert "copper" not in win.model["geometries"][0]["selections"]
+            # a material on the whole domain: a new selection, from empty
+            win.model["materials"][0]["selection"] = "all"
+            win.select(("materials", 0))
+            win.viewer.pick_world((0.05, 0.05))
+            mat = win.model["materials"][0]
+            assert mat["selection"] == "epoxy"
+            assert win.model["geometries"][0]["selections"]["epoxy"] == {
+                "kind": "domain", "criteria": {"type": "regions", "regions": [[[0], [1]]]}}
+            # a domain selection replaced by picked regions
+            win.select(("geometries", 0, "selections"))
+            win._panel_action("add_selection")
+            sp = win.current_path()
+            sel = win.model["geometries"][0]["selections"][sp[3]]
+            sel["kind"] = "domain"
+            sel["criteria"] = {"type": "in_box", "min": [0, 0], "max": [0.05, 0.1]}
+            win.update_view()
+            assert callable(win.viewer._last[4]) and win.viewer._last[6] == "regions"
+            win.viewer.pick_world((0.09, 0.09))
+            assert win.model["geometries"][0]["selections"][sp[3]]["criteria"] == {
+                "type": "regions", "regions": [[[0]]]}
+            # boundary conditions keep picking edges
+            win.select(("physics", "boundary_conditions", 0))
+            assert win.viewer._last[6] is True and win.viewer._pieces
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 def test_drawing_in_the_window():
     """Drawing a disk to subtract it from a box geometry (mouse simulated at
     world coordinates, off-screen plotter)."""
