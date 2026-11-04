@@ -152,6 +152,8 @@ class MainWindow(QMainWindow):
         self.a_save = self._action("&Save", self.save, QKeySequence.StandardKey.Save,
                                    SP.SP_DialogSaveButton)
         self.a_save_as = self._action("Save &as...", self.save_as, QKeySequence.StandardKey.SaveAs)
+        self.a_export = self._action("&Export as a Python script...", self.export_script, None, None,
+                                     "A standalone GetFEM script that meshes and solves the model")
         self.a_quit = self._action("&Quit", self.close, QKeySequence.StandardKey.Quit)
         self.a_undo = self._action("&Undo", self.undo, QKeySequence.StandardKey.Undo, SP.SP_ArrowBack)
         self.a_redo = self._action("&Redo", self.redo, QKeySequence.StandardKey.Redo, SP.SP_ArrowForward)
@@ -173,7 +175,7 @@ class MainWindow(QMainWindow):
         for p in sorted(EXAMPLES_DIR.glob("*.json")):
             ex.addAction(self._action(p.stem, lambda _=False, p=p: self.open_example(p)))
         m.addSeparator()
-        for a in (self.a_save, self.a_save_as):
+        for a in (self.a_save, self.a_save_as, self.a_export):
             m.addAction(a)
         m.addSeparator()
         m.addAction(self.a_quit)
@@ -909,6 +911,27 @@ class MainWindow(QMainWindow):
         self.results_stale = _results_key(self.model) != used_model
         self.result_file = self.workdir / r["vtu"] if r.get("vtu") else None
         self.result_fields = self._read_fields()
+
+    def export_script(self, path: str | Path | None = None) -> bool:
+        """Write the standalone script (meshing then solving) of the model."""
+        from .. import runner
+        if not self._check() or not self._check_gwfl():
+            return False
+        if path is None:
+            stem = self.path.stem if self.path else "model"
+            start = str((self.path.parent if self.path else Path.cwd()) / f"{stem}_getfem.py")
+            path, _ = QFileDialog.getSaveFileName(self, "Export as a Python script", start,
+                                                  "Python scripts (*.py)")
+            if not path:
+                return False
+        try:
+            Path(path).write_text(runner.export_script(self.model), encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, APP_NAME, f"Cannot export the script:\n{exc}")
+            return False
+        self._log(f"Script written to {path} (run it with a Python that provides GetFEM)")
+        self.state.setText(f"Script written to {path}")
+        return True
 
     def show_script(self):
         script = self.workdir / "run_getfem.py"

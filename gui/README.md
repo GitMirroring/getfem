@@ -47,6 +47,7 @@ python -m getfem_gui validate examples/plate_with_hole.json
 python -m getfem_gui mesh examples/plate_with_hole.json     # all meshes, with selection summary
 python -m getfem_gui run examples/plate_with_hole.json -w results/
 python -m getfem_gui generate model.json -o solve.py        # solve script only
+python -m getfem_gui export model.json -o model_getfem.py   # standalone script: mesh + solve
 python -m getfem_gui migrate old_v1.json -o new.json
 ```
 
@@ -104,7 +105,9 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   unsaved model), and are found again when the model is reopened; results
   are marked *out of date* as soon as the model changes.
 - Undo / redo for every change; *Compute ▸ Show the solve script* shows the
-  generated GetFEM script.
+  generated GetFEM script, and *File ▸ Export as a Python script* writes a
+  single standalone script (meshing, then solving) that runs without
+  getfem_gui, to read, modify or run elsewhere.
 
 The interface is split so that most of it can be tested without a screen:
 `editing.py` (tree, forms and consistent changes: renaming a selection

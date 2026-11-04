@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     pg = cmd("generate", "write the GetFEM solve script")
     pg.add_argument("-o", "--output", help="output file (default: standard output)")
     cmd("run", "mesh then solve")
+    pe = cmd("export", "write a standalone Python script (meshing and solving)")
+    pe.add_argument("-o", "--output", help="output file (default: standard output)")
     pmi = cmd("migrate", "convert a model to the current format")
     pmi.add_argument("-o", "--output", required=True)
     for sp in (pm, pg, sub.choices["run"]):
@@ -102,6 +104,15 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.cmd == "validate":
         print("model is valid")
+        return 0
+
+    if args.cmd == "export":
+        script = runner.export_script(model)
+        if args.output:
+            Path(args.output).write_text(script, encoding="utf-8")
+            print(f"script written to {args.output}")
+        else:
+            sys.stdout.write(script)
         return 0
 
     workdir = _workdir(args)

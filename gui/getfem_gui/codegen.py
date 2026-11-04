@@ -275,10 +275,13 @@ PHYSICS = {
 
 # ---------------------------------------------------------------- script
 
-def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
+def generate(model: dict, mesh_path: str | Path | None, mesh_info: dict,
+             standalone: bool = False) -> str:
     """Solve script for an already prepared mesh (see mesher.ensure_mesh).
 
-    Raises ValueError if the model is invalid.
+    standalone: the script follows the meshing script (runner.export_script),
+    whose mesh `m` and regions REGIONS it uses. Raises ValueError if the model
+    is invalid.
     """
     errors = M.validate(model)
     if errors:
@@ -305,9 +308,12 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w(f"results = {{'model': {model.get('name', '')!r}, 'status': 'error'}}")
     w(f"degree = {model['discretization']['degree']}")
 
-    w.section(f"Mesh {mesh_info.get('mesh', '')!r} (prepared by the meshing step)")
-    w(f"m = gf.Mesh('load', {str(Path(mesh_path).resolve())!r})")
-    w(f"REGIONS = {mesh_info['regions']!r}")
+    if standalone:
+        w.section(f"Mesh {mesh_info.get('mesh', '')!r}: m and REGIONS, built above")
+    else:
+        w.section(f"Mesh {mesh_info.get('mesh', '')!r} (prepared by the meshing step)")
+        w(f"m = gf.Mesh('load', {str(Path(mesh_path).resolve())!r})")
+        w(f"REGIONS = {mesh_info['regions']!r}")
     w("results['mesh'] = {'name': %r, 'nb_elements': int(m.nbcvs())}" % mesh_info.get("mesh", ""))
 
     w.section("Discretization")

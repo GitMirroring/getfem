@@ -141,6 +141,25 @@ def test_rename_a_parameter_updates_its_uses():
     assert M.validate(m) == []
 
 
+def test_standalone_script():
+    """The exported script meshes and solves alone, with the same results."""
+    import subprocess
+    m = load("plate_hole_tension.json")
+    reference = solve(m)
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "model.py"
+        script.write_text(runner.export_script(m), encoding="utf-8")
+        text = script.read_text()
+        assert "import getfem_gui" not in text and "from getfem_gui" not in text
+        proc = subprocess.run([sys.executable, script.name], cwd=tmp, capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        import json
+        r = json.loads((Path(tmp) / "results.json").read_text())
+        for k, v in reference["quantities"].items():
+            assert abs(r["quantities"][k] - v) <= 1e-9 * max(1.0, abs(v)), k
+        assert (Path(tmp) / r["vtu"]).exists()
+
+
 def test_editing_nodes_and_actions():
     m = load("plate.json")
     root = E.tree(m)

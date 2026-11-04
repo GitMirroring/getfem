@@ -27,7 +27,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import codegen, gwfl, mesher, model as M
+from . import codegen, gwfl, mesher, model as M, parameters as P
 
 
 @dataclass
@@ -111,3 +111,25 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
         return RunResult(False, workdir, job.script, stdout=exc.stdout or "",
                          stderr=f"solve interrupted after {timeout} s", mesh=mres)
     return job.finish(proc.returncode, proc.stdout, proc.stderr)
+
+
+def export_script(model: dict) -> str:
+    """A single standalone script, meshing then solving: it does not depend on
+    getfem_gui nor on a working folder, and writes results.json and the VTU
+    file in the folder where it runs."""
+    errors = M.validate(model)
+    if errors:
+        raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
+    resolved = P.resolved(M.with_defaults(model))
+    mesh = M.physics_mesh(resolved)
+    dim = M.geometry_dim(resolved, M.geometry_of(resolved, mesh))
+    meshing = mesher.mesh_script(resolved, mesh, mesh["name"], standalone=True)
+    solving = codegen.generate(model, None, {"mesh": mesh["name"], "dim": dim}, standalone=True)
+    solving = "\n".join(l for l in solving.splitlines() if not l.startswith("#!")) + "\n"
+    head = ("#!/usr/bin/env python3\n"
+            f"# Standalone GetFEM script exported by getfem_gui: model {model.get('name', '')!r}\n"
+            "# Part 1 builds the mesh and its regions, part 2 solves; run it with a\n"
+            "# Python that provides GetFEM. It writes results.json and the VTU file here.\n")
+    meshing = "\n".join(l for l in meshing.splitlines() if not l.startswith("#!")) + "\n"
+    return (head + "\n# " + "=" * 70 + "\n# Part 1: mesh\n" + meshing
+            + "\n# " + "=" * 70 + "\n# Part 2: solve\n" + solving)

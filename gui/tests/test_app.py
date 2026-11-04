@@ -371,6 +371,17 @@ def test_stop_a_computation():
         close(win)
 
 
+def test_export_python_script():
+    with tempfile.TemporaryDirectory() as tmp:
+        win = window()
+        out = Path(tmp) / "script.py"
+        assert win.export_script(out) and "Part 2: solve" in out.read_text()
+        win.select(("materials", 0))
+        edit(win.props.editor(("materials", 0, "properties", "k")), "")
+        assert not win.export_script(Path(tmp) / "bad.py")        # invalid model: refused
+        close(win)
+
+
 def test_save_as_and_new():
     with tempfile.TemporaryDirectory() as tmp:
         win = window()

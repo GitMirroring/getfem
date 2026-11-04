@@ -231,13 +231,16 @@ def _selection_code(name, sel, w, shape=None):
 
 
 def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = None,
-                reuse_raw: bool = False) -> str:
+                reuse_raw: bool = False, standalone: bool = False) -> str:
     """Text of the meshing script; it writes <basename>.mesh and <basename>.json.
 
     The mesh before the selections ("raw" mesh, <basename>_raw.mesh) depends
     on the geometry and the mesh parameters only: with reuse_raw, it is loaded
     instead of being generated again, so that changing a selection does not
-    run the mesher again. Otherwise it is saved, with raw_key."""
+    run the mesher again. Otherwise it is saved, with raw_key.
+
+    standalone: the meshing part of a script that goes on with the solve
+    (runner.export_script): nothing is written, `m` and REGIONS are used."""
     geom = M.geometry_of(model, mesh)
     table = M.selection_table(model, geom)
     w = _W()
@@ -336,6 +339,10 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    m.set_region(i, ids)")
     w("    REGIONS[name] = i")
     w("    KINDS[name] = kind")
+
+    if standalone:
+        w("print(f'mesh: {m.nbcvs()} elements, {m.nbpts()} points')")
+        return "\n".join(w.lines) + "\n"
 
     w.section("Save")
     w(f"m.save({basename + '.mesh'!r})")
