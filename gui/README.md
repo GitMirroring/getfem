@@ -110,12 +110,14 @@ widget itself needs a real display.
 | `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
 | `getfem_gui/cli.py` | command line interface |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
+| `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
 | `getfem_gui/app/viewer.py`, `scene.py` | 3D view (pyvistaqt) and the PyVista scenes |
 | `getfem_gui/app/jobs.py` | meshing and solving through QProcess (output, interruption) |
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
 | `tests/test_elasticity.py` | 11 linear elasticity cases |
+| `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
@@ -197,12 +199,32 @@ free but not loaded): it is solved, with a warning in `results["warnings"]`.
 Add a declarative entry to `model.PHYSICS_SPECS` (field kind, properties,
 options, boundary conditions and their fields, anchoring conditions, macro
 names): validation uses it, and a GUI can build its forms from it. Then write
-two functions in `codegen.py` (GWFL terms, post-processing) and register them
-in `PHYSICS`.
+three functions in `codegen.py` (declaration of the unknown and of the
+macros, GWFL terms, post-processing) and register them in `PHYSICS`; the
+first one is also used to check the user expressions.
+
+## Checking the GWFL expressions
+
+`model.validate` checks the structure of a model without GetFEM. The
+expressions written by the user (material properties, sources, boundary
+values, integrated quantities) are then checked by GetFEM itself
+(`gwfl.check`): a small script evaluates each of them in the context of the
+solve script (same unknown, property names and macros), on a mesh of one or
+two elements, and reports the errors as `path: message`, e.g.
+
+```
+materials[0].properties.E: Unbalanced parenthesis (at character 12)
+physics.sources[0].value: a vector of 2 components is expected, got 3 components
+outputs.quantities[3].expr: Invalid outward unit normal vector. Possible reasons: not on boundary ...
+```
+
+`validate` and `run` (command line, `runner.run`) perform this check before
+meshing; the graphical interface runs it in the background a moment after
+each change and shows the errors on the fields, in the tree and in the
+*Problems* tab. A model made of numbers only needs no check.
 
 ## Open topics
 
-- Check the syntax of GWFL expressions as early as validation.
 - Global parameters (as in Comsol): named constants, possibly defined from
   each other, usable everywhere: geometry dimensions and mesh sizes (hence
   evaluated numerically, with a restricted expression syntax common to Python

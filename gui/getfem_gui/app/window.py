@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QInputDia
                                QTreeWidget, QTreeWidgetItem)
 
 from .. import editing as E, mesher, model as M
-from .jobs import JobRunner
+from .jobs import GwflChecker, JobRunner
 from .properties import PropertiesPanel
 from .viewer import Viewer
 
@@ -58,6 +58,17 @@ class MainWindow(QMainWindow):
         self.jobs.runningChanged.connect(self._running_changed)
         self._tmpdir = None
         self._discard_job = False
+        # GWFL check in the background, a moment after the last change
+        self.checker = GwflChecker(python, self)
+        self.checker.finished.connect(self._gwfl_checked)
+        self.gwfl_errors: list[str] = []
+        self._gwfl_key = None              # model for which gwfl_errors hold
+        self._gwfl_failure_logged = False
+        self._compute_after_check = False
+        self._check_timer = QTimer(self)
+        self._check_timer.setSingleShot(True)
+        self._check_timer.setInterval(600)
+        self._check_timer.timeout.connect(self._start_gwfl_check)
         self._build_ui()
         self._build_actions()
         self.model: dict = {}
@@ -206,6 +217,7 @@ class MainWindow(QMainWindow):
         self.setWindowModified(False)
         self._load_previous_results()
         self.refresh(select=())
+        self._schedule_gwfl_check()
         self.tree.expandToDepth(1)
         self._update_title()
         self._update_undo()
@@ -301,6 +313,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.jobs.stop()
+        self.checker.cancel()
         self.viewer.close_plotter()
         event.accept()
 
@@ -320,7 +333,7 @@ class MainWindow(QMainWindow):
         for item in it:
             if item.isExpanded():
                 expanded.add(item.data(0, PATH_ROLE))
-        self.errors = M.validate(self.model)
+        self.errors = self._all_errors()
         root = E.tree(self.model, list(self.result_fields), has_results=self.results is not None)
         if self.results is not None and self.results_stale:
             res = E.find_node(root, (E.RESULTS,))
@@ -360,6 +373,47 @@ class MainWindow(QMainWindow):
         self._update_problems()
         if rebuild_panel:
             self._node_selected()
+
+    # ================================================================ GWFL check
+
+    def _model_key(self) -> str:
+        return json.dumps(_results_key(self.model), sort_keys=True)
+
+    def _all_errors(self) -> list[str]:
+        errors = M.validate(self.model)
+        if not errors and self._gwfl_key == self._model_key():
+            errors = list(self.gwfl_errors)
+        return errors
+
+    def _schedule_gwfl_check(self):
+        self._check_timer.start()
+
+    def _start_gwfl_check(self):
+        if M.validate(self.model):        # structural errors first
+            self._compute_after_check = False
+            return
+        key = self._model_key()
+        if key == self._gwfl_key:
+            self._gwfl_checked(key, self.gwfl_errors)
+            return
+        if not self.jobs.running:
+            self.state.setText("Checking the expressions...")
+        self.checker.check(copy.deepcopy(self.model), key, self.workdir)
+
+    def _gwfl_checked(self, key, result):
+        if key != self._model_key():      # the model changed meanwhile
+            return
+        if isinstance(result, str):       # the check could not run: do not block
+            if not self._gwfl_failure_logged:
+                self._log(f"Warning: {result}", error=True)
+                self._gwfl_failure_logged = True
+            result = []
+        self.gwfl_errors, self._gwfl_key = result, key
+        self.refresh(rebuild_panel=False)
+        self._update_marks()
+        if self._compute_after_check:
+            self._compute_after_check = False
+            self.compute()
 
     def _iter_items(self):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
@@ -502,6 +556,7 @@ class MainWindow(QMainWindow):
 
     def _changed(self, select=None, rebuild_panel=True):
         self.setWindowModified(True)
+        self._schedule_gwfl_check()
         if self.results is not None:
             self.results_stale = _results_key(self.model) != self.results_model
         self._update_title()
@@ -636,6 +691,15 @@ class MainWindow(QMainWindow):
         if running:
             self.state.setText("Computing...")
 
+    def _check_gwfl(self) -> bool:
+        if self.gwfl_errors:
+            self.bottom.setCurrentWidget(self.problems)
+            self.state.setText("Some expressions are invalid: see the Problems tab")
+            self._log("Cannot compute, invalid expressions:\n  " + "\n  ".join(self.gwfl_errors),
+                      error=True)
+            return False
+        return True
+
     def _check(self, prefixes=None) -> bool:
         errors = M.validate(self.model)
         if prefixes:
@@ -660,6 +724,13 @@ class MainWindow(QMainWindow):
 
     def compute(self):
         if self.jobs.running or not self._check():
+            return
+        if self._gwfl_key != self._model_key():   # expressions not checked yet
+            self._compute_after_check = True
+            self._check_timer.stop()
+            self._start_gwfl_check()
+            return
+        if not self._check_gwfl():
             return
         self.bottom.setCurrentWidget(self.log)
         self.jobs.solve(self.model, self.workdir)

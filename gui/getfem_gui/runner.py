@@ -27,7 +27,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import codegen, mesher, model as M
+from . import codegen, gwfl, mesher, model as M
 
 
 @dataclass
@@ -83,8 +83,9 @@ def prepare_solve(model: dict, workdir: str | Path, mesh: mesher.MeshResult,
 
 
 def run(model: dict, workdir: str | Path, python: str | None = None,
-        timeout: float | None = None) -> RunResult:
-    """Prepare the mesh used by the physics, generate the solve script, run it.
+        timeout: float | None = None, check_gwfl: bool = True) -> RunResult:
+    """Check the model (including its GWFL expressions), prepare the mesh used
+    by the physics, generate the solve script, run it.
 
     `python` selects the interpreter that provides GetFEM
     (by default, the one running getfem_gui).
@@ -92,6 +93,8 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     errors = M.validate(model)
+    if not errors and check_gwfl:
+        errors = gwfl.check(model, python=python)
     if errors:
         raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
 

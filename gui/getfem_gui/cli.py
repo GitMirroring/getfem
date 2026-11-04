@@ -31,7 +31,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import codegen, mesher, model as M, runner
+from . import codegen, gwfl, mesher, model as M, runner
 
 
 def _workdir(args) -> Path:
@@ -48,7 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         return sp
 
     cmd("new", "create a starting model")
-    cmd("validate", "check a model")
+    pv = cmd("validate", "check a model, including its GWFL expressions")
+    pv.add_argument("--python", help="Python interpreter that provides GetFEM")
     pm = cmd("mesh", "build the meshes (cached)")
     pm.add_argument("-m", "--mesh", action="append", help="mesh name (repeatable)")
     pm.add_argument("--force", action="store_true", help="ignore the cache")
@@ -88,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     errors = M.validate(model)
+    if not errors and args.cmd in ("validate", "run"):
+        try:
+            errors = gwfl.check(model, python=getattr(args, "python", None))
+        except RuntimeError as exc:
+            print(f"warning: {exc}", file=sys.stderr)
     for e in errors:
         print(f"error: {e}", file=sys.stderr)
     if errors:
@@ -128,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(script)
         return 0
 
-    res = runner.run(model, workdir, python=args.python)
+    res = runner.run(model, workdir, python=args.python, check_gwfl=False)  # checked above
     if not res.ok:
         print(f"failed: {res.error}", file=sys.stderr)
         if res.script:

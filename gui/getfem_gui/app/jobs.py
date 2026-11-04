@@ -26,7 +26,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
-from .. import mesher, model as M, runner
+from .. import gwfl, mesher, model as M, runner
 
 
 class JobRunner(QObject):
@@ -154,3 +154,67 @@ class JobRunner(QObject):
             self._mesh_done(job.finish(code, stderr))
         else:
             self.solveFinished.emit(job.finish(code, "".join(self._stdout), stderr))
+
+
+class GwflChecker(QObject):
+    """Checks the GWFL expressions of a model in the background (see gwfl.py).
+
+    `finished(key, result)`: result is the list of errors, or a string if the
+    check could not run. Only the last requested check is reported."""
+    finished = Signal(object, object)
+
+    def __init__(self, python: str | None = None, parent=None):
+        super().__init__(parent)
+        self.python = python
+        self._proc: QProcess | None = None
+        self._job = None
+        self._key = None
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None
+
+    def check(self, model: dict, key, folder: str | Path) -> None:
+        self.cancel()
+        try:
+            job = gwfl.prepare(model, self.python, folder)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            self.finished.emit(key, f"{type(exc).__name__}: {exc}")
+            return
+        if job is None:                         # no expression to check
+            self.finished.emit(key, [])
+            return
+        self._job, self._key = job, key
+        proc = QProcess(self)
+        proc.setWorkingDirectory(job["cwd"])
+        proc.finished.connect(lambda code, status, p=proc: self._done(p))
+        proc.errorOccurred.connect(lambda err, p=proc: err == QProcess.ProcessError.FailedToStart
+                                   and self._done(p))
+        self._proc = proc
+        proc.start(job["command"][0], job["command"][1:])
+
+    def cancel(self) -> None:
+        if self._proc is not None:
+            proc, self._proc = self._proc, None
+            proc.finished.disconnect()
+            proc.kill()
+            proc.waitForFinished(1000)
+            proc.deleteLater()
+            Path(self._job["script"]).unlink(missing_ok=True)
+
+    def _done(self, proc):
+        if proc is not self._proc:
+            return
+        self._proc = None
+        try:
+            out = bytes(proc.readAllStandardOutput()).decode("utf-8", "replace")
+            err = bytes(proc.readAllStandardError()).decode("utf-8", "replace")
+            proc.deleteLater()
+        except RuntimeError:          # the process object went away with the window
+            return
+        Path(self._job["script"]).unlink(missing_ok=True)
+        try:
+            result = gwfl.parse_output(out, err)
+        except (RuntimeError, ValueError) as exc:
+            result = str(exc)
+        self.finished.emit(self._key, result)

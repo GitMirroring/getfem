@@ -100,17 +100,23 @@ def _materials(model: dict, w: ScriptWriter) -> None:
 
 # ---------------------------------------------------------------- physics
 #
-# Each physics provides two functions writing script lines:
-#   setup(model, w, dim) : variable, macros, terms and boundary conditions
-#   post(model, w, dim)  : results entries and the `fields` exported to VTU
+# Each physics provides three functions writing script lines:
+#   declare(model, w, dim) : the variable and the macros (also used by gwfl.py
+#                            to check the user expressions in the same context)
+#   setup(model, w, dim)   : terms and boundary conditions
+#   post(model, w, dim)    : results entries and the `fields` exported to VTU
 # The finite element method `mf` is created beforehand, scalar or vector
 # according to M.PHYSICS_SPECS[type]["field"].
+
+def _heat_declare(model: dict, w: ScriptWriter, dim: int) -> None:
+    u = model["physics"]["variable"]
+    w(f"md.add_fem_variable({u!r}, mf)")
+    w(f"md.add_macro('q', '-k*Grad_{u}')  # heat flux vector")
+
 
 def _heat_stationary(model: dict, w: ScriptWriter, dim: int) -> None:
     phys = model["physics"]
     u = phys["variable"]
-    w(f"md.add_fem_variable({u!r}, mf)")
-    w(f"md.add_macro('q', '-k*Grad_{u}')  # heat flux vector")
     w(f"# -div(k grad {u}) = f")
     w(f"md.add_linear_term(mim, 'k*Grad_{u}.Grad_Test_{u}')")
     for src in phys["sources"]:
@@ -145,7 +151,7 @@ def _heat_post(model: dict, w: ScriptWriter, dim: int) -> None:
     w(f"fields = [mf, {u}, {u!r}, mf_flux, flux, 'heat_flux']")
 
 
-def _linear_elasticity(model: dict, w: ScriptWriter, dim: int) -> None:
+def _elasticity_declare(model: dict, w: ScriptWriter, dim: int) -> None:
     phys = model["physics"]
     u = phys["variable"]
     plane = phys.get("plane", "strain")
@@ -169,17 +175,21 @@ def _linear_elasticity(model: dict, w: ScriptWriter, dim: int) -> None:
           " + sqr(sigma_zz-sigma(1,1))) + 3*sqr(sigma(1,2)))')")
     else:
         w("md.add_macro('von_mises', 'abs(sigma(1,1))')")
-    w("")
+    if any(bc["type"] == "roller" for bc in phys["boundary_conditions"]):
+        w("# Roller conditions use Nitsche's method: no extra unknown, so they can share")
+        w("# nodes with other displacement conditions. GetFEM's penalty is 1/(gamma0*h).")
+        w("md.add_initialized_data('nitsche_gamma0', [1e-2 / np.max(np.abs(E))])")
+
+
+def _linear_elasticity(model: dict, w: ScriptWriter, dim: int) -> None:
+    phys = model["physics"]
+    u = phys["variable"]
     w(f"# -div sigma({u}) = f")
     w(f"md.add_linear_term(mim, 'sigma:Grad_Test_{u}')")
     for src in phys["sources"]:
         w(f"md.add_source_term(mim, {gwfl_vec(src['value'], dim) + '.Test_' + u!r}, "
           f"{_rg(src['selection'])})")
 
-    if any(bc["type"] == "roller" for bc in phys["boundary_conditions"]):
-        w("# Roller conditions use Nitsche's method: no extra unknown, so they can share")
-        w("# nodes with other displacement conditions. GetFEM's penalty is 1/(gamma0*h).")
-        w("md.add_initialized_data('nitsche_gamma0', [1e-2 / np.max(np.abs(E))])")
     for i, bc in enumerate(phys["boundary_conditions"], start=1):
         rg = _rg(bc["selection"])
         w("")
@@ -216,8 +226,8 @@ def _elasticity_post(model: dict, w: ScriptWriter, dim: int) -> None:
 
 
 PHYSICS = {
-    "heat_stationary": (_heat_stationary, _heat_post),
-    "linear_elasticity": (_linear_elasticity, _elasticity_post),
+    "heat_stationary": (_heat_declare, _heat_stationary, _heat_post),
+    "linear_elasticity": (_elasticity_declare, _linear_elasticity, _elasticity_post),
 }
 
 
@@ -234,7 +244,7 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     model = M.with_defaults(model)
     out = model["outputs"]
     ptype = model["physics"]["type"]
-    physics, post = PHYSICS[ptype]
+    declare, physics, post = PHYSICS[ptype]
     dim = int(mesh_info["dim"])
     vector = M.PHYSICS_SPECS[ptype]["field"] == M.VECTOR
 
@@ -268,6 +278,8 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     _materials(model, w)
 
     w.section(f"Physics: {ptype}")
+    declare(model, w, dim)
+    w("")
     physics(model, w, dim)
 
     w.section("Solve")

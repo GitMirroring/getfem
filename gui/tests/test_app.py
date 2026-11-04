@@ -154,6 +154,23 @@ def test_errors_are_shown_on_fields_tree_and_problems():
     close(win)
 
 
+def test_invalid_expressions_are_found_in_the_background():
+    win = window()
+    key = ("materials", 0, "properties", "k")
+    win.select(("materials", 0))
+    edit(win.props.editor(key), "1+(X(1)")
+    assert M.validate(win.model) == []          # syntactically valid JSON model...
+    assert wait(lambda: any("Unbalanced parenthesis" in e for e in win.errors), 60)
+    assert win.problems.count() == 1            # ...but GetFEM finds the error
+    assert "background" in win.props.editor(key).styleSheet()
+    win.compute()
+    assert not win.jobs.running and win.bottom.currentWidget() is win.problems
+    edit(win.props.editor(key), "1+X(1)")
+    assert wait(lambda: win.errors == [] and win._gwfl_key == win._model_key(), 60)
+    assert "background" not in win.props.editor(key).styleSheet()
+    close(win)
+
+
 def test_change_of_type_rebuilds_the_form():
     win = window()
     path = ("physics", "boundary_conditions", 0)
@@ -192,8 +209,8 @@ def test_rename_a_selection_from_the_form():
 def test_compute_shows_results_and_reloads_them():
     with tempfile.TemporaryDirectory() as tmp:
         win = window("plate.json", tmp)
-        win.compute()
-        assert win.jobs.running
+        win.compute()                       # after the check of the expressions
+        assert wait(lambda: win.jobs.running or win.results is not None, 60)
         assert wait(lambda: win.results is not None and not win.jobs.running), win.log.toPlainText()
         assert win.results["status"] == "ok"
         assert win.current_path()[0] == E.RESULTS
@@ -252,6 +269,7 @@ def test_stop_a_computation():
         win = window("plate.json", tmp)
         win.model["meshes"][0]["divisions"] = [400, 400]   # long enough to be interrupted
         win.compute()
+        assert wait(lambda: win.jobs.running, 60)
         assert wait(lambda: "Solving" in win.log.toPlainText() or not win.jobs.running, 60)
         win.jobs.stop()
         assert wait(lambda: not win.jobs.running, 30)
