@@ -128,6 +128,15 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   go to `<model>_work/` next to the model file (a temporary folder for an
   unsaved model), and are found again when the model is reopened; results
   are marked *out of date* as soon as the model changes.
+- **Results**: with a result field selected, its form sets the component
+  (or magnitude), the deformed shape, the colormap, the color range (empty
+  bounds: the range of the values), isolines (evenly spaced in the range),
+  color bands, and arrows of a vector field (on a regular grid, length
+  proportional to the magnitude). A click on a 2D field shows its value
+  under the view's toolbar. The **Cut line** tool draws a segment A → B
+  (or it is typed in the form): the field is plotted along it under the view
+  (NaN gaps outside the domain), and the values can be saved as CSV. The
+  cut line is common to all the fields; the settings survive a new solve.
 - Undo / redo for every change; *Compute ▸ Show the solve script* shows the
   generated GetFEM script, and *File ▸ Export as a Python script* writes a
   single standalone script (meshing, then solving) that runs without
@@ -158,7 +167,8 @@ widget itself needs a real display.
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
-| `getfem_gui/app/viewer.py`, `scene.py` | 3D view (pyvistaqt) and the PyVista scenes |
+| `getfem_gui/app/viewer.py`, `scene.py` | 3D view (pyvistaqt) and the PyVista scenes (fields: isolines, arrows, cut lines) |
+| `getfem_gui/app/plot.py` | small line plot (QPainter) for the values along a cut line |
 | `getfem_gui/app/jobs.py` | meshing and solving through QProcess (output, interruption) |
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
 | `tests/test_elasticity.py` | 11 linear elasticity cases |

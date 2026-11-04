@@ -150,34 +150,150 @@ def deformation_scale(ds: pv.DataSet, name: str) -> float:
     return 0.1 * size(ds) / umax if umax > 0 else 1.0
 
 
-def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
-               warp: str | None = None, scale: float = 1.0, edges: bool = False,
-               title: str = "", reset: bool = True) -> None:
-    """A result field, possibly on the shape deformed by the field `warp`."""
-    clear(plotter)
-    shown = ds
+CMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # as properties.COLORMAPS
+CUT = "#d62728"
+
+
+def values(ds: pv.DataSet, name: str, component: int | None = None) -> tuple[np.ndarray, str]:
+    """The scalar shown for a field (a component or the magnitude of a vector),
+    at the points (cell values are averaged to the points), and its label."""
+    if name in ds.point_data:
+        arr = np.asarray(ds.point_data[name])
+    else:
+        arr = np.asarray(ds.cell_data_to_point_data().point_data[name])
+    if arr.ndim == 1:
+        return arr.astype(float), name
+    if component is None:
+        return np.linalg.norm(arr, axis=1), f"|{name}|"
+    return arr[:, component].astype(float), f"{name} ({'xyz'[component] if component < 3 else component})"
+
+
+def _with_values(ds: pv.DataSet, name: str, component, warp, scale) -> tuple[pv.DataSet, str]:
+    """A copy of ds holding the shown scalar "_shown", deformed by `warp`."""
+    shown = ds.copy()
+    shown.point_data["_shown"], label = values(ds, name, component)
     if warp and warp in ds.point_data:
         vec = np.asarray(ds.point_data[warp])
         if vec.ndim == 2 and vec.shape[1] < 3:
             vec = np.hstack([vec, np.zeros((len(vec), 3 - vec.shape[1]))])
-        shown = ds.copy()
         shown.points = ds.points + scale * vec
+    return shown, label
+
+
+def isoline_levels(lo: float, hi: float, n: int) -> np.ndarray:
+    """n levels strictly between lo and hi, evenly spaced."""
+    if n <= 0 or not hi > lo:
+        return np.array([])
+    return np.linspace(lo, hi, n + 2)[1:-1]
+
+
+def _arrows(shown: pv.DataSet, ds: pv.DataSet, field: str, count: int = 24) -> pv.PolyData | None:
+    """Arrows of a vector field at the points of a regular grid (about `count`
+    along the longest side) inside the shown domain."""
+    if field not in ds.point_data and field not in ds.cell_data:
+        return None
+    src = shown.copy()
+    vec = np.asarray(ds.point_data[field] if field in ds.point_data
+                     else ds.cell_data_to_point_data().point_data[field], float)
+    if vec.ndim != 2:
+        return None
+    if vec.shape[1] < 3:
+        vec = np.hstack([vec, np.zeros((len(vec), 3 - vec.shape[1]))])
+    src.point_data["_vec"] = vec
+    b = np.asarray(src.bounds, float)
+    lo, hi = b[0::2], b[1::2]
+    step = (hi - lo).max() / count
+    dims = [max(int(np.floor((h - l) / step)) + 1, 1) for l, h in zip(lo, hi)]
+    origin = lo + 0.5 * ((hi - lo) - (np.array(dims) - 1) * step)
+    grid = pv.ImageData(dimensions=dims, spacing=(step, step, step), origin=origin)
+    probe = grid.sample(src)
+    mask = np.asarray(probe.point_data["vtkValidPointMask"]).astype(bool)
+    pts = pv.PolyData(np.asarray(probe.points)[mask])
+    v = np.asarray(probe.point_data["_vec"])[mask]
+    vmax = float(np.max(np.linalg.norm(v, axis=1))) if len(v) else 0.0
+    if not len(v) or vmax <= 0:
+        return None
+    pts.point_data["_vec"] = v
+    return pts.glyph(orient="_vec", scale="_vec", factor=0.9 * step / vmax,
+                     geom=pv.Arrow(tip_length=0.3, tip_radius=0.12, shaft_radius=0.04))
+
+
+def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
+               warp: str | None = None, scale: float = 1.0, edges: bool = False,
+               title: str = "", reset: bool = True, isolines: int = 0, bands: bool = False,
+               cmap: str | None = None, clim=None, arrows: str | None = None, cut=None) -> None:
+    """A result field, possibly on the shape deformed by the field `warp`.
+
+    isolines: number of isolines (black, evenly spaced in the range); bands:
+    a banded colormap (one band between isolines, 10 without them); cmap: a
+    colormap name (CMAPS); clim: (min, max) of the color range (None: the
+    range of the values); arrows: a vector field drawn with arrows; cut: a
+    segment (two points) drawn on the view (see line_values)."""
+    clear(plotter)
+    shown, label = _with_values(ds, name, component, warp, scale)
+    if warp and warp in ds.point_data:
         plotter.add_mesh(_outline(ds), color="#7d8690", line_width=1, lighting=False,
                          name="undeformed")
-    ncomp = field_names(ds).get(name, 1)
-    label = name if component is None or ncomp == 1 else f"{name} ({'xyz'[component]})"
-    if ncomp > 1 and component is None:
-        label = f"|{name}|"
-    plotter.add_mesh(shown, scalars=name, component=component if ncomp > 1 else None,
-                     cmap=CMAP, show_edges=edges, edge_color=EDGES, lighting=not is_planar(ds),
+    data = np.asarray(shown.point_data["_shown"])
+    auto = (float(np.min(data)), float(np.max(data))) if data.size else (0.0, 1.0)
+    clim = auto if clim is None else tuple(a if c is None else float(c) for c, a in zip(clim, auto))
+    if not clim[1] > clim[0]:
+        clim = (clim[0] - 0.5 * (abs(clim[0]) or 1.0), clim[0] + 0.5 * (abs(clim[0]) or 1.0))
+    planar = is_planar(ds)
+    plotter.add_mesh(shown, scalars="_shown", cmap=cmap or CMAP, clim=clim,
+                     n_colors=(isolines + 1 if isolines > 0 else 10) if bands else 256,
+                     show_edges=edges, edge_color=EDGES, lighting=not planar,
                      scalar_bar_args={"title": label, "vertical": True, "position_x": 0.86,
                                       "position_y": 0.1, "height": 0.65, "width": 0.05,
                                       "fmt": "%.3g", "color": "#333333",
+                                      "n_labels": (isolines + 2 if isolines + 2 <= 12 else 5) if bands and isolines
+                                      else 11 if bands else 5,
                                       "title_font_size": 14, "label_font_size": 12},
                      name="field")
+    levels = isoline_levels(*clim, isolines)
+    if levels.size:
+        surf = shown.extract_surface(nonlinear_subdivision=0)
+        lines = surf.contour(isosurfaces=levels, scalars="_shown")
+        if lines.n_points:
+            plotter.add_mesh(lines, color="#1a1a1a", line_width=1.5, lighting=False, name="isolines")
+    if arrows:
+        glyphs = _arrows(shown, ds, arrows)
+        if glyphs is not None:
+            plotter.add_mesh(glyphs, color="#222222", lighting=not planar, name="arrows")
+    if cut is not None:
+        a, b = (np.pad(np.asarray(p, float)[:3], (0, 3 - len(p[:3]))) for p in cut)
+        plotter.add_mesh(pv.Line(a, b), color=CUT, line_width=3, lighting=False, name="cut")
+        plotter.add_point_labels(np.array([a, b]), ["A", "B"], font_size=12, text_color=CUT,
+                                 shape=None, show_points=True, point_color=CUT, point_size=8,
+                                 always_visible=True, name="cut_ends")
     if title:
         plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
     _camera(plotter, ds, reset)
+
+
+def line_values(ds: pv.DataSet, name: str, component: int | None, a, b,
+                n: int = 400) -> tuple[np.ndarray, np.ndarray]:
+    """The shown scalar along the segment [a, b] (in the undeformed
+    configuration): (distance from a, value), NaN outside the domain."""
+    a, b = (np.pad(np.asarray(p, float)[:3], (0, 3 - len(p[:3]))) for p in (a, b))
+    src = ds.copy()
+    src.point_data["_shown"], _ = values(ds, name, component)
+    line = src.sample_over_line(a, b, resolution=n)
+    dist = np.linalg.norm(np.asarray(line.points) - a, axis=1)
+    v = np.asarray(line.point_data["_shown"], float).copy()
+    v[~np.asarray(line.point_data["vtkValidPointMask"]).astype(bool)] = np.nan
+    return dist, v
+
+
+def probe(ds: pv.DataSet, name: str, component: int | None, point) -> float | None:
+    """The shown scalar at a point (None outside the domain)."""
+    p = np.pad(np.asarray(point, float)[:3], (0, 3 - len(point[:3])))
+    src = ds.copy()
+    src.point_data["_shown"], _ = values(ds, name, component)
+    out = pv.PolyData(p[None, :]).sample(src)
+    if not bool(np.asarray(out.point_data["vtkValidPointMask"])[0]):
+        return None
+    return float(np.asarray(out.point_data["_shown"])[0])
 
 
 # ------------------------------------------------------------------ 2D geometry preview
@@ -280,7 +396,9 @@ def show_rubber(plotter, shape: dict | None) -> None:
     plotter.remove_actor("rubber")
     if shape is None:
         return
-    if shape["type"] == "rectangle":
+    if shape["type"] == "segment":
+        pts = np.array([shape["a"][:2], shape["b"][:2]], float)
+    elif shape["type"] == "rectangle":
         (x0, y0), (x1, y1) = shape["min"], shape["max"]
         pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
     else:

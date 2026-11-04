@@ -35,7 +35,8 @@ import numpy as np
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
+                               QWidget)
 
 
 def prepare_opengl() -> None:
@@ -188,6 +189,8 @@ class Viewer(QWidget):
     regionClicked = Signal(object)        # region (geometry2d.region_at) clicked in the preview
     shapeDrawn = Signal(object, str)      # primitive (model format), operation
     handleMoved = Signal(str, object)     # handle name, new position (snapped)
+    cutDrawn = Signal(object)             # cut line [a, b] drawn on a field
+    cutCleared = Signal()
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -213,6 +216,7 @@ class Viewer(QWidget):
             self._buttons.append(b)
         layout.addLayout(bar)
         self._build_draw_bar(layout)
+        self._build_result_bar(layout)
         self.edges = {"mesh": True, "field": False}   # element edges, per kind of display
         self._last = None
         self._shown_key = None
@@ -222,6 +226,7 @@ class Viewer(QWidget):
         try:
             self.plotter, self.view_widget = _load_plotter(self)
             layout.addWidget(self.view_widget, 1)
+            self._build_cut_panel(layout)
             self.placeholder = None
             self._install_picking()
         except Exception as exc:  # noqa: BLE001 (missing package, no OpenGL, ...)
@@ -249,7 +254,17 @@ class Viewer(QWidget):
 
     # -------------------------------------------------------------- display
 
+    def _leave_field(self) -> None:
+        """Another kind of display: the tools of the results go away."""
+        if self._tool == "line":
+            self.cut_button.setChecked(False)
+        self.result_bar.hide()
+        if self.cut_panel is not None:
+            self.cut_panel.hide()
+        self._cut = None
+
     def show_message(self, text: str) -> None:
+        self._leave_field()
         self.status.setText(text)
         self._last = ("message", text)
         self._pieces = []
@@ -263,6 +278,7 @@ class Viewer(QWidget):
 
     def show_mesh(self, mesh_file: Path, selection_file: Path | None = None,
                   status: str = "") -> None:
+        self._leave_field()
         self.status.setText(status)
         self._last = ("mesh", mesh_file, selection_file, status)
         self._pieces = []
@@ -283,6 +299,7 @@ class Viewer(QWidget):
         function negative in the highlighted part (geometry2d.domain_level).
         pickable: True or "edges", clicks on boundary pieces are reported by
         edgeClicked; "regions", clicks in the domain by regionClicked."""
+        self._leave_field()
         self.status.setText(status)
         self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable, key)
         self._pieces = pieces if pickable in (True, "edges") else []
@@ -322,13 +339,17 @@ class Viewer(QWidget):
     def _on_click(self, widget, x, y):
         """A click on the view (Qt logical coordinates), converted to VTK display
         coordinates as the render window interactor does (origin at the bottom)."""
-        if not self._pieces and self._regions_of is None:
+        field = self._last is not None and self._last[0] == "field"
+        if not self._pieces and self._regions_of is None and not field:
             return
         from . import scene
         scale = widget.devicePixelRatioF()
         world = scene.display_to_world(self.plotter, round(x * scale),
                                        round((widget.height() - y - 1) * scale))
-        self.pick_world(world)
+        if field:
+            self.probe_world(world)
+        else:
+            self.pick_world(world)
 
     def _on_move(self, *args):
         if self._pieces or self._regions_of is not None:
@@ -464,6 +485,8 @@ class Viewer(QWidget):
     def stop_drawing(self) -> None:
         for b in self.draw_buttons.values():
             b.setChecked(False)
+        if getattr(self, "cut_button", None) is not None:
+            self.cut_button.setChecked(False)
 
     def _tool_toggled(self, kind, on):
         if on:
@@ -509,6 +532,11 @@ class Viewer(QWidget):
             return
         from .. import geometry2d as G
         from . import scene
+        if self._tool == "line":
+            scene.show_rubber(self.plotter, {"type": "segment", "a": self._draw_start,
+                                             "b": self._snapped(world)})
+            self.plotter.render()
+            return
         scene.show_rubber(self.plotter, G.drawn_shape(self._tool, self._draw_start, self._snapped(world)))
         self.plotter.render()
 
@@ -516,6 +544,13 @@ class Viewer(QWidget):
         if self._tool is None or self._draw_start is None:
             return
         from .. import geometry2d as G
+        if self._tool == "line":
+            a, b = self._draw_start, self._snapped(world)
+            self.draw_cancel()
+            if a != b:
+                self.cut_button.setChecked(False)
+                self.cutDrawn.emit([a, b])
+            return
         shape = G.drawn_shape(self._tool, self._draw_start, self._snapped(world))
         self.draw_cancel()
         if shape is not None:
@@ -531,10 +566,15 @@ class Viewer(QWidget):
     # -------------------------------------------------------------- results
 
     def show_field(self, result_file: Path, name: str, component=None, warp=None,
-                   scale=1.0, status: str = "") -> None:
+                   scale=1.0, status: str = "", view: dict | None = None) -> None:
+        """A result field; view: display options of scene.show_field (isolines,
+        bands, cmap, clim, arrows, cut). A cut line also shows the values
+        along it under the view; a click on a 2D field shows its value."""
+        view = dict(view or {})
         self.status.setText(status)
-        self._last = ("field", result_file, name, component, warp, scale, status)
-        self._pieces = []
+        self._last = ("field", result_file, name, component, warp, scale, status, view)
+        self._pieces, self._regions_of = [], None
+        self.probe_label.setText("")
         if self.plotter is None:
             self._placeholder(status or name)
             return
@@ -542,9 +582,106 @@ class Viewer(QWidget):
         key = ("result", str(result_file))
         ds = scene.read(result_file)
         scene.show_field(self.plotter, ds, name, component, warp, scale, edges=self.edges["field"],
-                         reset=key != self._shown_key)
+                         reset=key != self._shown_key, **view)
         self._shown_key = key
+        self.result_bar.setVisible(scene.is_planar(ds))
+        self._show_cut(ds, name, component, view.get("cut"))
+        if self._tool == "line":
+            self._show_grid(True)
         self.plotter.render()
+
+    # -------------------------------------------------------------- results: cut line, probe
+
+    def _build_result_bar(self, layout):
+        self.result_bar = QWidget()
+        row = QHBoxLayout(self.result_bar)
+        row.setContentsMargins(4, 0, 4, 2)
+        self.cut_button = QToolButton()
+        self.cut_button.setText("Cut line")
+        self.cut_button.setObjectName("cut_line")
+        self.cut_button.setCheckable(True)
+        self.cut_button.setToolTip("Drag from A to B to plot the field along the segment "
+                                   "(Escape: stop). A click on the field shows its value.")
+        self.cut_button.toggled.connect(lambda on: self._tool_toggled("line", on))
+        row.addWidget(self.cut_button)
+        self.probe_label = QLabel("")
+        self.probe_label.setObjectName("probe")
+        self.probe_label.setStyleSheet("color: #555;")
+        row.addWidget(self.probe_label, 1)
+        layout.addWidget(self.result_bar)
+        self.result_bar.hide()
+        self.cut_panel = None
+        self._cut = None                     # (distance, values, a, b, label)
+
+    def _build_cut_panel(self, layout):
+        from .plot import LinePlot
+        self.cut_panel = QWidget()
+        col = QVBoxLayout(self.cut_panel)
+        col.setContentsMargins(4, 2, 4, 2)
+        head = QHBoxLayout()
+        self.cut_title = QLabel("")
+        self.cut_title.setStyleSheet("color: #555;")
+        head.addWidget(self.cut_title, 1)
+        for text, tip, slot in (("CSV…", "Save the values along the line (CSV file)", self._save_cut_dialog),
+                                ("Remove", "Remove the cut line", self.cutCleared.emit)):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda checked=False, f=slot: f())
+            head.addWidget(b)
+        col.addLayout(head)
+        self.cut_plot = LinePlot()
+        col.addWidget(self.cut_plot)
+        layout.addWidget(self.cut_panel)
+        self.cut_panel.hide()
+
+    def _show_cut(self, ds, name, component, cut):
+        if self.cut_panel is None:
+            return
+        if not cut:
+            self._cut = None
+            self.cut_panel.hide()
+            return
+        from . import scene
+        d, v = scene.line_values(ds, name, component, cut[0], cut[1])
+        _, label = scene.values(ds, name, component)
+        self._cut = (d, v, np.asarray(cut[0], float), np.asarray(cut[1], float), label)
+        fmt = lambda p: "(" + ", ".join(f"{c:.4g}" for c in p) + ")"      # noqa: E731
+        self.cut_title.setText(f"{label} along A {fmt(cut[0])} → B {fmt(cut[1])}")
+        self.cut_plot.set_data(d, v, "distance from A", label)
+        self.cut_panel.show()
+
+    def save_cut(self, path) -> None:
+        """The values along the cut line, as a CSV file (NaN outside the domain)."""
+        d, v, a, b, label = self._cut
+        u = (b - a) / (np.linalg.norm(b - a) or 1.0)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("distance," + ",".join("xyz"[:len(a)]) + f",{label}\n")
+            for di, vi in zip(d, v):
+                p = a + di * u
+                f.write(f"{di:.10g}," + ",".join(f"{c:.10g}" for c in p) + f",{vi:.10g}\n")
+
+    def _save_cut_dialog(self):
+        if self._cut is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save the values along the line", "cut.csv",
+                                              "CSV files (*.csv)")
+        if path:
+            self.save_cut(path)
+
+    def probe_world(self, world) -> float | None:
+        """Value of the shown field at a point of a 2D view (world coordinates)."""
+        if self._last is None or self._last[0] != "field":
+            return None
+        from . import scene
+        _, result_file, name, component = self._last[:4]
+        ds = scene.read(result_file)
+        value = scene.probe(ds, name, component, world)
+        _, label = scene.values(ds, name, component)
+        where = f"({world[0]:.4g}, {world[1]:.4g})"
+        self.probe_label.setText(f"{label} = {value:.6g} at {where}" if value is not None
+                                 else f"{where}: outside the domain")
+        return value
 
     # -------------------------------------------------------------- tools
 

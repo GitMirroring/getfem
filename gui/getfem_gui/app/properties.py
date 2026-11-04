@@ -27,13 +27,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QScrollArea, QTableWidget, QTableWidgetItem,
+                               QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 
 from .. import editing as E
 
 ERROR_STYLE = "QLineEdit, QComboBox { background: #fde8e4; }"
 AXES = "xyz"
+COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
 
 
 def _mono() -> QFont:
@@ -296,8 +297,10 @@ class PropertiesPanel(QScrollArea):
         self._messages(results.get("warnings", []))
         self._buttons(actions)
 
-    def show_result_field(self, name: str, ncomp: int, settings: dict, can_warp: bool):
-        """Display settings of a result field: component, deformed shape."""
+    def show_result_field(self, name: str, ncomp: int, settings: dict, can_warp: bool,
+                          vectors: tuple = (), planar: bool = True):
+        """Display settings of a result field: component, deformed shape,
+        colors, isolines, arrows (of one of the vector fields), cut line."""
         self._build_empty()
         self._title(f"Result: {name}")
         form = QFormLayout()
@@ -325,6 +328,96 @@ class PropertiesPanel(QScrollArea):
                             "displacement 10% of the model size)")
             spin.editingFinished.connect(lambda: self.viewChanged.emit({"scale": spin.value()}))
             form.addRow("Scale factor", spin)
+        self._view_fields(form, settings, vectors, planar)
         holder = QWidget()
         holder.setLayout(form)
         self.layout_.addWidget(holder)
+        self.layout_.addWidget(self._hint(
+            "Click on the field to read its value; the Cut line tool of the view (2D) "
+            "draws a segment along which the field is plotted." if planar else ""))
+
+    def _hint(self, text):
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #666;")
+        return label
+
+    def _view_fields(self, form, settings, vectors, planar):
+        cmap = QComboBox()
+        cmap.setObjectName("cmap")
+        for c in COLORMAPS:
+            cmap.addItem(c, c)
+        cmap.setCurrentIndex(max(cmap.findData(settings.get("cmap") or COLORMAPS[0]), 0))
+        cmap.activated.connect(lambda i: self.viewChanged.emit({"cmap": cmap.itemData(i)}))
+        form.addRow("Colormap", cmap)
+        rng = settings.get("range") or [None, None]
+        row = QHBoxLayout()
+        edits = []
+        for j, tip in enumerate(("minimum", "maximum")):
+            e = QLineEdit("" if rng[j] is None else f"{rng[j]:.6g}")
+            e.setObjectName(f"range_{tip[:3]}")
+            e.setPlaceholderText("auto")
+            e.setToolTip(f"Color range {tip} (empty: the {tip} of the values)")
+            row.addWidget(e)
+            edits.append(e)
+
+        def range_changed():
+            vals = []
+            for e in edits:
+                try:
+                    vals.append(float(e.text()) if e.text().strip() else None)
+                except ValueError:
+                    e.setText("")
+                    vals.append(None)
+            self.viewChanged.emit({"range": None if vals == [None, None] else vals})
+        for e in edits:
+            e.editingFinished.connect(range_changed)
+        holder = QWidget()
+        holder.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Range", holder)
+        iso = QSpinBox()
+        iso.setObjectName("isolines")
+        iso.setRange(0, 100)
+        iso.setValue(int(settings.get("isolines") or 0))
+        iso.setSpecialValueText("none")
+        iso.valueChanged.connect(lambda v: self.viewChanged.emit({"isolines": v}))
+        form.addRow("Isolines", iso)
+        bands = QCheckBox("color bands")
+        bands.setObjectName("bands")
+        bands.setChecked(bool(settings.get("bands")))
+        bands.toggled.connect(lambda on: self.viewChanged.emit({"bands": on}))
+        form.addRow("", bands)
+        if vectors:
+            arrows = QComboBox()
+            arrows.setObjectName("arrows")
+            arrows.addItem("none", None)
+            for v in vectors:
+                arrows.addItem(v, v)
+            arrows.setCurrentIndex(max(arrows.findData(settings.get("arrows")), 0))
+            arrows.activated.connect(lambda i: self.viewChanged.emit({"arrows": arrows.itemData(i)}))
+            form.addRow("Arrows", arrows)
+        if planar:
+            cut = settings.get("cut")
+            line = QLineEdit("; ".join(", ".join(f"{c:.6g}" for c in p) for p in cut) if cut else "")
+            line.setObjectName("cut")
+            line.setPlaceholderText("xA, yA; xB, yB")
+            line.setToolTip("Segment along which the field is plotted (or draw it with the "
+                            "Cut line tool of the view); empty: none")
+
+            def cut_changed():
+                text = line.text().strip()
+                if not text:
+                    self.viewChanged.emit({"cut": None})
+                    return
+                try:
+                    pts = [[float(c) for c in part.split(",")] for part in text.split(";")]
+                    if len(pts) != 2 or any(len(p) != 2 for p in pts) or pts[0] == pts[1]:
+                        raise ValueError
+                except ValueError:
+                    line.setStyleSheet("background: #fde2e1;")
+                    return
+                line.setStyleSheet("")
+                self.viewChanged.emit({"cut": pts})
+            line.editingFinished.connect(cut_changed)
+            form.addRow("Cut line", line)

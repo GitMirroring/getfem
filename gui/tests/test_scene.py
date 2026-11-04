@@ -322,3 +322,84 @@ if __name__ == "__main__":
                 failed += 1
                 print(f"FAILED   {name}: {exc!r}")
     sys.exit(1 if failed else 0)
+
+
+def test_field_display_options():
+    """Isolines, bands, color range, arrows, values along a cut line (drawn
+    with the mouse, simulated at world coordinates) and probing, after a solve."""
+    import os
+    import shutil
+    import time
+    try:
+        from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QSpinBox
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui import editing as E
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(EXAMPLES / "plate_inclusion.json", tmp)
+        win = MainWindow(path)
+        try:
+            win.compute()
+            t0 = time.time()
+            while (win.results is None or win.jobs.running) and time.time() - t0 < 120:
+                app.processEvents()
+                time.sleep(0.01)
+            assert win.results is not None, win.log.toPlainText()
+            win.select((E.RESULTS, "T"))
+            p = win.props
+            assert {"cmap", "isolines", "bands", "arrows", "cut", "range_min"} <= {
+                w.objectName() for w in p.findChildren(object)}
+            p.findChild(QSpinBox, "isolines").setValue(6)
+            arrows = p.findChild(QComboBox, "arrows")
+            arrows.setCurrentIndex(arrows.findData("heat_flux"))
+            arrows.activated.emit(arrows.currentIndex())
+            lo = p.findChild(QLineEdit, "range_min")
+            lo.setText("30")
+            lo.editingFinished.emit()
+            s = win.view_settings["T"]
+            assert s["isolines"] == 6 and s["arrows"] == "heat_flux" and s["range"] == [30.0, None]
+            plotter = win.viewer.plotter
+            assert {"isolines", "arrows", "field"} <= set(plotter.actors)
+            assert plotter.actors["field"].mapper.scalar_range[0] == 30
+            # probe
+            v = win.viewer.probe_world((0.05, 0.05, 0.0))
+            assert abs(v - 50) < 0.5 and "T = " in win.viewer.probe_label.text()
+            assert win.viewer.probe_world((0.5, 0.5, 0.0)) is None
+            # cut line drawn with the tool
+            assert win.viewer.result_bar.isVisibleTo(win.viewer)
+            win.viewer.cut_button.setChecked(True)
+            win.viewer.draw_begin((0.0, 0.05))
+            win.viewer.draw_move((0.05, 0.05))
+            win.viewer.draw_end((0.1, 0.05))
+            assert win.cut_line is not None and not win.viewer.cut_button.isChecked()
+            assert "cut" in plotter.actors and win.viewer.cut_panel.isVisibleTo(win.viewer)
+            d, values, a, b, label = win.viewer._cut
+            assert abs(values[0] - 20) < 1e-6 and abs(values[-1] - 80) < 1e-6
+            assert abs(np.nanmax(values[(d > 0.03) & (d < 0.07)]) - np.nanmin(values[(d > 0.03) & (d < 0.07)])) < 1.0
+            csv = Path(tmp) / "cut.csv"
+            win.viewer.save_cut(csv)
+            lines = csv.read_text().splitlines()
+            assert lines[0] == "distance,x,y,T" and len(lines) == len(d) + 1
+            # the same cut line for another field; removed with the panel button
+            win.select((E.RESULTS, "heat_flux"))
+            assert "cut" in plotter.actors and "magnitude" in [
+                p.findChild(QComboBox, "component").itemText(i) for i in range(4)]
+            assert p.findChild(QLineEdit, "cut").text() == "0, 0.05; 0.1, 0.05"
+            win.viewer.cutCleared.emit()
+            assert win.cut_line is None and "cut" not in plotter.actors
+            assert not win.viewer.cut_panel.isVisibleTo(win.viewer)
+            # typed in the form
+            line = p.findChild(QLineEdit, "cut")
+            line.setText("0.05, 0; 0.05, 0.1")
+            line.editingFinished.emit()
+            assert win.cut_line == [[0.05, 0.0], [0.05, 0.1]]
+            # settings kept when computing again, the view leaves the results
+            win.select(("materials", 0))
+            assert not win.viewer.result_bar.isVisibleTo(win.viewer)
+            assert not win.viewer.cut_panel.isVisibleTo(win.viewer)
+        finally:
+            win.setWindowModified(False)
+            win.close()

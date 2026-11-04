@@ -99,6 +99,8 @@ class MainWindow(QMainWindow):
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
         self.viewer.regionClicked.connect(self._region_clicked)
+        self.viewer.cutDrawn.connect(lambda ab: self._set_cut(ab))
+        self.viewer.cutCleared.connect(lambda: self._set_cut(None))
         self.viewer.shapeDrawn.connect(self._shape_drawn)
         self.viewer.handleMoved.connect(self._handle_moved)
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -224,6 +226,7 @@ class MainWindow(QMainWindow):
         self._undo: list[dict] = []
         self._redo: list[dict] = []
         self.view_settings: dict[str, dict] = {}
+        self.cut_line = None             # [a, b]: values of the fields along it
         self.setWindowModified(False)
         self._load_previous_results()
         self.refresh(select=())
@@ -485,7 +488,9 @@ class MainWindow(QMainWindow):
         warp = self._warp_field()
         settings = self._settings(name)
         self.props.show_result_field(name, self.result_fields.get(name, 1), settings,
-                                     can_warp=warp is not None)
+                                     can_warp=warp is not None,
+                                     vectors=tuple(n for n, c in self.result_fields.items() if c > 1),
+                                     planar=E.physics_dim(self.model) == 2)
         self._show_field(name)
 
     def _default_field(self):
@@ -501,7 +506,10 @@ class MainWindow(QMainWindow):
         return w if w in self.result_fields else None
 
     def _settings(self, name):
-        s = self.view_settings.setdefault(name, {"component": None, "warp": True, "scale": None})
+        s = self.view_settings.setdefault(name, {"component": None, "warp": True, "scale": None,
+                                                 "isolines": 0, "bands": False, "cmap": None,
+                                                 "range": None, "arrows": None})
+        s["cut"] = self.cut_line
         if s["scale"] is None and self._warp_field() and self.viewer.available and self.result_file:
             from . import scene
             s["scale"] = round(scene.deformation_scale(scene.read(self.result_file), self._warp_field()), 6)
@@ -510,8 +518,21 @@ class MainWindow(QMainWindow):
     def _result_view_changed(self, change: dict):
         path = self.current_path()
         if path[:1] == (E.RESULTS,) and len(path) == 2:
+            change = dict(change)
+            if "cut" in change:
+                self.cut_line = change.pop("cut")
             self._settings(path[1]).update(change)
             self._show_field(path[1])
+
+    def _set_cut(self, ab):
+        """A cut line drawn in the view (or removed): one for all the fields."""
+        path = self.current_path()
+        name = path[1] if path[:1] == (E.RESULTS,) and len(path) == 2 else self._default_field()
+        self.cut_line = ab
+        if path[:1] == (E.RESULTS,) and len(path) == 2:
+            self._show_result_node(path)
+        else:
+            self._show_field(name)
 
     def _show_field(self, name):
         if self.result_file is None or not self.result_file.exists():
@@ -523,8 +544,11 @@ class MainWindow(QMainWindow):
         if warp:
             status += f" — deformation × {s.get('scale') or 1:g}"
         try:
+            view = {"isolines": s.get("isolines", 0), "bands": s.get("bands", False),
+                    "cmap": s.get("cmap"), "clim": s.get("range"), "arrows": s.get("arrows"),
+                    "cut": s.get("cut")}
             self.viewer.show_field(self.result_file, name, s.get("component"), warp,
-                                   s.get("scale") or 1.0, status=status)
+                                   s.get("scale") or 1.0, status=status, view=view)
         except Exception as exc:  # noqa: BLE001 (unreadable or unexpected file)
             self.viewer.show_message(f"Cannot display {name}: {exc}")
 
@@ -958,7 +982,8 @@ class MainWindow(QMainWindow):
         self.results = r
         self.result_file = res.workdir / r["vtu"] if r.get("vtu") else None
         self.result_fields = self._read_fields()
-        self.view_settings = {}
+        for settings in self.view_settings.values():     # kept, but for the deformation scale
+            settings["scale"] = None
         self.results_model = _results_key(self.jobs.model)
         self.results_stale = _results_key(self.model) != self.results_model
         (res.workdir / "model_used.json").write_text(json.dumps(self.results_model, indent=1),
