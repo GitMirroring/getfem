@@ -47,6 +47,41 @@ class RunResult:
         return mesher.error_line(self.stderr)
 
 
+@dataclass
+class SolveJob:
+    """A solve to run: `command` in `workdir`, then `finish` (see mesher.MeshJob)."""
+    workdir: Path
+    script: Path
+    command: list[str]
+    mesh: mesher.MeshResult
+
+    @property
+    def results_file(self) -> Path:
+        return self.workdir / "results.json"
+
+    def finish(self, returncode: int | None, stdout: str = "", stderr: str = "") -> RunResult:
+        results = {}
+        if self.results_file.exists():
+            try:
+                results = json.loads(self.results_file.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        ok = returncode == 0 and results.get("status") == "ok"
+        return RunResult(ok, self.workdir, self.script, results, stdout, stderr, returncode, self.mesh)
+
+
+def prepare_solve(model: dict, workdir: str | Path, mesh: mesher.MeshResult,
+                  python: str | None = None) -> SolveJob:
+    """Write the solve script for an already built mesh."""
+    workdir = Path(workdir).resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    script = workdir / "run_getfem.py"
+    script.write_text(codegen.generate(model, mesh.path, mesh.info), encoding="utf-8")
+    job = SolveJob(workdir, script, [python or sys.executable, script.name], mesh)
+    job.results_file.unlink(missing_ok=True)
+    return job
+
+
 def run(model: dict, workdir: str | Path, python: str | None = None,
         timeout: float | None = None) -> RunResult:
     """Prepare the mesh used by the physics, generate the solve script, run it.
@@ -65,19 +100,11 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
     if not mres.ok:
         return RunResult(False, workdir, None, stderr=f"mesh {mesh_name!r}: {mres.error}", mesh=mres)
 
-    script = workdir / "run_getfem.py"
-    script.write_text(codegen.generate(model, mres.path, mres.info), encoding="utf-8")
-    results_file = workdir / "results.json"
-    results_file.unlink(missing_ok=True)
+    job = prepare_solve(model, workdir, mres, python)
     try:
-        proc = subprocess.run([python or sys.executable, script.name], cwd=workdir,
-                              capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(job.command, cwd=workdir, capture_output=True, text=True,
+                              timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        return RunResult(False, workdir, script, stdout=exc.stdout or "",
+        return RunResult(False, workdir, job.script, stdout=exc.stdout or "",
                          stderr=f"solve interrupted after {timeout} s", mesh=mres)
-
-    results = {}
-    if results_file.exists():
-        results = json.loads(results_file.read_text(encoding="utf-8"))
-    ok = proc.returncode == 0 and results.get("status") == "ok"
-    return RunResult(ok, workdir, script, results, proc.stdout, proc.stderr, proc.returncode, mres)
+    return job.finish(proc.returncode, proc.stdout, proc.stderr)

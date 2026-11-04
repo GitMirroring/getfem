@@ -1,13 +1,17 @@
-# getfem_gui — the core, without an interface yet
+# getfem_gui — a graphical user interface for GetFEM
 
-Foundation of a future graphical user interface for GetFEM. There is no GUI
-yet: a model described in JSON is meshed, then translated into a readable
-GetFEM Python script, each step running in a separate process.
+A model described in JSON is meshed, then translated into a readable GetFEM
+Python script, each step running in a separate process. A first graphical
+interface (PySide6 window, PyVista 3D view) edits the model, builds the
+meshes, runs the computation and shows the results; everything it does is
+also available from the command line.
 
 This directory is a pure Python package, independent of the GetFEM build: it
 is neither compiled nor installed by `make` / CMake. It requires Python 3
 (tested with 3.13), NumPy and the `getfem` module; Gmsh (`pip install gmsh`)
-is optional.
+is optional. The graphical interface needs PySide6, and PyVista with
+pyvistaqt for the 3D view (`pip install pyside6 pyvista pyvistaqt`); the core
+and the command line do not.
 
 ## Getting started from the repository
 
@@ -16,6 +20,7 @@ cd gui
 # the getfem module must be importable, e.g. after a CMake build:
 export PYTHONPATH=<prefix>/lib/python3.X/site-packages
 python -m getfem_gui run examples/plate.json -w /tmp/plate
+python -m getfem_gui gui examples/plate_hole_tension.json   # graphical interface
 python -m pytest tests/        # or: python tests/test_heat.py
 ```
 
@@ -47,6 +52,54 @@ python -m getfem_gui migrate old_v1.json -o new.json
 
 `--python /path/to/python` selects the interpreter that provides GetFEM (and Gmsh).
 
+## Graphical interface
+
+```bash
+python -m getfem_gui gui [model.json]
+```
+
+```
+┌ Model tree ─────────┬ Properties ───────────┬ 3D view ──────────────────────┐
+│ Geometries          │ Type     [traction ▾] │                               │
+│   plate (csg)       │ Boundary [right    ▾] │   mesh, highlighted selection │
+│     Selections      │ Value    [50] [0]     │   or result field             │
+│ Meshes              │                       │                               │
+│ Materials           │ [Remove]              │                               │
+│ Linear elasticity   │                       │                               │
+│   Boundary cond.    │                       │                               │
+│ Results             │                       │                               │
+├─────────────────────┴───────────────────────┴───────────────────────────────┤
+│ Messages | Problems (n)                                                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+- The **model tree** shows every part of the model; nodes with a problem
+  carry a warning icon (the message is in the tooltip and in the *Problems*
+  tab, where a double click selects the node).
+- The **properties** form of a node is built from the model description
+  (`PHYSICS_SPECS`, meshers, criteria): adding a physics or a boundary
+  condition type does not require any interface code. Values are numbers or
+  GWFL expressions; vectors are edited per component.
+- Selecting a selection, a material, a source, a boundary condition or an
+  output highlights its support on the mesh.
+- **Build mesh** (F7) and **Compute** (F8) run in separate processes, whose
+  output appears in *Messages*; **Stop** interrupts them. Meshes and results
+  go to `<model>_work/` next to the model file (a temporary folder for an
+  unsaved model), and are found again when the model is reopened; results
+  are marked *out of date* as soon as the model changes.
+- Undo / redo for every change; *Compute ▸ Show the solve script* shows the
+  generated GetFEM script.
+
+The interface is split so that most of it can be tested without a screen:
+`editing.py` (tree, forms and consistent changes: renaming a selection
+updates its uses, changing a type resets the fields, ...) has no Qt
+dependency, `app/scene.py` only needs PyVista, and `app/` holds the Qt code.
+`tests/test_app.py` drives the window with the Qt `offscreen` platform; the
+3D view is then replaced by a placeholder, or, with
+`GETFEM_GUI_OFFSCREEN_3D=1` (and an X server such as `xvfb-run`), by an
+off-screen PyVista plotter, so that only the embedding of the pyvistaqt
+widget itself needs a real display.
+
 ## Layout
 
 | File | Role |
@@ -56,8 +109,16 @@ python -m getfem_gui migrate old_v1.json -o new.json
 | `getfem_gui/codegen.py` | GetFEM solve script (loads the prepared mesh) |
 | `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
 | `getfem_gui/cli.py` | command line interface |
+| `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
+| `getfem_gui/app/window.py` | main window (PySide6) |
+| `getfem_gui/app/properties.py` | properties form of the selected node |
+| `getfem_gui/app/viewer.py`, `scene.py` | 3D view (pyvistaqt) and the PyVista scenes |
+| `getfem_gui/app/jobs.py` | meshing and solving through QProcess (output, interruption) |
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
 | `tests/test_elasticity.py` | 11 linear elasticity cases |
+| `tests/test_editing.py` | editing operations, on every node of every example |
+| `tests/test_app.py` | the window driven without a screen (requires PySide6) |
+| `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
 | `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry) |
 
 ## Geometry, selections, meshes
@@ -142,6 +203,13 @@ in `PHYSICS`.
 ## Open topics
 
 - Check the syntax of GWFL expressions as early as validation.
+- Global parameters (as in Comsol): named constants, possibly defined from
+  each other, usable everywhere: geometry dimensions and mesh sizes (hence
+  evaluated numerically, with a restricted expression syntax common to Python
+  and GWFL) as well as physics values (passed to GetFEM as data).
+- User-defined fields: named GWFL expressions (of X, parameters, material
+  properties) with a value per selection, like material properties today,
+  usable in all expressions and available as outputs.
 - Local Gmsh refinement per selection, CAD face names.
 - Several physics on different meshes in the same model (GetFEM allows it)
   and convergence studies over several meshes.

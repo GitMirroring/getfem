@@ -305,5 +305,5 @@ def generate(model: dict, mesh_path: str | Path, mesh_info: dict) -> str:
     w("results['time_s'] = time.perf_counter() - t0")
     w("with open('results.json', 'w', encoding='utf-8') as f:")
     w("    json.dump(results, f, indent=2, ensure_ascii=False)")
-    w("print(json.dumps(results, indent=2, ensure_ascii=False))")
+    w("print(f\"solved: {results['nb_dofs']} unknowns, {results['time_s']:.2f} s (results in results.json)\")")
     return w.text()

@@ -61,7 +61,15 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("-w", "--workdir", help="working directory (default: <model>_run/)")
         sp.add_argument("--python", help="Python interpreter that provides GetFEM")
 
+    pgui = sub.add_parser("gui", help="open the graphical interface (requires PySide6)")
+    pgui.add_argument("model", nargs="?")
+    pgui.add_argument("--python", help="Python interpreter that provides GetFEM")
+
     args = p.parse_args(argv)
+
+    if args.cmd == "gui":
+        from .app import main as gui_main
+        return gui_main([args.model] if args.model else [], python=args.python)
 
     if args.cmd == "new":
         M.save(M.default_model(), args.model)

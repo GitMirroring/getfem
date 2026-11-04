@@ -160,6 +160,7 @@ PHYSICS_SPECS = {
         "field": SCALAR,
         "variable": "T",
         "properties": {"k": "thermal conductivity"},
+        "property_defaults": {"k": 1.0},
         "options": {},
         "source": SCALAR,
         "boundary_conditions": {
@@ -177,6 +178,7 @@ PHYSICS_SPECS = {
         "field": VECTOR,
         "variable": "u",
         "properties": {"E": "Young's modulus", "nu": "Poisson's ratio"},
+        "property_defaults": {"E": 1.0, "nu": 0.3},
         "options": {"plane": ("strain", "stress")},
         "source": VECTOR,
         "boundary_conditions": {
