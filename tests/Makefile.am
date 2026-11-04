@@ -29,7 +29,6 @@ check_PROGRAMS =             \
   dynamic_array              \
   dynamic_tas                \
   test_int_set               \
-  test_tree_sorted           \
   poly                       \
   test_small_vector          \
   test_kdtree                \
@@ -101,7 +100,6 @@ test_int_set_SOURCES = test_int_set.cc
 test_interpolated_fem_SOURCES = test_interpolated_fem.cc
 test_internal_variables_SOURCES = test_internal_variables.cc
 test_condensation_SOURCES = test_condensation.cc
-test_tree_sorted_SOURCES = test_tree_sorted.cc
 test_mat_elem_SOURCES = test_mat_elem.cc
 test_slice_SOURCES = test_slice.cc
 test_range_basis_SOURCES = test_range_basis.cc
@@ -127,7 +125,6 @@ TESTS =                         \
   dynamic_array.pl              \
   dynamic_tas.pl                \
   test_int_set.pl               \
-  test_tree_sorted.pl           \
   poly.pl                       \
   test_small_vector.pl          \
   test_kdtree.pl                \
@@ -189,7 +186,6 @@ EXTRA_DIST =                                         \
   test_mesh_im_level_set.pl                          \
   thermo_elasticity_electrical_coupling.pl           \
   thermo_elasticity_electrical_coupling.param        \
-  test_tree_sorted.pl                                \
   test_mat_elem.pl                                   \
   test_mesh_generation.pl                            \
   crack.pl                                           \

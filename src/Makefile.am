@@ -80,7 +80,6 @@ nobase_include_HEADERS =                                   \
   getfem/dal_naming_system.h                               \
   getfem/dal_backtrace.h                                   \
   getfem/dal_tas.h                                         \
-  getfem/dal_tree_sorted.h                                 \
   getfem/bgeot_config.h                                    \
   getfem/bgeot_permutations.h                              \
   getfem/bgeot_convex_structure.h                          \

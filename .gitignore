@@ -387,6 +387,5 @@ Makefile
 /tests/test_slice.sl
 /tests/test_slice2.sl
 /tests/test_small_vector
-/tests/test_tree_sorted
 /tests/thermo_elasticity_electrical_coupling
 /tests/wave_equation

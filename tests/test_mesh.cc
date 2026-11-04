@@ -359,24 +359,6 @@ void test_mesh_building(int dim, int Nsubdiv) {
   cout << "Time to create mesh : "
        << gmm::uclock_sec() - exectime << endl;
 
-//   // Test of a simple sort on one "random" component
-//   exectime = gmm::uclock_sec();
-//   typedef basic_mesh_point_comparator2 pt_comp2;
-//   typedef dal::dynamic_tree_sorted<base_node, pt_comp2> PT_TAB2;
-  
-//   PT_TAB2 pttab2 = PT_TAB2(pt_comp2(dim));
-
-//   for (dal::bv_visitor i(m.convex_index()); !i.finished(); ++i) {
-//     for (int j = 0; j <= dim; ++j)
-//       pttab2.add_norepeat(m.points_of_convex(i)[j]);
-//   }
-//   cout << "Time to insert points in structure with random component: "
-//        << gmm::uclock_sec() - exectime << endl;
-//   GMM_ASSERT1(pttab2.card() == m.nb_points(),
-//               "Problem in identifying points " << pttab2.card()
-//               << " : " << m.nb_points());
-  
-
 //   // Test on the new structure
 //   exectime = gmm::uclock_sec();
   

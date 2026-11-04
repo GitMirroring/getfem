@@ -33,9 +33,8 @@ Files
 
    :file:`dal_config.h`, Mainly load |gmm| header files
    :file:`dal_basic.h`, "A variable size array container, dal::dynamic_array<T>."
-   :file:`dal_bit_vector.h` and :file:`dal_bit_vector.cc`,  "A improved bit vector container based on dal::dynamic_array<T>."
+   :file:`dal_bit_vector.h` and :file:`dal_bit_vector.cc`,  "A dynamic bit vector container, which can also be used as a set of integers."
    :file:`dal_tas.h`, "A heap container based on dal::dynamic_array<T>."
-   :file:`dal_tree_sorted.h`, "A balanced tree stored array based on dal::dynamic_array<T>."
    :file:`dal_static_stored_objects.h` and :file:`dal_static_stored_objects.cc`, "Allows to store some objects and dependencies between some objects. Used to store many things in |gf| (finite element methods, integration methods, pre-computations, ...)."
    :file:`dal_naming_system.h`, "A generic object to associate a name to a method descriptor and store the method descriptor. Used for finite element methods, integration methods and geometric transformations. Uses dal::static_stored_object."
    :file:`dal_shared_ptr.h`,  A simplified version of boost::shared_ptr.

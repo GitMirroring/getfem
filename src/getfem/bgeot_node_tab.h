@@ -39,7 +39,7 @@
 
 */
 #include "bgeot_small_vector.h"
-#include "dal_tree_sorted.h"
+#include "dal_tas.h"
 #include "set"
 
 namespace bgeot {

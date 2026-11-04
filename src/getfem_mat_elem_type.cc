@@ -20,7 +20,6 @@
 
 #include "getfem/dal_singleton.h"
 #include "getfem/getfem_mat_elem_type.h"
-#include "getfem/dal_tree_sorted.h"
 #include "getfem/getfem_mat_elem.h" /* for mat_elem_forget_mat_elem_type */
 
 namespace getfem {

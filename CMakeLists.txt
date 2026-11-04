@@ -377,7 +377,6 @@ set(HEADERS
     src/getfem/dal_singleton.h
     src/getfem/dal_static_stored_objects.h
     src/getfem/dal_tas.h
-    src/getfem/dal_tree_sorted.h
     src/getfem/getfem_accumulated_distro.h
     src/getfem/getfem_assembling.h
     src/getfem/getfem_assembling_tensors.h
