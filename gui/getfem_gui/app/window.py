@@ -557,6 +557,7 @@ class MainWindow(QMainWindow):
             pickable = not table.get(sel, {}).get("builtin") and table.get(sel, {}).get("kind") == M.BOUNDARY
         else:
             _, sel = E.highlighted_selection(self.model, path)
+            pickable = E.can_pick_edges(self.model, path)
         if sel is not None and sel in table:
             if table[sel]["kind"] == M.DOMAIN:
                 domain = sel == M.ALL          # other domain selections: not drawn yet
@@ -570,8 +571,24 @@ class MainWindow(QMainWindow):
         return title, shape, pieces, highlighted, domain, pickable
 
     def _edge_clicked(self, piece):
-        """A click on an edge of the preview: toggles it in the selected selection."""
+        """A click on an edge of the preview: toggles it in the selected
+        selection, or in the support of the selected condition / output."""
         path = self.current_path()
+        if E.can_pick_edges(self.model, path):
+            before = copy.deepcopy(self.model)
+            name, created = E.pick_edge_for_item(self.model, path, piece.side.ref)
+            self._undo.append(before)
+            self._redo.clear()
+            self._update_undo()
+            self._changed(select=path)
+            shape = G.shape_of(P.resolved(self.model)["geometries"][
+                self.model["geometries"].index(E.physics_geometry(self.model))]["source"])
+            crit = E.physics_geometry(self.model)["selections"][name]["criteria"]
+            on = any((tuple(r["shape"]), r["side"]) == (piece.side.shape, piece.side.side)
+                     for r in crit["edges"])
+            self.state.setText(f"{G.side_label(shape, piece.side.ref)} {'added to' if on else 'removed from'} "
+                               f"{name!r}" + (" (new selection for this item)" if created else ""))
+            return
         if not (path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections"):
             return
         sel = self.model["geometries"][path[1]]["selections"].get(path[3])

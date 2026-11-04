@@ -28,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from getfem_gui import geometry2d as G, mesher, model as M, parameters as P  # noqa: E402
+from getfem_gui import editing as E, geometry2d as G, mesher, model as M, parameters as P  # noqa: E402
 
 
 def load(name):
@@ -137,6 +137,37 @@ def test_edges_select_the_same_faces_and_follow_the_parameters():
             assert n["hole_e"] > 0 and n["two"] == n["left_e"] + n["hole_e"]
             ymax = n["boundary"] - n["symmetry_x"] - n["symmetry_y"] - n["loaded_edge"] - n["hole_e"]
             assert ymax > 0                       # the remaining side
+
+
+def test_picking_from_a_condition_edits_its_support():
+    m = load("plate_hole_tension.json")
+    bc = ("physics", "boundary_conditions", 2)
+    assert E.can_pick_edges(m, bc) and not E.can_pick_edges(m, ("materials", 0))
+    assert E.selection_uses(m, "loaded_edge") == 2          # the condition and an output
+    name, created = E.pick_edge_for_item(m, bc, {"shape": [0], "side": "ymax"})
+    assert (name, created) == ("traction_3", True)
+    assert m["geometries"][0]["selections"]["loaded_edge"]["criteria"]["type"] == "plane"   # kept
+    assert m["outputs"]["quantities"][0]["selection"] == "loaded_edge"
+    assert E.pick_edge_for_item(m, bc, {"shape": [1], "side": "circle"}) == ("traction_3", False)
+    assert E.pick_edge_for_item(m, bc, {"shape": [1], "side": "circle"}) == ("traction_3", False)
+    assert M.validate(m) == []
+    with tempfile.TemporaryDirectory() as tmp:
+        n = mesher.ensure_mesh(m, "coarse", tmp).info["sizes"]
+        assert n["traction_3"] > n["loaded_edge"]          # the loaded edge and the top edge
+    # an output integrated on a boundary: same mechanism
+    q = ("outputs", "quantities", 1)                           # reaction on symmetry_x
+    name, created = E.pick_edge_for_item(m, q, {"shape": [1], "side": "circle"})
+    assert created and m["outputs"]["quantities"][1]["selection"] == name
+    assert m["geometries"][0]["selections"][name]["criteria"]["edges"] == [
+        {"shape": [0], "side": "xmin"}, {"shape": [1], "side": "circle"}]
+    # a built-in selection (box): starts from its side
+    m = load("plate.json")
+    bc = ("physics", "boundary_conditions", 0)
+    side = m["physics"]["boundary_conditions"][0]["selection"]
+    name, created = E.pick_edge_for_item(m, bc, {"shape": [], "side": "ymin"})
+    assert created and m["geometries"][0]["selections"][name]["criteria"]["edges"] == [
+        {"shape": [], "side": side}, {"shape": [], "side": "ymin"}]
+    assert M.validate(m) == []
 
 
 if __name__ == "__main__":

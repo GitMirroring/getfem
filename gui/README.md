@@ -92,6 +92,12 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   primitives (see `geometry2d.py`), so that a selection follows the changes
   of the geometry, e.g. a parameter for the radius of a hole. Other
   geometries (CAD, imported meshes, 3D) are shown through their mesh.
+- With a boundary condition (or an output integrated on a boundary)
+  selected, clicking edges edits its support directly: its selection is
+  modified in place if it is an `edges` selection used by this item only;
+  otherwise a new selection is created from the current support (named
+  after the item, e.g. `traction_3`), leaving the previous one to the other
+  items that use it.
 - **Build mesh** (F7) and **Compute** (F8) run in separate processes, whose
   output appears in *Messages*; **Stop** interrupts them. Meshes and results
   go to `<model>_work/` next to the model file (a temporary folder for an

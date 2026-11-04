@@ -1032,3 +1032,70 @@ def mesh_to_show(model: dict, path: Path) -> str | None:
         return other[0]["name"] if other else None
     m, _ = highlighted_selection(model, path)
     return m or (M.physics_mesh(model) or {}).get("name")
+
+
+# ------------------------------------------------------------------ picking edges for an item
+
+def selection_uses(model: dict, name: str) -> int:
+    """How many items (materials, sources, conditions, outputs, unions) use a
+    selection of the geometry of the physics."""
+    phys = model.get("physics", {})
+    items = model.get("materials", []) + phys.get("sources", []) + phys.get("boundary_conditions", []) \
+        + model.get("outputs", {}).get("quantities", []) \
+        + [v for f in model.get("fields", []) for v in f.get("values", [])]
+    n = sum(1 for it in items if it.get("selection", M.ALL) == name)
+    geom = physics_geometry(model) or {}
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "union" and name in crit.get("of", []):
+            n += 1
+    return n
+
+
+def can_pick_edges(model: dict, path: Path) -> bool:
+    """Whether clicks on edges edit the support of the item at path (a boundary
+    condition or an output integrated on a boundary)."""
+    from . import geometry2d as G
+    if not (path[:2] in (("physics", "boundary_conditions"), ("outputs", "quantities")) and len(path) == 3):
+        return False
+    geom = physics_geometry(model)
+    if geom is None or G.shape_of(P.resolved(model)["geometries"][model["geometries"].index(geom)]
+                                  .get("source", {})) is None:
+        return False
+    sel = get_at(model, path + ("selection",), M.ALL)
+    return M.selection_table(model, geom).get(sel, {}).get("kind") == M.BOUNDARY
+
+
+def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
+    """Add or remove an edge (side reference) in the support of the item at
+    path. Its selection is edited in place when it is an 'edges' selection
+    used by this item only; otherwise a new selection is created, starting
+    from the current support, named after the item. Returns (selection name,
+    created)."""
+    from . import geometry2d as G
+    item = get_at(model, path)
+    geom = physics_geometry(model)
+    gi = model["geometries"].index(geom)
+    resolved = P.resolved(model)
+    rgeom = resolved["geometries"][gi]
+    table = M.selection_table(resolved, rgeom)
+    name = item.get("selection", M.ALL)
+    sel = geom.get("selections", {}).get(name)
+    if sel is not None and sel.get("criteria", {}).get("type") == "edges" \
+            and selection_uses(model, name) == 1:
+        sel["criteria"] = G.toggle_edge(sel["criteria"], ref)
+        return name, False
+    shape = G.shape_of(rgeom["source"])
+    start: list[dict] = []
+    for p in G.pieces_matching(shape, name, table) or []:
+        if p.side.ref not in start:
+            start.append(p.side.ref)
+    criteria = G.toggle_edge({"type": "edges", "edges": start}, ref)
+    if path[0] == "physics":
+        base = f"{item.get('type', 'condition')}_{path[2] + 1}"
+    else:
+        base = f"{item.get('name', 'output')}_support"
+    new = unique_name(base, table)
+    geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
+    item["selection"] = new
+    return new, True

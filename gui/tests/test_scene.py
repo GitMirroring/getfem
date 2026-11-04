@@ -135,6 +135,25 @@ def test_preview_and_picking_in_the_window():
             assert last[0] == "geometry" and [p.side.side for p in last[3]] == ["xmax"]
             img = win.viewer.plotter.screenshot(return_img=True)
             assert highlight_pixels(img) > 20
+            # clicking edges from the condition edits its support: a new selection,
+            # since 'loaded_edge' is also used by an output
+            assert win.viewer._pieces
+            win.viewer.pick_world((0.05, 0.05))                       # top edge
+            bc = win.model["physics"]["boundary_conditions"][2]
+            assert bc["selection"] == "traction_3"
+            sels = win.model["geometries"][0]["selections"]
+            assert sels["traction_3"]["criteria"]["edges"] == [
+                {"shape": [0], "side": "xmax"}, {"shape": [0], "side": "ymax"}]
+            assert "loaded_edge" in sels and win.current_path() == ("physics", "boundary_conditions", 2)
+            assert "traction_3" in win.tree.currentItem().text(0)
+            win.viewer.pick_world((0.1, 0.02))                        # xmax: removed, in place
+            assert sels["traction_3"]["criteria"]["edges"] == [{"shape": [0], "side": "ymax"}]
+            win.undo()
+            win.undo()
+            assert win.model["physics"]["boundary_conditions"][2]["selection"] == "loaded_edge"
+            assert "traction_3" not in win.model["geometries"][0]["selections"]
+            win.select(("materials", 0))
+            assert not win.viewer._pieces                              # a domain: not pickable
         finally:
             win.setWindowModified(False)
             win.close()
