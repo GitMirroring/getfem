@@ -114,14 +114,32 @@ class _DrawHooks:
         s = widget.devicePixelRatioF()
         return scene.display_to_world(self.viewer.plotter, round(x * s), round((widget.height() - y - 1) * s))
 
-    def press(self, widget, x, y):
-        self.viewer.draw_begin(self._world(widget, x, y))
+    def press(self, widget, x, y) -> bool:
+        v = self.viewer
+        if v._tool is not None:
+            v.draw_begin(self._world(widget, x, y))
+            return True
+        return v.handle_press(self._world(widget, x, y))
 
-    def move(self, widget, x, y):
-        self.viewer.draw_move(self._world(widget, x, y))
+    def move(self, widget, x, y) -> bool:
+        v = self.viewer
+        if v._tool is not None:
+            v.draw_move(self._world(widget, x, y))
+            return True
+        if v._grabbed is not None:
+            v.handle_move(self._world(widget, x, y))
+            return True
+        return False
 
-    def release(self, widget, x, y):
-        self.viewer.draw_end(self._world(widget, x, y))
+    def release(self, widget, x, y) -> bool:
+        v = self.viewer
+        if v._tool is not None:
+            v.draw_end(self._world(widget, x, y))
+            return True
+        if v._grabbed is not None:
+            v.handle_release(self._world(widget, x, y))
+            return True
+        return False
 
 
 class ClickFilter(QObject):
@@ -139,15 +157,22 @@ class ClickFilter(QObject):
 
     def eventFilter(self, obj, ev):
         t = ev.type()
-        if self.draw is not None and self.draw.active() and t in (
+        if self.draw is not None and t in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
-            # drawing a shape: the view must not pan, the events are taken here
+            # drawing a shape or dragging a handle: the events are taken here (the
+            # view must not pan); the hooks say whether they take each event
+            x, y = ev.position().x(), ev.position().y()
             if t == QEvent.Type.MouseMove:
-                self.draw.move(obj, ev.position().x(), ev.position().y())
-            elif ev.button() == Qt.MouseButton.LeftButton:
-                (self.draw.press if t == QEvent.Type.MouseButtonPress else self.draw.release)(
-                    obj, ev.position().x(), ev.position().y())
-            return True
+                taken = self.draw.move(obj, x, y)
+            elif ev.button() != Qt.MouseButton.LeftButton:
+                taken = False
+            elif t == QEvent.Type.MouseButtonPress:
+                taken = self.draw.press(obj, x, y)
+            else:
+                taken = self.draw.release(obj, x, y)
+            if taken:
+                self._press = None
+                return True
         if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
             self._press = ev.position()
         elif t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
@@ -161,6 +186,7 @@ class ClickFilter(QObject):
 class Viewer(QWidget):
     edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
     shapeDrawn = Signal(object, str)      # primitive (model format), operation
+    handleMoved = Signal(str, object)     # handle name, new position (snapped)
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -268,6 +294,9 @@ class Viewer(QWidget):
         self._shown_key = key
         if self._tool is not None:
             self._show_grid(True)
+        if self._handles:
+            from . import scene as _s
+            _s.show_handles(self.plotter, [p for _, p in self._handles])
         self.plotter.render()
 
     # -------------------------------------------------------------- picking
@@ -354,7 +383,58 @@ class Viewer(QWidget):
         self._tool = None
         self._draw_start = None
         self._draw_step = None
+        self._handles, self._handle_preview, self._grabbed = [], None, None
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.stop_drawing)
+
+    # -------------------------------------------------------------- handles
+
+    def set_handles(self, handles, preview=None) -> None:
+        """Handles [(name, position)] of the selected primitive; preview(name,
+        point) gives the shape while a handle is dragged."""
+        self._handles, self._handle_preview, self._grabbed = list(handles), preview, None
+        self._draw_handles()
+
+    def _draw_handles(self, active=None):
+        if self.plotter is None:
+            return
+        from . import scene
+        scene.show_handles(self.plotter, [p for _, p in self._handles], active)
+        self.plotter.render()
+
+    def handle_press(self, world) -> bool:
+        """Grab the handle under the mouse, if any (world coordinates)."""
+        if not self._handles or self.plotter is None:
+            return False
+        from .. import geometry2d as G
+        from . import scene
+        px = scene.pixel_size(self.plotter)
+        d = [np.hypot(world[0] - p[0], world[1] - p[1]) for _, p in self._handles]
+        i = int(np.argmin(d))
+        if d[i] > 9 * px:
+            return False
+        self._grabbed = i
+        self._draw_step = G.grid_step(px * max(self.view_widget.width(), 100))
+        self._draw_handles(active=i)
+        return True
+
+    def handle_move(self, world) -> None:
+        if self._grabbed is None or self._handle_preview is None:
+            return
+        from . import scene
+        name = self._handles[self._grabbed][0]
+        scene.show_rubber(self.plotter, self._handle_preview(name, self._snapped(world)))
+        self.plotter.render()
+
+    def handle_release(self, world) -> None:
+        if self._grabbed is None:
+            return
+        name = self._handles[self._grabbed][0]
+        self._grabbed = None
+        point = self._snapped(world)
+        self._draw_step = None
+        self.draw_cancel()
+        self._draw_handles()
+        self.handleMoved.emit(name, point)
 
     def set_drawing(self, enabled: bool) -> None:
         """Show the drawing tools (a 2D geometry is selected) or hide them."""

@@ -103,6 +103,12 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   becomes a CSG geometry on the first drawing: its sides `xmin`... become
   selections of the same name (their uses stay valid), and a structured mesh
   of it switches to the GetFEM mesher with an equivalent element size.
+- **Handles**: with a rectangle or a disk selected in the tree, its handles
+  (corners and center; center and a point of the circle) move or resize it,
+  snapped to the grid. A value that is a number is changed; a value that is
+  the name of a parameter changes the parameter (dragging the circle of the
+  hole of `plate_hole_tension.json` changes `a`); a value given by an
+  expression of parameters (`"L/2"`) is locked, and the status bar says so.
 - With a boundary condition (or an output integrated on a boundary)
   selected, clicking edges edits its support directly: its selection is
   modified in place if it is an `edges` selection used by this item only;

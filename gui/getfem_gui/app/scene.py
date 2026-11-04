@@ -286,3 +286,17 @@ def show_grid(plotter, lo, hi, step: float) -> None:
     grid = pv.PolyData(pts, lines=cells)
     plotter.add_mesh(grid, color="#9fb3c2", opacity=0.35, line_width=1, lighting=False, name="grid",
                      pickable=False)
+
+
+def show_handles(plotter, positions, active: int | None = None) -> None:
+    """Handles of the selected primitive (empty: remove)."""
+    plotter.remove_actor("handles")
+    plotter.remove_actor("handle_active")
+    if not len(positions):
+        return
+    pts = np.column_stack([np.asarray(positions, float), np.zeros(len(positions))])
+    plotter.add_mesh(pv.PolyData(pts), color="#1f6f78", point_size=12, style="points",
+                     lighting=False, name="handles")
+    if active is not None:
+        plotter.add_mesh(pv.PolyData(pts[active:active + 1]), color=HOVER, point_size=16,
+                         style="points", lighting=False, name="handle_active")

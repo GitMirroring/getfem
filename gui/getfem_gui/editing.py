@@ -32,6 +32,8 @@ Functions modify the model in place.
 
 from __future__ import annotations
 
+import copy
+import math
 import re
 from dataclasses import dataclass, field
 
@@ -1178,3 +1180,101 @@ def add_shape_2d(model: dict, gi: int, shape: dict, op: str) -> tuple[Path, list
     src["shape"] = {"type": op, "of": [root, shape]}
     _prefix_edge_refs(geom, (0,))
     return base + ("of", 1), notes
+
+
+# ------------------------------------------------------------------ handles of 2D primitives
+
+class LockedValue(ValueError):
+    """A value given by an expression of parameters cannot be dragged."""
+
+
+def primitive_node(model: dict, path: Path) -> dict | None:
+    """The 2D primitive (rectangle or disk) of a shape node, if path is one."""
+    if can_draw(model, path) is None or len(path) < 4 or path[2:4] != ("source", "shape"):
+        return None
+    shape = get_at(model, path)
+    return shape if isinstance(shape, dict) and shape.get("type") in ("rectangle", "ball") else None
+
+
+def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
+    """Handles of the primitive at path: [(name, position)], in model values."""
+    shape = primitive_node(model, path)
+    if shape is None:
+        return []
+    r = P.resolved(model)
+    s = get_at(r, path)
+    if s is None or any(isinstance(v, str) for k in ("min", "max", "center") for v in s.get(k, [])) \
+            or isinstance(s.get("radius"), str):
+        return []                          # invalid expressions: validation reports them
+    if s["type"] == "rectangle":
+        (x0, y0), (x1, y1) = s["min"], s["max"]
+        return [("min", [x0, y0]), ("xmax_ymin", [x1, y0]), ("max", [x1, y1]), ("xmin_ymax", [x0, y1]),
+                ("center", [(x0 + x1) / 2, (y0 + y1) / 2])]
+    (cx, cy), rad = s["center"], s["radius"]
+    return [("center", [cx, cy]), ("radius", [cx + rad, cy])]
+
+
+def _set_number(model: dict, key: Path, value: float, notes: list[str]) -> None:
+    """Set a numerical value: a number is replaced; a bare parameter name sets
+    that parameter (when it is a number itself); an expression is locked."""
+    current = get_at(model, key)
+    if current is None or isinstance(current, (int, float)) and not isinstance(current, bool):
+        set_at(model, key, float(value))
+        return
+    name = current.strip() if isinstance(current, str) else None
+    for p in model.get("parameters", []):
+        if p.get("name") == name and isinstance(p.get("value"), (int, float)):
+            p["value"] = float(value)
+            notes.append(f"parameter {name} = {format_number(float(value))}")
+            return
+    raise LockedValue(f"{current!r} is an expression of parameters: change it in the properties")
+
+
+def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
+    """Move a handle of the primitive at path to point. Returns notes (e.g.
+    the parameters changed); raises LockedValue, leaving the model unchanged,
+    when a value to change is an expression."""
+    shape = primitive_node(model, path)
+    if shape is None:
+        raise ValueError("not a rectangle or a disk")
+    before = copy.deepcopy(model)
+    notes: list[str] = []
+    x, y = float(point[0]), float(point[1])
+    r = get_at(P.resolved(model), path)
+    try:
+        if shape["type"] == "rectangle":
+            (x0, y0), (x1, y1) = r["min"], r["max"]
+            if handle == "center":
+                dx, dy = x - (x0 + x1) / 2, y - (y0 + y1) / 2
+                new = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            else:
+                nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+                if handle in ("min", "xmin_ymax"):
+                    nx0 = x
+                else:
+                    nx1 = x
+                if handle in ("min", "xmax_ymin"):
+                    ny0 = y
+                else:
+                    ny1 = y
+                new = (min(nx0, nx1), min(ny0, ny1), max(nx0, nx1), max(ny0, ny1))
+                if new[2] - new[0] <= 0 or new[3] - new[1] <= 0:
+                    raise ValueError("the rectangle would be empty")
+            for k, i, v, old in (("min", 0, new[0], x0), ("min", 1, new[1], y0),
+                                 ("max", 0, new[2], x1), ("max", 1, new[3], y1)):
+                if abs(v - old) > 1e-15 * max(1.0, abs(old)):
+                    _set_number(model, path + (k, i), v, notes)
+        elif handle == "center":
+            for i, v in enumerate((x, y)):
+                if abs(v - r["center"][i]) > 1e-15 * max(1.0, abs(v)):
+                    _set_number(model, path + ("center", i), v, notes)
+        else:
+            rad = math.hypot(x - r["center"][0], y - r["center"][1])
+            if rad <= 0:
+                raise ValueError("the radius would be zero")
+            _set_number(model, path + ("radius",), rad, notes)
+    except ValueError:
+        model.clear()
+        model.update(before)
+        raise
+    return notes

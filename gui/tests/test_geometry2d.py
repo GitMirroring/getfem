@@ -199,6 +199,39 @@ def test_drawing_on_a_box_and_solving():
         assert res.mesh.info["sizes"]["west"] == res.mesh.info["sizes"]["xmin"] > 0
 
 
+def test_handles_numbers_parameters_and_locked_values():
+    m = load("plate_hole_tension.json")
+    ball_p = ("geometries", 0, "source", "shape", "of", 1)
+    rect_p = ("geometries", 0, "source", "shape", "of", 0)
+    assert dict(E.shape_handles(m, ball_p)) == {"center": [0.0, 0.0], "radius": [0.01, 0.0]}
+    assert len(E.shape_handles(m, rect_p)) == 5 and E.shape_handles(m, ("geometries", 0)) == []
+    # a bare parameter name: the parameter changes, the geometry follows
+    assert E.move_handle(m, ball_p, "radius", [0.0, 0.015]) == ["parameter a = 0.015"]
+    assert E.get_at(m, ball_p + ("radius",)) == "a" and m["parameters"][2]["value"] == 0.015
+    # an expression is locked, and nothing changes
+    m["geometries"][0]["source"]["shape"]["of"][0]["max"] = ["2*H", "H"]
+    before = copy.deepcopy(m)
+    try:
+        E.move_handle(m, rect_p, "center", [0.06, 0.03])
+        raise AssertionError("locked value moved")
+    except E.LockedValue as exc:
+        assert "'2*H'" in str(exc)
+    assert m == before
+    # numbers; a corner dragged beyond the opposite one
+    m = load("plate_with_hole.json")
+    r = ("geometries", 0, "source", "shape", "of", 0)
+    E.move_handle(m, r, "min", [0.3, 0.2])
+    assert E.get_at(m, r) == {"type": "rectangle", "min": [0.2, 0.1], "max": [0.3, 0.2]}
+    try:
+        E.move_handle(m, r, "max", [0.2, 0.3])                  # zero width
+        raise AssertionError("empty rectangle accepted")
+    except ValueError:
+        pass
+    b = ("geometries", 0, "source", "shape", "of", 1)
+    E.move_handle(m, b, "center", [0.25, 0.15])
+    assert E.get_at(m, b + ("center",)) == [0.25, 0.15]
+
+
 def test_picking_from_a_condition_edits_its_support():
     m = load("plate_hole_tension.json")
     bc = ("physics", "boundary_conditions", 2)

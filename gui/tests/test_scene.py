@@ -205,6 +205,41 @@ def test_drawing_in_the_window():
             win.close()
 
 
+def test_handles_in_the_window():
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(EXAMPLES / "plate_hole_tension.json", tmp)
+        win = MainWindow(path)
+        try:
+            v = win.viewer
+            ball = ("geometries", 0, "source", "shape", "of", 1)
+            win.select(ball)
+            assert dict(v._handles)["radius"] == [0.01, 0.0] and "handles" in v.plotter.actors
+            assert not v.handle_press((0.05, 0.03))                     # nothing there: pans
+            assert v.handle_press((0.0101, 0.0001))                     # the radius handle
+            v.handle_move((0.0149, 0.0))
+            assert "rubber" in v.plotter.actors
+            v.handle_release((0.0149, 0.0))                             # snapped to the grid
+            a = next(p for p in win.model["parameters"] if p["name"] == "a")
+            assert abs(a["value"] - 0.015) < 1e-12 and "parameter a" in win.state.text()
+            assert win.current_path() == ball and dict(v._handles)["radius"][0] == a["value"]
+            win.undo()
+            assert next(p for p in win.model["parameters"] if p["name"] == "a")["value"] == 0.01
+            win.select(("geometries", 0))
+            assert v._handles == []                                     # only on a shape node
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 def E_get(win, path):
     from getfem_gui import editing as E
     return E.get_at(win.model, path)

@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
         self.viewer.shapeDrawn.connect(self._shape_drawn)
+        self.viewer.handleMoved.connect(self._handle_moved)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.tree)
         split.addWidget(self.props)
@@ -575,6 +576,32 @@ class MainWindow(QMainWindow):
             title += ": click edges to add or remove them"
         return title, shape, pieces, highlighted, domain, pickable
 
+    def _handle_preview(self, path, name, point):
+        """The primitive as it would be with the handle at point (for the view)."""
+        m = copy.deepcopy(self.model)
+        try:
+            E.move_handle(m, path, name, point)
+        except ValueError:
+            return None
+        return E.get_at(P.resolved(m), path)
+
+    def _handle_moved(self, name: str, point):
+        path = self.current_path()
+        before = copy.deepcopy(self.model)
+        try:
+            notes = E.move_handle(self.model, path, name, point)
+        except ValueError as exc:          # LockedValue included: the model is unchanged
+            self.state.setText(f"Not moved: {exc}")
+            self.update_view()
+            return
+        if self.model == before:
+            return
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=path)
+        self.state.setText("Shape modified" + (f" ({'; '.join(notes)})" if notes else ""))
+
     def _shape_drawn(self, shape: dict, op: str):
         """A rectangle or a disk drawn in the view: combined with the geometry."""
         path = self.current_path()
@@ -642,11 +669,16 @@ class MainWindow(QMainWindow):
             return
         preview = self._preview(path)
         self.viewer.set_drawing(preview is not None and E.can_draw(self.model, path) is not None)
+        handles = E.shape_handles(self.model, path) if preview is not None else []
+        self.viewer.set_handles([])
         if preview is not None:
             title, shape, pieces, highlighted, domain, pickable = preview
+            if handles:
+                title += " — drag the handles to move or resize"
             try:
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
                                           pickable=pickable, key=title.split(" — ")[0].split(":")[0])
+                self.viewer.set_handles(handles, lambda name, point, p=path: self._handle_preview(p, name, point))
             except Exception as exc:  # noqa: BLE001
                 self.viewer.show_message(f"Cannot display the geometry: {exc}")
             return
