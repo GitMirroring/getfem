@@ -124,11 +124,12 @@ unknowns. A first version with multipliers made the system singular as soon
 as a roller shared a node with a `fixed` or `displacement` condition
 (simplified Dirichlet), e.g. a clamped edge next to a symmetry plane.
 
-**Solve check.** On a singular system, the direct solver only prints a
-warning and may leave a zero solution. Every solve script therefore checks
+**Solve check.** On a singular system, GetFEM releases up to 5.4 only print
+a warning and may leave a zero solution. Every solve script therefore checks
 the relative residual `|K U - F| / |F|` and stops with an explicit error if
-it exceeds 1e-6. A singular but compatible system (e.g. a rigid motion left
-free but not loaded) is solved, with a warning in `results["warnings"]`.
+it exceeds 1e-6. When `md.solve()` reports `converged = 0` while the residual
+is small, the system is singular but compatible (e.g. a rigid motion left
+free but not loaded): it is solved, with a warning in `results["warnings"]`.
 
 ## Adding a physics
 

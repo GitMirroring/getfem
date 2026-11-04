@@ -29,9 +29,6 @@ from pathlib import Path
 
 from . import codegen, mesher, model as M
 
-# Messages of the direct solvers (gmm interfaces) when they meet a zero pivot.
-SINGULAR_WARNINGS = ("SuperLU solve failed", "MUMPS error")
-
 
 @dataclass
 class RunResult:
@@ -83,10 +80,4 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
     if results_file.exists():
         results = json.loads(results_file.read_text(encoding="utf-8"))
     ok = proc.returncode == 0 and results.get("status") == "ok"
-    if ok and any(w in proc.stderr for w in SINGULAR_WARNINGS):
-        # The system is singular but compatible: a solution was found (the
-        # residual check passed in the script), but it is not unique.
-        results.setdefault("warnings", []).append(
-            "the linear system is singular: the solution is not unique "
-            "(for instance a rigid body motion is not prevented)")
     return RunResult(ok, workdir, script, results, proc.stdout, proc.stderr, proc.returncode, mres)
