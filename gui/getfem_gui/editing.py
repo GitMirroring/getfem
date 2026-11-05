@@ -336,6 +336,11 @@ def _model_node(model: dict, k: int, md: dict) -> Node:
     for i, q in enumerate(md.get("outputs", [])):
         outs.children.append(Node(path + ("outputs", i), q.get("name", "?"), "quantity"))
     node.children.append(outs)
+    graphics = Node(path + ("graphics",), "Graphics", "graphics")
+    for i, g in enumerate(md.get("graphics", [])):
+        label = g.get("name", "?") + ("" if g.get("name") == g.get("field") else f" ({g.get('field')})")
+        graphics.children.append(Node(path + ("graphics", i), label, "graphic"))
+    node.children.append(graphics)
     return node
 
 
@@ -692,6 +697,10 @@ def _model_fields(model, path) -> list[Field]:
             out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
                     Field(path + ("max_res",), "Residual tolerance", "number")]
         return out
+    if head == "graphics":
+        return [Field(path, "", "info", help="Saved views of the result fields, with their "
+                      "display settings (changing the display of a result field saves it here).")] \
+            if n == 1 else []
     if head == "outputs":
         if n == 1:
             return [Field(base + ("vtu",), "VTU file", "text")]
@@ -1286,6 +1295,8 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out.append(("add_condition", "Add a condition"))
     elif rest == ("outputs",):
         out.append(("add_quantity", "Add an integrated quantity"))
+    elif rest == ("graphics",):
+        out.append(("add_graphic", "Add a graphic"))
     elif rest[:1] == ("modules",) and len(rest) == 2:
         spec = M.MODULE_SPECS.get(get_at(model, path + ("type",)), {})
         out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in spec.get("properties", {})]
@@ -1303,7 +1314,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         if len(get_at(model, path[:-1], [])) > 1:
             out.append(("remove", "Remove"))
     elif rest[:1] in (("parameters",), ("fields",), ("imports",), ("variables",), ("terms",),
-                      ("conditions",), ("outputs",)) and len(rest) == 2:
+                      ("conditions",), ("outputs",), ("graphics",)) and len(rest) == 2:
         if rest[0] == "fields":
             out.append(("add_field_value", "Add a value on a domain"))
         out.append(("remove", "Remove"))
@@ -1514,6 +1525,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         qs.append({"name": unique_name(name or "quantity", [q.get("name") for q in qs]),
                    "expr": "1", "selection": M.ALL})
         return base + ("outputs", len(qs) - 1)
+    if action == "add_graphic":
+        return add_graphic(md, None, path[:2])
     if action == "unfold":
         return unfold_module(model, path)
     raise ValueError(f"unknown action {action!r}")
@@ -1526,6 +1539,47 @@ def remove_at(model: dict, path: Path) -> None:
         del parent[path[-1]]
     else:
         parent.pop(path[-1], None)
+
+
+# ------------------------------------------------------------------ graphics
+
+def default_graphic_field(md: dict) -> str:
+    """The field shown by a new graphic: von Mises for an elasticity model,
+    otherwise the first variable."""
+    if any(m.get("type") == "linear_elasticity" for m in md.get("modules", [])):
+        return "von_mises"
+    return (md.get("variables") or [{"name": "u"}])[0]["name"]
+
+
+def find_graphic(md: dict, field: str) -> int | None:
+    """Index of the graphic named after a field (the one a result node shows)."""
+    return next((i for i, g in enumerate(md.get("graphics", [])) if g.get("name") == field), None)
+
+
+def add_graphic(md: dict, field: str | None, base: Path = ()) -> Path:
+    """A graphic of a field with the default settings, named after it."""
+    field = field or default_graphic_field(md)
+    graphics = md.setdefault("graphics", [])
+    graphics.append({"name": unique_name(field, [g.get("name") for g in graphics]), "field": field})
+    return base + ("graphics", len(graphics) - 1)
+
+
+def graphic_settings(graphic: dict | None) -> dict:
+    """The display settings of a graphic, the missing ones by default."""
+    out = copy.deepcopy(M.GRAPHIC_DEFAULTS)
+    out.update({k: copy.deepcopy(v) for k, v in (graphic or {}).items() if k in M.GRAPHIC_DEFAULTS})
+    return out
+
+
+def set_graphic(graphic: dict, change: dict) -> None:
+    """Change settings of a graphic; a default value is not stored."""
+    for k, v in change.items():
+        if k in ("name", "field"):
+            graphic[k] = v
+        elif v == M.GRAPHIC_DEFAULTS.get(k, object()):
+            graphic.pop(k, None)
+        else:
+            graphic[k] = v
 
 
 # ------------------------------------------------------------------ unfolding a module

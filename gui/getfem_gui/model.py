@@ -127,6 +127,9 @@ Models
 - solver    : {"type": "auto" | "linear" | "newton", "max_iter", "max_res"}
 - outputs   : integrals {"name", "expr", "selection"}; "vtu": file name of
               the export (variables, module fields, fields), null for none
+- graphics  : saved views of the result fields, {"name", "field", and the
+              display settings of GRAPHIC_DEFAULTS: component, warp, scale,
+              isolines, bands, cmap, range, arrows, cut}
 Global solvers: {"name", "type": "sequence" | "staggered", "steps": [model
 names], "max_iter", "tolerance", "relaxation"}; without any, the models are
 solved in an order compatible with their imports.
@@ -185,6 +188,12 @@ FEMS = ("lagrange", "lagrange_discontinuous")
 SOLVER_TYPES = ("auto", "linear", "newton")
 GLOBAL_SOLVERS = ("sequence", "staggered")
 DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
+COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
+
+# Saved views of a result field (models[k].graphics): their display settings;
+# a missing key takes the default value.
+GRAPHIC_DEFAULTS = {"component": None, "warp": True, "scale": None, "isolines": 0, "bands": False,
+                    "cmap": None, "range": None, "arrows": None, "cut": None}
 
 # Generic conditions on a variable: their values ("var": the kind of the
 # variable, scalar or vector)
@@ -1189,6 +1198,52 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     vtu = md.get("vtu", f"{md.get('name')}.vtu")
     if vtu is not None and (not isinstance(vtu, str) or not vtu.endswith(".vtu") or "/" in vtu):
         errors.append(f"{w}.vtu: file name ending with .vtu expected (or null)")
+    _validate_graphics(md.get("graphics", []), f"{w}.graphics", errors)
+
+
+def _validate_graphics(graphics, where, errors) -> None:
+    if not isinstance(graphics, list):
+        errors.append(f"{where}: list expected")
+        return
+    names = [g.get("name") for g in graphics if isinstance(g, dict)]
+    for i, g in enumerate(graphics):
+        w = f"{where}[{i}]"
+        if not isinstance(g, dict):
+            errors.append(f"{w}: object expected")
+            continue
+        if not isinstance(g.get("name"), str) or not g["name"].strip():
+            errors.append(f"{w}.name: name expected")
+        elif names.count(g["name"]) > 1:
+            errors.append(f"{w}.name: name {g['name']!r} used more than once")
+        if not isinstance(g.get("field"), str) or not g["field"]:
+            errors.append(f"{w}.field: name of a result field expected")
+        c = g.get("component")
+        if c is not None and (isinstance(c, bool) or not isinstance(c, int) or c < 0):
+            errors.append(f"{w}.component: component number or null expected")
+        for key in ("warp", "bands"):
+            if key in g and not isinstance(g[key], bool):
+                errors.append(f"{w}.{key}: true or false expected")
+        if "isolines" in g:
+            _check_int(g["isolines"], 0, 100, f"{w}.isolines", errors)
+        sc = g.get("scale")
+        if sc is not None and (isinstance(sc, bool) or not isinstance(sc, (int, float)) or sc < 0):
+            errors.append(f"{w}.scale: positive number or null expected")
+        if g.get("cmap") is not None and g["cmap"] not in COLORMAPS:
+            errors.append(f"{w}.cmap: {', '.join(COLORMAPS)} expected, got {g['cmap']!r}")
+        r = g.get("range")
+        if r is not None and (not isinstance(r, list) or len(r) != 2 or any(
+                x is not None and (isinstance(x, bool) or not isinstance(x, (int, float))) for x in r)):
+            errors.append(f"{w}.range: [min, max] expected (null for a bound taken from the values)")
+        if g.get("arrows") is not None and not isinstance(g["arrows"], str):
+            errors.append(f"{w}.arrows: name of a vector field or null expected")
+        cut = g.get("cut")
+        if cut is not None and (not isinstance(cut, list) or len(cut) != 2 or any(
+                not isinstance(p, list) or not 2 <= len(p) <= 3 or any(
+                    isinstance(x, bool) or not isinstance(x, (int, float)) for x in p) for p in cut)):
+            errors.append(f"{w}.cut: two points [[xA, yA], [xB, yB]] expected")
+        for key in g:
+            if key not in ("name", "field") and key not in GRAPHIC_DEFAULTS:
+                errors.append(f"{w}.{key}: unknown setting")
 
 
 def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, errors, anchored) -> None:

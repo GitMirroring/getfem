@@ -146,8 +146,12 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   proportional to the magnitude). A click on a 2D field shows its value
   under the view's toolbar. The **Cut line** tool draws a segment A → B
   (or it is typed in the form): the field is plotted along it under the view
-  (NaN gaps outside the domain), and the values can be saved as CSV. The
-  cut line is common to all the fields; the settings survive a new solve.
+  (NaN gaps outside the domain), and the values can be saved as CSV.
+  These settings are saved in the model file, in the **Graphics** of the
+  model (one per result field by default, named after it; *Add a graphic*
+  gives other views of a field, e.g. with bands, with their own cut line);
+  they come back when the file is reopened, and changing them does not make
+  the results out of date.
 - Undo / redo for every change; *Compute ▸ Show the solve script* shows the
   generated GetFEM script, and *File ▸ Export as a Python script* writes a
   single standalone script (meshing, then solving) that runs without

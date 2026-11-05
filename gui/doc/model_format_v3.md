@@ -167,9 +167,11 @@ the models are solved in the order of their imports.
 
 Outputs of a model: integrals (`name`, `expr`, `selection`) and `"vtu"`, the
 file of the exported fields; later: extrema, global outputs and `history`
-(one value per iteration, time step or parameter value). Graphics (later) will store the display settings of the interface (field,
-component, isolines, bands, colormap, range, arrows, cut line) and curves of
-histories.
+(one value per iteration, time step or parameter value). Graphics of a model store the display settings of a result field:
+`{"name": "T bands", "field": "T", "bands": true, "isolines": 12, "cmap":
+"coolwarm", "range": [20, null], "arrows": "heat_flux", "cut": [[0, 0.05],
+[0.1, 0.05]]}` (other keys: `component`, `warp`, `scale`; a missing key takes
+its default value). Global graphics (later): curves of histories.
 
 ## Interface
 

@@ -240,6 +240,29 @@ def test_errors_are_placed_on_nodes_and_fields():
     assert E.error_path("something without a path")[0] == ()
 
 
+def test_graphics():
+    model = load("plate_hole_tension.json")
+    md = model["models"][0]
+    p = E.do_action(model, ("models", 0, "graphics"), "add_graphic")
+    assert p == ("models", 0, "graphics", 0) and md["graphics"][0] == {"name": "von_mises", "field": "von_mises"}
+    g = md["graphics"][0]
+    E.set_graphic(g, {"isolines": 8, "cmap": "jet", "warp": False, "cut": [[0, 0], [0.1, 0.05]]})
+    E.set_graphic(g, {"warp": True})                          # back to the default: not stored
+    assert g == {"name": "von_mises", "field": "von_mises", "isolines": 8, "cmap": "jet",
+                 "cut": [[0, 0], [0.1, 0.05]]}
+    assert E.graphic_settings(g)["warp"] is True and E.graphic_settings(g)["isolines"] == 8
+    assert E.find_graphic(md, "von_mises") == 0 and M.validate(model) == []
+    assert E.find_node(E.tree(model), p).kind == "graphic"
+    for bad, msg in (({"isolines": -1}, "isolines"), ({"cmap": "rainbow"}, "cmap"),
+                     ({"range": [1]}, "range"), ({"cut": [[0, 0]]}, "cut"), ({"foo": 1}, "unknown setting")):
+        m = copy.deepcopy(model)
+        m["models"][0]["graphics"][0].update(bad)
+        assert any(f"graphics[0].{msg}" in e or msg in e for e in M.validate(m)), bad
+    m = copy.deepcopy(model)
+    m["models"][0]["graphics"].append({"name": "von_mises", "field": "u"})
+    assert any("used more than once" in e for e in M.validate(m))
+
+
 def test_values():
     assert E.parse_value(" 2 ") == 2 and E.parse_value("1e3") == 1000.0
     assert E.parse_value("sin(X(1))") == "sin(X(1))"

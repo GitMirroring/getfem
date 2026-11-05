@@ -241,8 +241,6 @@ class MainWindow(QMainWindow):
         self.path = path
         self._undo: list[dict] = []
         self._redo: list[dict] = []
-        self.view_settings: dict[str, dict] = {}
-        self.cut_line = None             # [a, b]: values of the fields along it
         self.setWindowModified(False)
         self._load_previous_results()
         self.refresh(select=())
@@ -484,6 +482,9 @@ class MainWindow(QMainWindow):
         if path[:1] == (E.RESULTS,):
             self._show_result_node(path)
             return
+        if path[:1] == ("models",) and len(path) == 4 and path[2] == "graphics":
+            self._show_graphic_node(path)
+            return
         item = self.tree.currentItem()
         title = item.text(0) if item else ""
         actions = self._node_actions(path)
@@ -494,6 +495,8 @@ class MainWindow(QMainWindow):
         self.update_view()
 
     def _show_result_node(self, path):
+        """A result node: the summary of all the models or of one, or a field,
+        shown with its graphic (the one named after it, if any)."""
         if self.results is None:
             return
         target = self._result_target(path)
@@ -505,16 +508,36 @@ class MainWindow(QMainWindow):
                 self._show_field(*target)
             return
         mname, name = target
+        md = M.model_by_name(self.model, mname)
+        gi = E.find_graphic(md, name) if md else None
+        self._show_settings_form(mname, name, md["graphics"][gi] if gi is not None else None)
+        self._show_field(mname, name)
+
+    def _show_graphic_node(self, path):
+        """A saved graphic: its form, and its field if the results have it."""
+        md = E.get_at(self.model, path[:2])
+        g = E.get_at(self.model, path)
+        self._show_settings_form(md["name"], g.get("field"), g, graphic_path=path)
+        fields = self.result_fields.get(md["name"], {})
+        if g.get("field") in fields:
+            self._show_field(md["name"], g["field"], g)
+        elif self.results is None:
+            self.viewer.show_message(f"Graphic {g.get('name')!r}: no results yet (Compute, F8)")
+        else:
+            self.viewer.show_message(f"Graphic {g.get('name')!r}: the results of {md['name']!r} have no "
+                                     f"field {g.get('field')!r} ({', '.join(fields) or 'none'})")
+
+    def _show_settings_form(self, mname, name, graphic, graphic_path=None):
         fields = self.result_fields.get(mname, {})
-        warp = self._warp_field(mname)
-        settings = self._settings(mname, name)
         md = M.model_by_name(self.model, mname)
         planar = (M.model_dim(self.model, md) if md else 2) == 2
-        self.props.show_result_field(name, fields.get(name, 1), settings,
-                                     can_warp=warp is not None,
+        known = list(fields) or [v.get("name") for v in (md or {}).get("variables", [])]
+        self.props.show_result_field(name, fields.get(name, 1), self._settings(mname, name, graphic),
+                                     can_warp=self._warp_field(mname) is not None,
                                      vectors=tuple(n for n, c in fields.items() if c > 1),
-                                     planar=planar)
-        self._show_field(mname, name)
+                                     planar=planar,
+                                     graphic=graphic if graphic_path is not None else None,
+                                     field_names=tuple(known))
 
     def _results_summary(self, mname=None) -> dict:
         """What the results table shows: one model, or all of them (its
@@ -560,41 +583,95 @@ class MainWindow(QMainWindow):
         w = (self.results or {}).get("models", {}).get(mname, {}).get("warp")
         return w if w in self.result_fields.get(mname, {}) else None
 
-    def _settings(self, mname, name):
-        s = self.view_settings.setdefault((mname, name), {
-            "component": None, "warp": True, "scale": None, "isolines": 0, "bands": False,
-            "cmap": None, "range": None, "arrows": None})
-        s["cut"] = self.cut_line
+    def graphic_settings(self, mname, name):
+        """The display settings of a result field (its graphic, or the defaults)."""
+        md = M.model_by_name(self.model, mname) or {}
+        gi = E.find_graphic(md, name)
+        return self._settings(mname, name, md["graphics"][gi] if gi is not None else None)
+
+    def _settings(self, mname, name, graphic):
+        s = E.graphic_settings(graphic)
         file = self.result_files.get(mname)
-        if s["scale"] is None and self._warp_field(mname) and self.viewer.available and file:
+        if s["scale"] is None and self._warp_field(mname) and self.viewer.available and file and file.exists():
             from . import scene
             s["scale"] = round(scene.deformation_scale(scene.read(file), self._warp_field(mname)), 6)
         return s
 
-    def _result_view_changed(self, change: dict):
+    def _current_graphic(self, create: bool):
+        """(path, graphic) changed by the display settings: the selected
+        graphic, or the one of the selected result field (created if needed)."""
         path = self.current_path()
+        if path[:1] == ("models",) and len(path) == 4 and path[2] == "graphics":
+            return path, E.get_at(self.model, path)
         if path[:1] == (E.RESULTS,) and len(path) == 3:
-            change = dict(change)
-            if "cut" in change:
-                self.cut_line = change.pop("cut")
-            self._settings(path[1], path[2]).update(change)
+            k = next((i for i, m in enumerate(self.model.get("models", [])) if m.get("name") == path[1]), None)
+            if k is None:
+                return None, None
+            md = self.model["models"][k]
+            gi = E.find_graphic(md, path[2])
+            if gi is None:
+                if not create:
+                    return None, None
+                gp = E.add_graphic(md, path[2], ("models", k))
+                gi = gp[-1]
+            return ("models", k, "graphics", gi), md["graphics"][gi]
+        return None, None
+
+    def _result_view_changed(self, change: dict):
+        """A display setting changed: saved in the graphic (an edit of the
+        model, undoable, which does not make the results out of date)."""
+        before = copy.deepcopy(self.model)
+        gpath, graphic = self._current_graphic(create=True)
+        if graphic is None:
+            return
+        change = dict(change)
+        if "name" in change:
+            name = str(change["name"]).strip()
+            others = [g.get("name") for g in E.get_at(self.model, gpath[:3]) if g is not graphic]
+            if not name or name in others:
+                self.model = before
+                self.state.setText(f"Not applied: the name {name!r} is empty or already used")
+                return
+            change["name"] = name
+        E.set_graphic(graphic, change)
+        if self.model == before:
+            return
+        self._undo.append(before)
+        del self._undo[:-UNDO_LIMIT]
+        self._redo.clear()
+        self._update_undo()
+        self.setWindowModified(True)
+        self._update_title()
+        path = self.current_path()
+        rebuild = bool({"name", "field"} & set(change)) or len(E.get_at(before, gpath[:3], [])) != \
+            len(E.get_at(self.model, gpath[:3], []))
+        self.refresh(select=path, rebuild_panel=False)
+        if rebuild or path[0] != E.RESULTS:
+            self._node_selected()
+        else:
             self._show_field(path[1], path[2])
 
     def _set_cut(self, ab):
-        """A cut line drawn in the view (or removed): one for all the fields."""
+        """A cut line drawn in the view (or removed): saved in the graphic."""
         path = self.current_path()
-        self.cut_line = ab
-        if path[:1] == (E.RESULTS,):
-            self._show_result_node(path)
+        if path[:1] == (E.RESULTS,) and len(path) == 3 or path[:1] == ("models",) and \
+                len(path) == 4 and path[2] == "graphics":
+            self._result_view_changed({"cut": ab})
 
-    def _show_field(self, mname, name):
+    def _show_field(self, mname, name, graphic=None):
         file = self.result_files.get(mname)
         if file is None or not file.exists() or name is None:
             self.viewer.show_message("No result file")
             return
-        s = self._settings(mname, name)
+        if graphic is None:
+            md = M.model_by_name(self.model, mname) or {}
+            gi = E.find_graphic(md, name)
+            graphic = md["graphics"][gi] if gi is not None else None
+        s = self._settings(mname, name, graphic)
         warp = self._warp_field(mname) if s.get("warp", True) else None
         status = f"Result of {mname}: {name}" + (" (out of date)" if self.results_stale else "")
+        if graphic is not None and graphic.get("name") != name:
+            status = f"Graphic {graphic.get('name')!r} — " + status
         if warp:
             status += f" — deformation × {s.get('scale') or 1:g}"
         try:
@@ -1069,8 +1146,6 @@ class MainWindow(QMainWindow):
         r = res.results
         self.results = r
         self._read_result_files(res.workdir)
-        for settings in self.view_settings.values():     # kept, but for the deformation scale
-            settings["scale"] = None
         self.results_model = _results_key(self.jobs.model)
         self.results_stale = _results_key(self.model) != self.results_model
         (res.workdir / "model_used.json").write_text(json.dumps(self.results_model, indent=1),
@@ -1203,8 +1278,9 @@ class MainWindow(QMainWindow):
 def _results_key(model: dict) -> dict:
     """The part of the model that determines the results (for staleness checks),
     as it reads back from JSON."""
-    return json.loads(json.dumps({k: v for k, v in model.items()
-                                  if not k.startswith("_") and k != "name"}))
+    m = {k: v for k, v in model.items() if not k.startswith("_") and k not in ("name", "graphics")}
+    m["models"] = [{k: v for k, v in md.items() if k != "graphics"} for md in m.get("models", [])]
+    return json.loads(json.dumps(m))
 
 
 def _vtu_field_names(path: Path) -> dict[str, int]:

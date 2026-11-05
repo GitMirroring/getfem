@@ -30,11 +30,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 
-from .. import editing as E
+from .. import editing as E, model as M
 
 ERROR_STYLE = "QLineEdit, QComboBox { background: #fde8e4; }"
 AXES = "xyz"
-COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
 
 
 def _mono() -> QFont:
@@ -303,12 +302,29 @@ class PropertiesPanel(QScrollArea):
         self._buttons(actions)
 
     def show_result_field(self, name: str, ncomp: int, settings: dict, can_warp: bool,
-                          vectors: tuple = (), planar: bool = True):
+                          vectors: tuple = (), planar: bool = True, graphic: dict | None = None,
+                          field_names: tuple = ()):
         """Display settings of a result field: component, deformed shape,
-        colors, isolines, arrows (of one of the vector fields), cut line."""
+        colors, isolines, arrows (of one of the vector fields), cut line.
+        graphic: a saved graphic, whose name and field are also edited."""
         self._build_empty()
-        self._title(f"Result: {name}")
+        self._title(f"Graphic: {graphic.get('name')}" if graphic is not None else f"Result: {name}")
         form = QFormLayout()
+        if graphic is not None:
+            gname = QLineEdit(graphic.get("name", ""))
+            gname.setObjectName("graphic_name")
+            gname.editingFinished.connect(
+                lambda: gname.text().strip() != graphic.get("name")
+                and self.viewChanged.emit({"name": gname.text().strip()}))
+            form.addRow("Name", gname)
+            fcombo = QComboBox()
+            fcombo.setObjectName("graphic_field")
+            for n in dict.fromkeys(list(field_names) + [graphic.get("field")]):
+                fcombo.addItem(n, n)
+            fcombo.setCurrentIndex(fcombo.findData(graphic.get("field")))
+            fcombo.activated.connect(lambda i: fcombo.itemData(i) != graphic.get("field")
+                                     and self.viewChanged.emit({"field": fcombo.itemData(i)}))
+            form.addRow("Field", fcombo)
         if ncomp > 1:
             combo = QComboBox()
             combo.setObjectName("component")
@@ -338,8 +354,10 @@ class PropertiesPanel(QScrollArea):
         holder.setLayout(form)
         self.layout_.addWidget(holder)
         self.layout_.addWidget(self._hint(
-            "Click on the field to read its value; the Cut line tool of the view (2D) "
-            "draws a segment along which the field is plotted." if planar else ""))
+            ("Click on the field to read its value; the Cut line tool of the view (2D) "
+             "draws a segment along which the field is plotted. " if planar else "")
+            + ("These settings are saved in the graphic." if graphic is not None else
+               "Changing these settings saves them in a graphic of the model, named after the field.")))
 
     def _hint(self, text):
         label = QLabel(text)
@@ -350,9 +368,9 @@ class PropertiesPanel(QScrollArea):
     def _view_fields(self, form, settings, vectors, planar):
         cmap = QComboBox()
         cmap.setObjectName("cmap")
-        for c in COLORMAPS:
+        for c in M.COLORMAPS:
             cmap.addItem(c, c)
-        cmap.setCurrentIndex(max(cmap.findData(settings.get("cmap") or COLORMAPS[0]), 0))
+        cmap.setCurrentIndex(max(cmap.findData(settings.get("cmap") or M.COLORMAPS[0]), 0))
         cmap.activated.connect(lambda i: self.viewChanged.emit({"cmap": cmap.itemData(i)}))
         form.addRow("Colormap", cmap)
         rng = settings.get("range") or [None, None]

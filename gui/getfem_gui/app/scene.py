@@ -150,7 +150,7 @@ def deformation_scale(ds: pv.DataSet, name: str) -> float:
     return 0.1 * size(ds) / umax if umax > 0 else 1.0
 
 
-CMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # as properties.COLORMAPS
+from ..model import COLORMAPS as CMAPS  # noqa: E402
 CUT = "#d62728"
 
 

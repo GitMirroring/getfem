@@ -392,15 +392,15 @@ def test_elasticity_results_and_display_settings():
         assert {"u", "von_mises"} <= set(win.result_fields["mechanics"])
         from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox
         win.props.findChild(QCheckBox, "warp").setChecked(False)
-        assert win.view_settings[("mechanics", "von_mises")]["warp"] is False
+        assert win.graphic_settings("mechanics", "von_mises")["warp"] is False
         win.select((E.RESULTS, "mechanics", "u"))
         combo = win.props.findChild(QComboBox, "component")
         choose(combo, 1)
-        assert win.view_settings[("mechanics", "u")]["component"] == 1
+        assert win.graphic_settings("mechanics", "u")["component"] == 1
         spin = win.props.findChild(QDoubleSpinBox, "scale")
         spin.setValue(5.0)
         spin.editingFinished.emit()
-        assert win.view_settings[("mechanics", "u")]["scale"] == 5.0
+        assert win.graphic_settings("mechanics", "u")["scale"] == 5.0
         close(win)
 
 

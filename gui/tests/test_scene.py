@@ -331,7 +331,7 @@ def test_field_display_options():
     import shutil
     import time
     try:
-        from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QSpinBox
+        from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLineEdit, QSpinBox
     except ImportError:
         return
     os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
@@ -359,8 +359,13 @@ def test_field_display_options():
             lo = p.findChild(QLineEdit, "range_min")
             lo.setText("30")
             lo.editingFinished.emit()
-            s = win.view_settings[("heat", "T")]
+            s = win.graphic_settings("heat", "T")
             assert s["isolines"] == 6 and s["arrows"] == "heat_flux" and s["range"] == [30.0, None]
+            # saved in the model, as a graphic named after the field; the results stay current
+            md = win.model["models"][0]
+            assert md["graphics"] == [{"name": "T", "field": "T", "isolines": 6, "arrows": "heat_flux",
+                                       "range": [30.0, None]}]
+            assert not win.results_stale and win.isWindowModified()
             plotter = win.viewer.plotter
             assert {"isolines", "arrows", "field"} <= set(plotter.actors)
             assert plotter.actors["field"].mapper.scalar_range[0] == 30
@@ -368,13 +373,14 @@ def test_field_display_options():
             v = win.viewer.probe_world((0.05, 0.05, 0.0))
             assert abs(v - 50) < 0.5 and "T = " in win.viewer.probe_label.text()
             assert win.viewer.probe_world((0.5, 0.5, 0.0)) is None
-            # cut line drawn with the tool
+            # cut line drawn with the tool: saved in the graphic too
             assert win.viewer.result_bar.isVisibleTo(win.viewer)
             win.viewer.cut_button.setChecked(True)
             win.viewer.draw_begin((0.0, 0.05))
             win.viewer.draw_move((0.05, 0.05))
             win.viewer.draw_end((0.1, 0.05))
-            assert win.cut_line is not None and not win.viewer.cut_button.isChecked()
+            assert md["graphics"][0]["cut"] == [[0.0, 0.05], [0.1, 0.05]]
+            assert not win.viewer.cut_button.isChecked()
             assert "cut" in plotter.actors and win.viewer.cut_panel.isVisibleTo(win.viewer)
             d, values, a, b, label = win.viewer._cut
             assert abs(values[0] - 20) < 1e-6 and abs(values[-1] - 80) < 1e-6
@@ -383,21 +389,48 @@ def test_field_display_options():
             win.viewer.save_cut(csv)
             lines = csv.read_text().splitlines()
             assert lines[0] == "distance,x,y,T" and len(lines) == len(d) + 1
-            # the same cut line for another field; removed with the panel button
+            # another field: its own settings; a cut line typed in the form
             win.select((E.RESULTS, "heat", "heat_flux"))
-            assert "cut" in plotter.actors and "magnitude" in [
+            assert "cut" not in plotter.actors and "magnitude" in [
                 p.findChild(QComboBox, "component").itemText(i) for i in range(4)]
-            assert p.findChild(QLineEdit, "cut").text() == "0, 0.05; 0.1, 0.05"
-            win.viewer.cutCleared.emit()
-            assert win.cut_line is None and "cut" not in plotter.actors
-            assert not win.viewer.cut_panel.isVisibleTo(win.viewer)
-            # typed in the form
             line = p.findChild(QLineEdit, "cut")
+            assert line.text() == ""
             line.setText("0.05, 0; 0.05, 0.1")
             line.editingFinished.emit()
-            assert win.cut_line == [[0.05, 0.0], [0.05, 0.1]]
-            # settings kept when computing again, the view leaves the results
-            win.select(("materials", 0))
+            assert md["graphics"][1] == {"name": "heat_flux", "field": "heat_flux",
+                                         "cut": [[0.05, 0.0], [0.05, 0.1]]}
+            # the graphic node: the same view; the cut line removed with the panel button
+            win.select(("models", 0, "graphics", 0))
+            assert "cut" in plotter.actors and p.findChild(QLineEdit, "graphic_name").text() == "T"
+            win.viewer.cutCleared.emit()
+            assert "cut" not in md["graphics"][0] and "cut" not in plotter.actors
+            assert not win.viewer.cut_panel.isVisibleTo(win.viewer)
+            win.undo()
+            md = win.model["models"][0]
+            assert win.model["models"][0]["graphics"][0]["cut"] == [[0.0, 0.05], [0.1, 0.05]]
+            # a second graphic of T, renamed, with bands
+            win.select(("models", 0, "graphics"))
+            win._panel_action("add_graphic")
+            gp = win.current_path()
+            assert gp == ("models", 0, "graphics", 2)
+            name = p.findChild(QLineEdit, "graphic_name")
+            name.setText("T bands")
+            name.editingFinished.emit()
+            p.findChild(QCheckBox, "bands").setChecked(True)
+            g = win.model["models"][0]["graphics"][2]
+            assert g == {"name": "T bands", "field": "T", "bands": True}
+            assert win.viewer._last[0] == "field" and win.viewer._last[7]["bands"] is True
+            # saved, reopened: the settings are back, the results still current
+            win.save()
+            win2 = MainWindow(path)
+            try:
+                assert [x["name"] for x in win2.model["models"][0]["graphics"]] == ["T", "heat_flux", "T bands"]
+                assert win2.results is not None and not win2.results_stale
+                assert win2.graphic_settings("heat", "T")["isolines"] == 6
+            finally:
+                win2.close()
+            # the view leaves the results
+            win.select(("models", 0, "variables"))
             assert not win.viewer.result_bar.isVisibleTo(win.viewer)
             assert not win.viewer.cut_panel.isVisibleTo(win.viewer)
         finally:
