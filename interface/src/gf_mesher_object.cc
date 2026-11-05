@@ -151,6 +151,19 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      );
 
 
+  /*@INIT MF = ('polygon', @mat vertices)
+    Represents a simple polygon in 2D (not necessarily convex), the columns
+    of `vertices` (2 x n) being its vertices, in either order.@*/
+  sub_command
+    ("polygon", 1, 1, 0, 1,
+     darray v = in.pop().to_darray(2, -1);
+     std::vector<getfem::base_node> vertices;
+     for (size_type j = 0; j < size_type(v.getn()); ++j)
+       vertices.push_back(getfem::base_node(v(0, j), v(1, j)));
+     psd = getfem::new_mesher_polygon(vertices);
+     );
+
+
   /*@INIT MF = ('intersect', @tmo object1 , @tmo object2, ...)
     Intersection of several objects.@*/
   sub_command

@@ -781,6 +781,116 @@ namespace getfem {
   { return std::make_shared<mesher_setminus>(a, b); }
 
 
+  // A simple polygon in 2D (not necessarily convex), given by its vertices
+  // in either order. It is built from half planes, as the other objects:
+  // its convex hull (intersection of half planes) minus its pockets (the
+  // parts of the hull outside the polygon, polygons themselves, treated
+  // likewise). The sides are thus constraints of the mesher, which keeps
+  // the corners.
+  class mesher_polygon : public mesher_signed_distance {
+    std::vector<base_node> V;
+    pmesher_signed_distance d;
+
+    static scalar_type cross(const base_node &O, const base_node &A,
+			     const base_node &B)
+    { return (A[0]-O[0])*(B[1]-O[1]) - (A[1]-O[1])*(B[0]-O[0]); }
+
+    // lid: for a pocket, the side shared with the hull of the enclosing
+    // polygon, whose half plane is not repeated
+    static pmesher_signed_distance build(std::vector<base_node> P,
+					 const base_node *lid = 0) {
+      size_type n = P.size();
+      scalar_type area(0), scale(0);
+      for (size_type i = 0; i < n; ++i) {
+	area += cross(P[0], P[i], P[(i+1) % n]);
+	scale = std::max(scale, gmm::vect_dist2(P[i], P[0]));
+      }
+      if (area < 0) std::reverse(P.begin(), P.end());
+      // convex hull (indices, counterclockwise), monotone chain
+      std::vector<size_type> idx(n), H(2*n);
+      for (size_type i = 0; i < n; ++i) idx[i] = i;
+      std::sort(idx.begin(), idx.end(), [&P](size_type a, size_type b)
+		{ return P[a][0] < P[b][0]
+		    || (P[a][0] == P[b][0] && P[a][1] < P[b][1]); });
+      scalar_type eps = 1e-12 * scale * scale;
+      size_type k = 0;
+      for (size_type i = 0; i < n; ++i) {
+	while (k >= 2 && cross(P[H[k-2]], P[H[k-1]], P[idx[i]]) <= eps) --k;
+	H[k++] = idx[i];
+      }
+      for (size_type i = n-1, t = k+1; i-- > 0; ) {
+	while (k >= t && cross(P[H[k-2]], P[H[k-1]], P[idx[i]]) <= eps) --k;
+	H[k++] = idx[i];
+      }
+      H.resize(k-1);
+      // the hull follows the polygon in the same direction: start at the
+      // smallest index, the indices then increase along the hull
+      std::rotate(H.begin(), std::min_element(H.begin(), H.end()), H.end());
+      std::vector<pmesher_signed_distance> sides, pockets;
+      for (size_type h = 0; h < H.size(); ++h) {
+	size_type a = H[h], b = H[(h+1) % H.size()];
+	const base_node &A = P[a], &B = P[b];
+	bool is_lid = lid
+	  && ((gmm::vect_dist2(A, lid[0]) == 0 && gmm::vect_dist2(B, lid[1]) == 0)
+	   || (gmm::vect_dist2(A, lid[1]) == 0 && gmm::vect_dist2(B, lid[0]) == 0));
+	if (!is_lid)
+	  sides.push_back(new_mesher_half_space
+			  (A, base_small_vector(A[1]-B[1], B[0]-A[0])));
+	if ((a + 1) % n != b) { // a pocket: the chain from a to b
+	  std::vector<base_node> Q;
+	  for (size_type i = a; ; i = (i + 1) % n)
+	    { Q.push_back(P[i]); if (i == b) break; }
+	  scalar_type qa(0);
+	  for (size_type i = 0; i < Q.size(); ++i)
+	    qa += cross(Q[0], Q[i], Q[(i+1) % Q.size()]);
+	  base_node AB[2] = {A, B};
+	  if (Q.size() >= 3 && gmm::abs(qa) > eps)
+	    pockets.push_back(build(Q, AB));
+	}
+      }
+      pmesher_signed_distance hull = (sides.size() == 1) ? sides[0]
+	: new_mesher_intersection(sides);
+      if (pockets.empty()) return hull;
+      return new_mesher_setminus(hull, pockets.size() == 1 ? pockets[0]
+				 : new_mesher_union(pockets));
+    }
+
+  public:
+    mesher_polygon(const std::vector<base_node> &vertices) : V(vertices) {
+      GMM_ASSERT1(V.size() >= 3, "A polygon needs at least three vertices");
+      for (size_type i = 0; i < V.size(); ++i) {
+	GMM_ASSERT1(V[i].size() == 2, "A polygon is defined in 2D");
+	GMM_ASSERT1(gmm::vect_dist2(V[i], V[(i+1) % V.size()]) > 0,
+		    "Two consecutive vertices of a polygon coincide");
+      }
+      d = build(V);
+    }
+    bool bounding_box(base_node &bmin, base_node &bmax) const {
+      bmin = bmax = V[0];
+      for (const base_node &v : V)
+	for (size_type k = 0; k < 2; ++k) {
+	  bmin[k] = std::min(bmin[k], v[k]);
+	  bmax[k] = std::max(bmax[k], v[k]);
+	}
+      return true;
+    }
+    virtual scalar_type operator()(const base_node &P) const
+    { return (*d)(P); }
+    virtual scalar_type operator()(const base_node &P, dal::bit_vector &bv)
+      const { return (*d)(P, bv); }
+    scalar_type grad(const base_node &P, base_small_vector &G) const
+    { return d->grad(P, G); }
+    void hess(const base_node &P, base_matrix &H) const { d->hess(P, H); }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>& list) const
+    { d->register_constraints(list); }
+  };
+
+  inline pmesher_signed_distance
+  new_mesher_polygon(const std::vector<base_node> &vertices)
+  { return std::make_shared<mesher_polygon>(vertices); }
+
+
   class mesher_tube : public mesher_signed_distance {
     base_node x0; base_node n; scalar_type R;
   public:
