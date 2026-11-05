@@ -151,6 +151,24 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      );
 
 
+  /*@INIT MF = ('ellipse', @vec center, @scalar r1, @scalar r2[, @scalar angle])
+    Represents an ellipse in 2D of semi-axes `r1` and `r2`, the first one
+    along the direction of angle `angle` (in radians, 0 by default) with
+    the x axis.@*/
+  sub_command
+    ("ellipse", 3, 4, 0, 1,
+     darray c = in.pop().to_darray(2);
+     double r1 = in.pop().to_scalar();
+     double r2 = in.pop().to_scalar();
+     double angle = in.remaining() ? in.pop().to_scalar() : 0.;
+     GMM_ASSERT1(r1 > 0. && r2 > 0., "The semi-axes should be positive");
+     psd = getfem::new_mesher_ellipse(getfem::base_node(c[0], c[1]),
+                                      getfem::base_small_vector(cos(angle),
+                                                                sin(angle)),
+                                      r1, r2);
+     );
+
+
   /*@INIT MF = ('polygon', @mat vertices)
     Represents a simple polygon in 2D (not necessarily convex), the columns
     of `vertices` (2 x n) being its vertices, in either order.@*/

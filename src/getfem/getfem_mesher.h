@@ -1069,38 +1069,80 @@ namespace getfem {
   { return std::make_shared<mesher_cone>(c,no,L,alpha); }
 
 
+  // Ellipse in 2D: center x0, semi-axis r along the direction no, semi-axis
+  // R along the orthogonal direction. The signed distance is the euclidean
+  // one (nearest point computed as in D. Eberly, "Distance from a point to
+  // an ellipse, an ellipsoid, or a hyperellipsoid", 2013).
   class mesher_ellipse : public mesher_signed_distance {
     base_node x0; base_small_vector n, t;
-    scalar_type r, R, a;
+    scalar_type r, R;
+
+    static scalar_type root(scalar_type r0, scalar_type z0, scalar_type z1,
+			    scalar_type g) {
+      scalar_type n0 = r0*z0, s0 = z1 - 1.;
+      scalar_type s1 = (g < 0.) ? 0. : sqrt(n0*n0 + z1*z1) - 1., s = 0.;
+      for (int i = 0; i < 200; ++i) {
+	s = (s0 + s1) / 2.;
+	if (s == s0 || s == s1) break;
+	scalar_type a = n0 / (s + r0), b = z1 / (s + 1.);
+	g = a*a + b*b - 1.;
+	if (g > 0.) s0 = s; else if (g < 0.) s1 = s; else break;
+      }
+      return s;
+    }
+    // e0 >= e1 > 0, y0, y1 >= 0: nearest point (q0, q1) of the ellipse
+    static void nearest(scalar_type e0, scalar_type e1, scalar_type y0,
+			scalar_type y1, scalar_type &q0, scalar_type &q1) {
+      if (y1 > 0.) {
+	if (y0 > 0.) {
+	  scalar_type z0 = y0 / e0, z1 = y1 / e1, g = z0*z0 + z1*z1 - 1.;
+	  if (g != 0.) {
+	    scalar_type r0 = (e0/e1)*(e0/e1), sb = root(r0, z0, z1, g);
+	    q0 = r0 * y0 / (sb + r0); q1 = y1 / (sb + 1.);
+	  } else { q0 = y0; q1 = y1; }
+	} else { q0 = 0.; q1 = e1; }
+      } else {
+	scalar_type numer0 = e0*y0, denom0 = e0*e0 - e1*e1;
+	if (numer0 < denom0) {
+	  scalar_type xde0 = numer0 / denom0;
+	  q0 = e0 * xde0; q1 = e1 * sqrt(std::max(0., 1. - xde0*xde0));
+	} else { q0 = e0; q1 = 0.; }
+      }
+    }
+    // signed distance, local coordinates (a, b) of P and of its nearest
+    // point (qa, qb) on the ellipse, along (n, t)
+    scalar_type local(const base_node &P, scalar_type &a, scalar_type &b,
+		      scalar_type &qa, scalar_type &qb) const {
+      base_small_vector v(P); v -= x0;
+      a = gmm::vect_sp(v, n); b = gmm::vect_sp(v, t);
+      scalar_type q0, q1;
+      if (r >= R) { nearest(r, R, gmm::abs(a), gmm::abs(b), q0, q1); qa = q0; qb = q1; }
+      else        { nearest(R, r, gmm::abs(b), gmm::abs(a), q0, q1); qa = q1; qb = q0; }
+      if (a < 0.) qa = -qa;
+      if (b < 0.) qb = -qb;
+      scalar_type d = sqrt((a-qa)*(a-qa) + (b-qb)*(b-qb));
+      return ((a/r)*(a/r) + (b/R)*(b/R) < 1.) ? -d : d;
+    }
+
   public:
     mesher_ellipse(const base_node &center, const base_small_vector &no,
-		    scalar_type r_, scalar_type R_)
-      : x0(center), n(no/gmm::vect_norm2(no)), r(r_), R(R_) {
-      t[0] = -n[1]; t[1] = n[0];
-      if (R < r) { std::swap(r, R); std::swap(n, t); }
-      a = sqrt(R*R - r*r);
+		   scalar_type r_, scalar_type R_)
+      : x0(center), n(no/gmm::vect_norm2(no)), t(-n[1], n[0]), r(r_), R(R_) {
+      GMM_ASSERT1(x0.size() == 2 && no.size() == 2,
+		  "An ellipse is defined in 2D");
+      GMM_ASSERT1(r > 0. && R > 0., "The semi-axes should be positive");
     }
     bool bounding_box(base_node &bmin, base_node &bmax) const {
       bmin = bmax = x0;
-      for (unsigned i = 0; i < 2; ++i) { bmin[i] -= R; bmax[i] += R; }
+      for (unsigned i = 0; i < 2; ++i) {
+	scalar_type e = sqrt(gmm::sqr(r*n[i]) + gmm::sqr(R*t[i]));
+	bmin[i] -= e; bmax[i] += e;
+      }
       return true;
     }
-    virtual scalar_type operator()(const base_node &P) const { 
-      base_small_vector v(P); v -= x0;
-      scalar_type vt = gmm::vect_sp(v, t);
-      vt = std::max(-a, std::min(a, vt));
-      base_node x1 = x0 + t*vt;
-      base_small_vector v1(P); v1 -= x1;
-      scalar_type v1n = gmm::vect_sp(v1, n), v1t = gmm::vect_sp(v1, t);
-      scalar_type x1n = gmm::vect_sp(x1, n), x1t = gmm::vect_sp(x1, t);
-      scalar_type ea = v1n*v1n / (r*r) + v1t * v1t / (R*R);
-      scalar_type eb = 2. * (x1n*v1n / (r*r) + x1t*v1t / (R*R));
-      scalar_type ec = x1n*x1n / (r*r) + x1t * x1t / (R*R);
-
-      scalar_type delta = eb*eb - 4 * ea * ec;
-      assert(delta >= 0);
-      scalar_type lambda = (-eb + sqrt(delta)) / (2. * ea);
-      return (1.-lambda)*gmm::vect_norm2(v1);
+    virtual scalar_type operator()(const base_node &P) const {
+      scalar_type a, b, qa, qb;
+      return local(P, a, b, qa, qb);
     }
     virtual scalar_type operator()(const base_node &P,
 				   dal::bit_vector& bv) const {
@@ -1108,10 +1150,30 @@ namespace getfem {
       bv[id] = (gmm::abs(d) < SEPS);
       return d;
     }
-    scalar_type grad(const base_node &, base_small_vector &) const
-    { GMM_ASSERT1(false, "Sorry, to be done"); return 0.; }
-    void hess(const base_node &, base_matrix &) const {
-      GMM_ASSERT1(false, "Sorry, to be done");
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      scalar_type a, b, qa, qb, d = local(P, a, b, qa, qb), ga, gb;
+      if (gmm::abs(d) > SEPS * std::min(r, R)) {
+	ga = (a - qa) / gmm::abs(d); gb = (b - qb) / gmm::abs(d);
+	if (d < 0.) { ga = -ga; gb = -gb; }
+      } else {      // on the ellipse: its normal
+	ga = qa / (r*r); gb = qb / (R*R);
+	scalar_type e = sqrt(ga*ga + gb*gb); ga /= e; gb /= e;
+      }
+      G.resize(2);
+      G[0] = ga*n[0] + gb*t[0]; G[1] = ga*n[1] + gb*t[1];
+      return d;
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      // finite differences of the gradient
+      scalar_type eps = 1e-6 * std::min(r, R);
+      base_small_vector G1, G2;
+      gmm::resize(H, 2, 2);
+      for (size_type j = 0; j < 2; ++j) {
+	base_node P1(P), P2(P); P1[j] -= eps; P2[j] += eps;
+	grad(P1, G1); grad(P2, G2);
+	for (size_type i = 0; i < 2; ++i) H(i, j) = (G2[i] - G1[i]) / (2.*eps);
+      }
+      scalar_type h = (H(0, 1) + H(1, 0)) / 2.; H(0, 1) = H(1, 0) = h;
     }
     virtual void register_constraints(std::vector<const
 				      mesher_signed_distance*>& list) const
