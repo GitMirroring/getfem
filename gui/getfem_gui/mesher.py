@@ -535,7 +535,7 @@ def cached_mesh(model: dict, mesh_name: str, workdir: str | Path,
                 up_to_date: bool = True) -> MeshResult | None:
     """The mesh already built in workdir, if any (only if up to date by default)."""
     model = P.resolved(M.with_defaults(model))
-    mesh = M.by_name(model["meshes"], mesh_name)
+    mesh = M.find_mesh(model, mesh_name)
     if mesh is None:
         return None
     base = mesh_folder(workdir) / mesh_name
@@ -557,7 +557,7 @@ def prepare_mesh(model: dict, mesh_name: str, workdir: str | Path,
     """Return the cached mesh if it is up to date, otherwise write the meshing
     script and return the job to run."""
     model = P.resolved(M.with_defaults(model))
-    mesh = M.by_name(model["meshes"], mesh_name)
+    mesh = M.find_mesh(model, mesh_name)
     if mesh is None:
         raise ValueError(f"unknown mesh: {mesh_name!r}")
     if not force:

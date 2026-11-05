@@ -1,7 +1,7 @@
 # GetFEM GUI — model format v3 (design)
 
-Status: agreed design, being implemented (November 2026). It replaces the
-format v2 of `model.py`, without compatibility.
+Status: implemented (November 2026), except where noted ("later"). It
+replaces the format v2 of `model.py`, without compatibility.
 
 ## Principles
 
@@ -73,7 +73,8 @@ format v2 of `model.py`, without compatibility.
 ```
 
 Local geometries and meshes have the structure of the top level ones: they
-make a model self-contained.
+make a model self-contained (supported by the validation and the solve; not
+yet editable in the interface).
 
 ## Variables
 
@@ -102,7 +103,7 @@ Generic conditions on a variable:
 
 | Type | Parameters | GetFEM |
 | --- | --- | --- |
-| `dirichlet` | `value`, `method` | `multiplier` (default), `penalization`, `nitsche` (needs the flux expression) |
+| `dirichlet` | `value`, `method` | `simplification` (default: exact for Lagrange elements, no extra unknown), `multiplier`, `penalization` (`penalty`); `nitsche` later |
 | `normal_dirichlet` | `value`, `method` | `add_normal_Dirichlet_condition_with_*` |
 | `neumann` | `value` (incoming flux) | boundary term `-g*Test_u` |
 | `robin` | `h`, `value` | boundary term `h*(u - g)*Test_u` |
@@ -153,21 +154,22 @@ expansion.
 ## Solvers
 
 Local (`model.solver`): `auto` (linear if all the terms are, Newton
-otherwise), `newton` (`max_iter`, `max_res`, line search), `linear`
-(linear solver), later `transient` (scheme, `dt`, `t_end`).
+otherwise), `newton` (`max_iter`, `max_res`), `linear`; later `transient`
+(scheme, `dt`, `t_end`). A property given by an expression stays an
+expression (a GWFL macro), so that it may depend on the variables.
 
-Global (`solvers`), nestable: `sequence` (`steps`), `staggered` (`steps`,
-`max_iter`, `tolerance`, `relaxation`), `sweep` (`parameter`, `values`,
+Global (`solvers`): `sequence` (`steps`), `staggered` (`steps`, `max_iter`,
+`tolerance`, `relaxation`); later, nestable: `sweep` (`parameter`, `values`,
 `steps`), `time_loop` (`dt`, `t_end`, `steps`). Without a global solver,
 the models are solved in the order of their imports.
 
 ## Outputs and graphics
 
-Outputs: `integral` (`expr`, `selection`), `extremum`, `export` (fields to
-VTU), and globally `history` (one value per iteration, time step or
-parameter value). Graphics store the display settings of the interface
-(field, component, isolines, bands, colormap, range, arrows, cut line) and
-curves of histories.
+Outputs of a model: integrals (`name`, `expr`, `selection`) and `"vtu"`, the
+file of the exported fields; later: extrema, global outputs and `history`
+(one value per iteration, time step or parameter value). Graphics (later) will store the display settings of the interface (field,
+component, isolines, bands, colormap, range, arrows, cut line) and curves of
+histories.
 
 ## Interface
 

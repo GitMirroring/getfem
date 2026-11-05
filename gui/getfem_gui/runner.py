@@ -53,7 +53,11 @@ class SolveJob:
     workdir: Path
     script: Path
     command: list[str]
-    mesh: mesher.MeshResult
+    meshes: dict[str, mesher.MeshResult]
+
+    @property
+    def mesh(self) -> mesher.MeshResult | None:
+        return next(iter(self.meshes.values()), None)
 
     @property
     def results_file(self) -> Path:
@@ -70,22 +74,28 @@ class SolveJob:
         return RunResult(ok, self.workdir, self.script, results, stdout, stderr, returncode, self.mesh)
 
 
-def prepare_solve(model: dict, workdir: str | Path, mesh: mesher.MeshResult,
+def meshes_needed(model: dict) -> list[str]:
+    """The meshes used by the variables of the models."""
+    return codegen.used_meshes(model)
+
+
+def prepare_solve(model: dict, workdir: str | Path, meshes: dict[str, mesher.MeshResult],
                   python: str | None = None) -> SolveJob:
-    """Write the solve script for an already built mesh."""
+    """Write the solve script for already built meshes ({name: MeshResult})."""
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     script = workdir / "run_getfem.py"
-    script.write_text(codegen.generate(model, mesh.path, mesh.info), encoding="utf-8")
-    job = SolveJob(workdir, script, [python or sys.executable, script.name], mesh)
+    script.write_text(codegen.generate(model, {n: (r.path, r.info) for n, r in meshes.items()}),
+                      encoding="utf-8")
+    job = SolveJob(workdir, script, [python or sys.executable, script.name], meshes)
     job.results_file.unlink(missing_ok=True)
     return job
 
 
 def run(model: dict, workdir: str | Path, python: str | None = None,
         timeout: float | None = None, check_gwfl: bool = True) -> RunResult:
-    """Check the model (including its GWFL expressions), prepare the mesh used
-    by the physics, generate the solve script, run it.
+    """Check the model file (including its GWFL expressions), prepare the
+    meshes used by the models, generate the solve script, run it.
 
     `python` selects the interpreter that provides GetFEM
     (by default, the one running getfem_gui).
@@ -98,38 +108,43 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
     if errors:
         raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
 
-    mesh_name = M.physics_mesh(model)["name"]
-    mres = mesher.ensure_mesh(model, mesh_name, workdir, python=python)
-    if not mres.ok:
-        return RunResult(False, workdir, None, stderr=f"mesh {mesh_name!r}: {mres.error}", mesh=mres)
+    meshes = {}
+    for name in meshes_needed(model):
+        mres = mesher.ensure_mesh(model, name, workdir, python=python)
+        if not mres.ok:
+            return RunResult(False, workdir, None, stderr=f"mesh {name!r}: {mres.error}", mesh=mres)
+        meshes[name] = mres
 
-    job = prepare_solve(model, workdir, mres, python)
+    job = prepare_solve(model, workdir, meshes, python)
     try:
         proc = subprocess.run(job.command, cwd=workdir, capture_output=True, text=True,
                               timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         return RunResult(False, workdir, job.script, stdout=exc.stdout or "",
-                         stderr=f"solve interrupted after {timeout} s", mesh=mres)
+                         stderr=f"solve interrupted after {timeout} s", mesh=job.mesh)
     return job.finish(proc.returncode, proc.stdout, proc.stderr)
 
 
 def export_script(model: dict) -> str:
     """A single standalone script, meshing then solving: it does not depend on
     getfem_gui nor on a working folder, and writes results.json and the VTU
-    file in the folder where it runs."""
+    files in the folder where it runs."""
     errors = M.validate(model)
     if errors:
         raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
     resolved = P.resolved(M.with_defaults(model))
-    mesh = M.physics_mesh(resolved)
-    dim = M.geometry_dim(resolved, M.geometry_of(resolved, mesh))
-    meshing = mesher.mesh_script(resolved, mesh, mesh["name"], standalone=True)
-    solving = codegen.generate(model, None, {"mesh": mesh["name"], "dim": dim}, standalone=True)
+    parts = []
+    for name in meshes_needed(resolved):
+        mesh = M.find_mesh(resolved, name)
+        text = mesher.mesh_script(resolved, mesh, mesh["name"], standalone=True)
+        text = "\n".join(l for l in text.splitlines() if not l.startswith("#!"))
+        mid = codegen.ident(name)
+        parts.append(f"# Mesh {name!r}\n{text}\nm_{mid}, RG_{mid} = m, REGIONS\n")
+    solving = codegen.generate(model, None, standalone=True)
     solving = "\n".join(l for l in solving.splitlines() if not l.startswith("#!")) + "\n"
     head = ("#!/usr/bin/env python3\n"
-            f"# Standalone GetFEM script exported by getfem_gui: model {model.get('name', '')!r}\n"
-            "# Part 1 builds the mesh and its regions, part 2 solves; run it with a\n"
-            "# Python that provides GetFEM. It writes results.json and the VTU file here.\n")
-    meshing = "\n".join(l for l in meshing.splitlines() if not l.startswith("#!")) + "\n"
-    return (head + "\n# " + "=" * 70 + "\n# Part 1: mesh\n" + meshing
+            f"# Standalone GetFEM script exported by getfem_gui: {model.get('name', '')!r}\n"
+            "# Part 1 builds the meshes and their regions, part 2 solves; run it with a\n"
+            "# Python that provides GetFEM. It writes results.json and the VTU files here.\n")
+    return (head + "\n# " + "=" * 70 + "\n# Part 1: meshes\n" + "\n".join(parts)
             + "\n# " + "=" * 70 + "\n# Part 2: solve\n" + solving)

@@ -44,6 +44,14 @@ def test_examples_are_valid():
         assert gwfl.check(M.load(ex)) == [], ex.name
 
 
+def test_terms_and_imports_are_checked():
+    m = load("thermoelastic_plate.json")
+    m["models"][1]["terms"] = [{"name": "ok", "expr": "1e3*T*Div_Test_u", "selection": "all"},
+                               {"name": "bad", "expr": "Grad_T.Test_u + foo", "selection": "all"}]
+    e = by_path(gwfl.check(m))
+    assert list(e) == ["models[1].terms[1].expr"], e         # T is the imported temperature
+
+
 def test_numbers_only_need_no_process():
     m = M.default_model()
     assert gwfl.expressions(m) == [] and gwfl.prepare(m) is None and gwfl.check(m) == []
@@ -53,9 +61,11 @@ def test_errors_are_located_and_explained():
     m = load("plate_hole_tension.json")
     m["materials"][0]["properties"]["E"] = "2e11*(1+X(1)"
     m["materials"][0]["properties"]["rho"] = "foo*2"
-    m["physics"]["sources"] = [{"selection": "all", "value": "[0, -9.81*rho, 1]"}]
-    m["physics"]["boundary_conditions"][2]["value"] = ["1e8*Normal(1)", "X(3)"]
-    m["outputs"]["quantities"] += [
+    md = m["models"][0]
+    md["parameters"] = [{"name": "rho", "value": 7800.0}]
+    md["modules"][0]["sources"] = [{"selection": "all", "value": "[0, -9.81*rho, 1]"}]
+    md["modules"][0]["conditions"][2]["value"] = ["1e8*Normal(1)", "X(3)"]
+    md["outputs"] += [
         {"name": "n", "expr": "Normal(1)", "selection": "all"},
         {"name": "t", "expr": "Test_u(1)", "selection": "all"},
         {"name": "v", "expr": "von_mises*sigma_zz + Norm(u)", "selection": "all"},
@@ -65,13 +75,14 @@ def test_errors_are_located_and_explained():
     e = by_path(gwfl.check(m))
     assert e["materials[0].properties.E"] == "Unbalanced parenthesis (at character 12)"
     assert e["materials[0].properties.rho"].startswith('Unknown variable, function, operator or data "foo"')
-    assert e["physics.sources[0].value"] == "a vector of 2 components is expected, got 3 components"
-    assert "Index for X" in e["physics.boundary_conditions[2].value[1]"]
-    assert "physics.boundary_conditions[2].value[0]" not in e     # Normal is fine on a boundary
-    assert "normal" in e["outputs.quantities[3].expr"]              # but not in the domain
-    assert "test function" in e["outputs.quantities[4].expr"]
-    assert "outputs.quantities[5].expr" not in e                    # macros and the unknown are known
-    assert e["outputs.quantities[6].expr"] == "a scalar is expected, got 4 components"
+    mw = "models[0].modules[0]"
+    assert e[f"{mw}.sources[0].value"] == "a vector of 2 components is expected, got 3 components"
+    assert "Index for X" in e[f"{mw}.conditions[2].value[1]"]
+    assert f"{mw}.conditions[2].value[0]" not in e                  # Normal is fine on a boundary
+    assert "normal" in e["models[0].outputs[3].expr"]              # but not in the domain
+    assert "test function" in e["models[0].outputs[4].expr"]
+    assert "models[0].outputs[5].expr" not in e                    # macros and the unknown are known
+    assert e["models[0].outputs[6].expr"] == "a scalar is expected, got 4 components"
     assert len(e) == 7
 
 
@@ -87,36 +98,36 @@ def test_heat_expressions_and_3d():
     m["geometries"][0]["source"] = {"type": "box", "origin": [0, 0, 0], "size": [1, 1, 1]}
     m["meshes"][0]["divisions"] = [2, 2, 2]
     m["materials"][0]["properties"]["k"] = "1 + X(3)"
-    m["physics"]["boundary_conditions"][0]["value"] = "20 + q(1)"
-    m["outputs"]["quantities"] = [{"name": "f", "expr": "q.Normal", "selection": "xmin"}]
+    m["models"][0]["modules"][0]["conditions"][0]["value"] = "20 + q(1)"
+    m["models"][0]["outputs"] = [{"name": "f", "expr": "q.Normal", "selection": "xmin"}]
     assert M.validate(m) == [] and gwfl.check(m) == []
 
 
 def test_coordinates_x_y_z():
     m = load("plate.json")                       # 2D
     m["materials"][0]["properties"]["k"] = "50*(1 + 0.1*x*y)"
-    m["outputs"]["quantities"] = [{"name": "a", "expr": "x + X(2)", "selection": "all"},
-                                  {"name": "b", "expr": "z", "selection": "all"}]
+    m["models"][0]["outputs"] = [{"name": "a", "expr": "x + X(2)", "selection": "all"},
+                                 {"name": "b", "expr": "z", "selection": "all"}]
     e = by_path(gwfl.check(m))
-    assert list(e) == ["outputs.quantities[1].expr"] and '"z"' in e["outputs.quantities[1].expr"]
+    assert list(e) == ["models[0].outputs[1].expr"] and '"z"' in e["models[0].outputs[1].expr"]
     # reserved names
     m = load("plate.json")
-    m["materials"][0]["properties"]["y"] = 1.0
-    m["physics"]["variable"] = "x"
+    m["models"][0]["parameters"] = [{"name": "y", "value": 1.0}]
+    m["models"][0]["variables"][0]["name"] = "x"
     errors = M.validate(m)
     assert any("'y' is reserved for the coordinates" in e for e in errors)
-    assert any("physics.variable: 'x' is reserved" in e for e in errors)
+    assert any("variables[0].name: 'x' is reserved" in e for e in errors)
 
 
 def test_coordinates_give_the_same_solution_as_X():
     results = []
     for value in ("20 + 100*X(1)*X(2)", "20 + 100*x*y"):
         m = load("plate.json")
-        m["physics"]["boundary_conditions"][0]["value"] = value
+        m["models"][0]["modules"][0]["conditions"][0]["value"] = value
         with tempfile.TemporaryDirectory() as tmp:
             res = runner.run(m, tmp)
             assert res.ok, res.error
-            results.append(res.results)
+            results.append(res.results["models"]["heat"])
     assert results[0]["quantities"] == results[1]["quantities"]
     assert results[0]["max_T"] == results[1]["max_T"]
 

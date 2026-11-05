@@ -30,9 +30,9 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QInputDialog, QLabel,
-                               QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+                               QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
                                QPlainTextEdit, QProgressBar, QSplitter, QStyle, QTabWidget,
-                               QTreeWidget, QTreeWidgetItem)
+                               QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import editing as E, geometry2d as G, mesher, model as M, parameters as P
 from .jobs import GwflChecker, JobRunner
@@ -45,7 +45,6 @@ PATH_ROLE = Qt.ItemDataRole.UserRole
 UNDO_LIMIT = 200
 
 # Result field shown first, and the field used for the deformed shape
-DEFAULT_FIELD = {"linear_elasticity": ("von_mises", "displacement")}
 
 
 class MainWindow(QMainWindow):
@@ -91,6 +90,22 @@ class MainWindow(QMainWindow):
         self.tree.setHeaderHidden(True)
         self.tree.setMinimumWidth(220)
         self.tree.currentItemChanged.connect(lambda cur, _prev: self._node_selected())
+        # right click: the actions of the node; the + button: what can be added to it
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
+        self.add_button = QToolButton()
+        self.add_button.setText("+")
+        self.add_button.setObjectName("add_button")
+        self.add_button.setToolTip("Add an item to the selected node")
+        self.add_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.add_button.setMenu(QMenu(self.add_button))
+        self.add_button.menu().aboutToShow.connect(self._fill_add_menu)
+        tree_box = QWidget()
+        tree_col = QVBoxLayout(tree_box)
+        tree_col.setContentsMargins(0, 0, 0, 0)
+        tree_col.setSpacing(2)
+        tree_col.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignLeft)
+        tree_col.addWidget(self.tree, 1)
         self.props = PropertiesPanel()
         self.props.changed.connect(self.change)
         self.props.action.connect(self._panel_action)
@@ -104,7 +119,7 @@ class MainWindow(QMainWindow):
         self.viewer.shapeDrawn.connect(self._shape_drawn)
         self.viewer.handleMoved.connect(self._handle_moved)
         split = QSplitter(Qt.Orientation.Horizontal)
-        split.addWidget(self.tree)
+        split.addWidget(tree_box)
         split.addWidget(self.props)
         split.addWidget(self.viewer)
         split.setStretchFactor(2, 1)
@@ -348,7 +363,8 @@ class MainWindow(QMainWindow):
             if item.isExpanded():
                 expanded.add(item.data(0, PATH_ROLE))
         self.errors = self._all_errors()
-        root = E.tree(self.model, list(self.result_fields), has_results=self.results is not None)
+        root = E.tree(self.model, {m: list(f) for m, f in self.result_fields.items()},
+                      has_results=self.results is not None)
         if self.results is not None and self.results_stale:
             res = E.find_node(root, (E.RESULTS,))
             res.label += " (out of date)"
@@ -480,75 +496,112 @@ class MainWindow(QMainWindow):
     def _show_result_node(self, path):
         if self.results is None:
             return
-        if path == (E.RESULTS,):
-            self.props.show_results(self.results, self.results_stale,
+        target = self._result_target(path)
+        if len(path) < 3:
+            data = self._results_summary(path[1] if len(path) == 2 else None)
+            self.props.show_results(data, self.results_stale,
                                     [("cmd:compute", "Compute again")] if self.results_stale else [])
-            self._show_field(self._default_field())
+            if target is not None:
+                self._show_field(*target)
             return
-        name = path[1]
-        warp = self._warp_field()
-        settings = self._settings(name)
-        self.props.show_result_field(name, self.result_fields.get(name, 1), settings,
+        mname, name = target
+        fields = self.result_fields.get(mname, {})
+        warp = self._warp_field(mname)
+        settings = self._settings(mname, name)
+        md = M.model_by_name(self.model, mname)
+        planar = (M.model_dim(self.model, md) if md else 2) == 2
+        self.props.show_result_field(name, fields.get(name, 1), settings,
                                      can_warp=warp is not None,
-                                     vectors=tuple(n for n, c in self.result_fields.items() if c > 1),
-                                     planar=E.physics_dim(self.model) == 2)
-        self._show_field(name)
+                                     vectors=tuple(n for n, c in fields.items() if c > 1),
+                                     planar=planar)
+        self._show_field(mname, name)
 
-    def _default_field(self):
-        ptype = self.model.get("physics", {}).get("type")
-        name = DEFAULT_FIELD.get(ptype, (self.model.get("physics", {}).get("variable"),))[0]
-        if name in self.result_fields or not self.result_fields:
-            return name
-        return next(iter(self.result_fields))
+    def _results_summary(self, mname=None) -> dict:
+        """What the results table shows: one model, or all of them (its
+        quantities prefixed by the model name)."""
+        r = self.results or {}
+        models = r.get("models", {})
+        if mname is not None:
+            out = dict(models.get(mname, {}))
+            out["status"] = r.get("status")
+            return out
+        out = {"status": r.get("status"), "time_s": r.get("time_s")}
+        solver = r.get("solver", {})
+        if solver.get("type") == "staggered":
+            out["iterations"] = solver.get("iterations")
+        out["nb_dofs"] = sum(m.get("nb_dofs", 0) for m in models.values())
+        out["quantities"] = {f"{m}.{q}" if len(models) > 1 else q: v for m, mr in models.items()
+                             for q, v in mr.get("quantities", {}).items()}
+        out["warnings"] = list(r.get("warnings", [])) + [w for mr in models.values() for w in mr.get("warnings", [])]
+        for m, mr in models.items():
+            for k, v in mr.items():
+                if k.startswith(("max_", "min_")):
+                    out[f"{k}" if len(models) == 1 else f"{k} ({m})"] = v
+        return out
 
-    def _warp_field(self):
-        ptype = self.model.get("physics", {}).get("type")
-        w = DEFAULT_FIELD.get(ptype, (None, None))[1]
-        return w if w in self.result_fields else None
+    def _result_target(self, path):
+        """(model name, field name) shown for a result node."""
+        if not self.result_fields:
+            return None
+        mname = path[1] if len(path) >= 2 else next(iter(self.result_fields))
+        if len(path) >= 3:
+            return mname, path[2]
+        return mname, self._default_field(mname)
 
-    def _settings(self, name):
-        s = self.view_settings.setdefault(name, {"component": None, "warp": True, "scale": None,
-                                                 "isolines": 0, "bands": False, "cmap": None,
-                                                 "range": None, "arrows": None})
+    def _default_field(self, mname):
+        fields = self.result_fields.get(mname, {})
+        md = M.model_by_name(self.model, mname) or {}
+        for name in ["von_mises"] + [v.get("name") for v in md.get("variables", [])]:
+            if name in fields:
+                return name
+        return next(iter(fields), None)
+
+    def _warp_field(self, mname):
+        w = (self.results or {}).get("models", {}).get(mname, {}).get("warp")
+        return w if w in self.result_fields.get(mname, {}) else None
+
+    def _settings(self, mname, name):
+        s = self.view_settings.setdefault((mname, name), {
+            "component": None, "warp": True, "scale": None, "isolines": 0, "bands": False,
+            "cmap": None, "range": None, "arrows": None})
         s["cut"] = self.cut_line
-        if s["scale"] is None and self._warp_field() and self.viewer.available and self.result_file:
+        file = self.result_files.get(mname)
+        if s["scale"] is None and self._warp_field(mname) and self.viewer.available and file:
             from . import scene
-            s["scale"] = round(scene.deformation_scale(scene.read(self.result_file), self._warp_field()), 6)
+            s["scale"] = round(scene.deformation_scale(scene.read(file), self._warp_field(mname)), 6)
         return s
 
     def _result_view_changed(self, change: dict):
         path = self.current_path()
-        if path[:1] == (E.RESULTS,) and len(path) == 2:
+        if path[:1] == (E.RESULTS,) and len(path) == 3:
             change = dict(change)
             if "cut" in change:
                 self.cut_line = change.pop("cut")
-            self._settings(path[1]).update(change)
-            self._show_field(path[1])
+            self._settings(path[1], path[2]).update(change)
+            self._show_field(path[1], path[2])
 
     def _set_cut(self, ab):
         """A cut line drawn in the view (or removed): one for all the fields."""
         path = self.current_path()
-        name = path[1] if path[:1] == (E.RESULTS,) and len(path) == 2 else self._default_field()
         self.cut_line = ab
-        if path[:1] == (E.RESULTS,) and len(path) == 2:
+        if path[:1] == (E.RESULTS,):
             self._show_result_node(path)
-        else:
-            self._show_field(name)
 
-    def _show_field(self, name):
-        if self.result_file is None or not self.result_file.exists():
+    def _show_field(self, mname, name):
+        file = self.result_files.get(mname)
+        if file is None or not file.exists() or name is None:
             self.viewer.show_message("No result file")
             return
-        s = self._settings(name)
-        warp = self._warp_field() if s.get("warp", True) else None
-        status = f"Result: {name}" + (" (out of date)" if self.results_stale else "")
+        s = self._settings(mname, name)
+        warp = self._warp_field(mname) if s.get("warp", True) else None
+        status = f"Result of {mname}: {name}" + (" (out of date)" if self.results_stale else "")
         if warp:
             status += f" — deformation × {s.get('scale') or 1:g}"
         try:
             view = {"isolines": s.get("isolines", 0), "bands": s.get("bands", False),
                     "cmap": s.get("cmap"), "clim": s.get("range"), "arrows": s.get("arrows"),
                     "cut": s.get("cut")}
-            self.viewer.show_field(self.result_file, name, s.get("component"), warp,
+            self.viewer.show_field(file, name, s.get("component"), warp,
                                    s.get("scale") or 1.0, status=status, view=view)
         except Exception as exc:  # noqa: BLE001 (unreadable or unexpected file)
             self.viewer.show_message(f"Cannot display {name}: {exc}")
@@ -561,11 +614,7 @@ class MainWindow(QMainWindow):
             return None
         model = P.resolved(self.model)
         geoms = model.get("geometries", [])
-        if path[:1] == ("geometries",) and len(path) >= 2:
-            gi = path[1]
-        else:
-            mesh = M.physics_mesh(model) or {}
-            gi = next((i for i, g in enumerate(geoms) if g.get("name") == mesh.get("geometry")), None)
+        gi = E.preview_geometry(self.model, path)
         if gi is None or gi >= len(geoms):
             return None
         geom = geoms[gi]
@@ -667,9 +716,9 @@ class MainWindow(QMainWindow):
             self._redo.clear()
             self._update_undo()
             self._changed(select=path)
-            shape = G.shape_of(P.resolved(self.model)["geometries"][
-                self.model["geometries"].index(E.physics_geometry(self.model))]["source"])
-            crit = E.physics_geometry(self.model)["selections"][name]["criteria"]
+            gi = E.preview_geometry(self.model, path)
+            shape = G.shape_of(P.resolved(self.model)["geometries"][gi]["source"])
+            crit = self.model["geometries"][gi]["selections"][name]["criteria"]
             on = any((tuple(r["shape"]), r["side"]) == (piece.side.shape, piece.side.side)
                      for r in crit["edges"])
             self.state.setText(f"{G.side_label(shape, piece.side.ref)} {'added to' if on else 'removed from'} "
@@ -707,7 +756,7 @@ class MainWindow(QMainWindow):
             gi = path[1]
         else:
             replaced = False
-            gi = self.model["geometries"].index(E.physics_geometry(self.model))
+            gi = E.preview_geometry(self.model, path)
         name, created = E.pick_region_for_item(self.model, path, region)
         self._undo.append(before)
         self._redo.clear()
@@ -813,9 +862,48 @@ class MainWindow(QMainWindow):
         actions = E.actions(self.model, path)
         if path[:1] == ("meshes",) and len(path) == 2:
             actions = [("cmd:build_mesh", "Build mesh")] + actions
-        if path == ("physics",):
+        if path[:1] == ("models",) and len(path) == 2 or path == ("solvers",):
             actions = actions + [("cmd:compute", "Compute")]
         return actions
+
+    def menu_actions(self, path, adding_only=False) -> list[tuple[str, str]]:
+        """Actions of a node for its menus; "add a module" lists the module types."""
+        out = []
+        for ident, label in self._node_actions(path):
+            if ident == "add_module":
+                out += [(i, l) for i, l in E.actions(self.model, path[:2] + ("modules",))]
+            elif not adding_only or ident.startswith("add"):
+                out.append((ident, label))
+        return out
+
+    def _populate(self, menu, path, adding_only):
+        menu.clear()
+        for ident, label in self.menu_actions(path, adding_only):
+            act = menu.addAction(label)
+            act.setData(ident)
+            act.triggered.connect(lambda checked=False, i=ident, p=path: self._run_action(p, i))
+        return menu
+
+    def _fill_add_menu(self):
+        path = self.current_path()
+        self._populate(self.add_button.menu(), path if path is not None else (), True)
+        if not self.add_button.menu().actions():
+            self.add_button.menu().addAction("(nothing to add here)").setEnabled(False)
+
+    def _tree_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        path = item.data(0, PATH_ROLE)
+        self.tree.setCurrentItem(item)
+        menu = self._populate(QMenu(self.tree), path, False)
+        if menu.actions():
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _run_action(self, path, ident):
+        if self.current_path() != path:
+            self.select(path)
+        self._panel_action(ident)
 
     def _focus_outside_panel(self) -> bool:
         w = QApplication.focusWidget()
@@ -934,8 +1022,7 @@ class MainWindow(QMainWindow):
         if self.jobs.running:
             return
         if name is None:
-            name = E.mesh_to_show(self.model, self.current_path()) or \
-                (M.physics_mesh(self.model) or {}).get("name")
+            name = E.mesh_to_show(self.model, self.current_path())
         if name is None or not self._check(("geometries", "meshes")):
             return
         self.bottom.setCurrentWidget(self.log)
@@ -981,37 +1068,55 @@ class MainWindow(QMainWindow):
             return
         r = res.results
         self.results = r
-        self.result_file = res.workdir / r["vtu"] if r.get("vtu") else None
-        self.result_fields = self._read_fields()
+        self._read_result_files(res.workdir)
         for settings in self.view_settings.values():     # kept, but for the deformation scale
             settings["scale"] = None
         self.results_model = _results_key(self.jobs.model)
         self.results_stale = _results_key(self.model) != self.results_model
         (res.workdir / "model_used.json").write_text(json.dumps(self.results_model, indent=1),
                                                      encoding="utf-8")
-        self._log(f"Solved: {r.get('nb_dofs')} unknowns, {r.get('time_s', 0):.2f} s, "
-                  f"relative residual {r.get('relative_residual', 0):.1e}")
+        solver = r.get("solver", {})
+        self._log(f"Solved in {r.get('time_s', 0):.2f} s ({solver.get('type', '')}"
+                  + (f", {solver.get('iterations')} iterations" if solver.get("iterations") else "") + ")")
         for w in r.get("warnings", []):
             self._log(f"Warning: {w}", error=True)
-        for k, v in r.get("quantities", {}).items():
-            self._log(f"  {k} = {v:.6g}")
+        for mname, mr in r.get("models", {}).items():
+            res_ = mr.get("relative_residual")
+            self._log(f"Model {mname}: {mr.get('nb_dofs')} unknowns"
+                      + (f", relative residual {res_:.1e}" if res_ is not None else "")
+                      + (f", {mr.get('iterations')} Newton iterations" if res_ is None else ""))
+            for w in mr.get("warnings", []):
+                self._log(f"Warning ({mname}): {w}", error=True)
+            for k, v in mr.get("quantities", {}).items():
+                self._log(f"  {k} = {v:.6g}")
         self.state.setText("Solved")
-        self.refresh(select=(E.RESULTS, self._default_field()) if self.result_fields else (E.RESULTS,))
+        target = self._result_target((E.RESULTS,))
+        self.refresh(select=(E.RESULTS,) + target if target and target[1] else (E.RESULTS,))
 
-    def _read_fields(self) -> dict[str, int]:
-        if self.result_file is None or not self.result_file.exists():
+    def _read_result_files(self, workdir: Path) -> None:
+        """The VTU file of each model and its fields."""
+        self.result_files, self.result_fields = {}, {}
+        for mname, mr in (self.results or {}).get("models", {}).items():
+            if not mr.get("vtu"):
+                continue
+            file = workdir / mr["vtu"]
+            self.result_files[mname] = file
+            self.result_fields[mname] = self._read_fields(file)
+
+    def _read_fields(self, file: Path) -> dict[str, int]:
+        if not file.exists():
             return {}
         if self.viewer.available:
             from . import scene
             try:
-                return scene.field_names(scene.read(self.result_file))
+                return scene.field_names(scene.read(file))
             except Exception:  # noqa: BLE001
                 return {}
-        return _vtu_field_names(self.result_file)
+        return _vtu_field_names(file)
 
     def _load_previous_results(self):
         """Results of an earlier session (marked out of date if the model changed since)."""
-        self.results, self.result_file, self.result_fields = None, None, {}
+        self.results, self.result_files, self.result_fields = None, {}, {}
         self.results_model, self.results_stale = None, False
         f = self.workdir / "results.json"
         used = self.workdir / "model_used.json"
@@ -1027,8 +1132,7 @@ class MainWindow(QMainWindow):
         self.results = r
         self.results_model = used_model
         self.results_stale = _results_key(self.model) != used_model
-        self.result_file = self.workdir / r["vtu"] if r.get("vtu") else None
-        self.result_fields = self._read_fields()
+        self._read_result_files(self.workdir)
 
     def export_script(self, path: str | Path | None = None) -> bool:
         """Write the standalone script (meshing then solving) of the model."""

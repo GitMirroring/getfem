@@ -57,12 +57,27 @@ def base(dim=2, n=8, element="simplex", degree=1):
     m = M.default_model()
     m["geometries"][0]["source"] = {"type": "box", "origin": [0.0] * dim, "size": [1.0] * dim}
     m["meshes"][0].update(divisions=[n] * dim, element=element)
-    m["discretization"]["degree"] = degree
+    md(m)["variables"][0]["degree"] = degree
     return m
 
 
+def md(m):
+    """The (single) model of the file."""
+    return m["models"][0]
+
+
+def mod(m):
+    """Its heat conduction module."""
+    return m["models"][0]["modules"][0]
+
+
+def set_k(m, *pieces):
+    """Conductivity per selection: (selection, value), ..."""
+    mod(m)["properties"]["k"] = [{"selection": s, "value": v} for s, v in pieces]
+
+
 def error_quantity(model, exact):
-    model["outputs"]["quantities"].append(
+    md(model)["outputs"].append(
         {"name": "err2", "expr": f"sqr(T - ({exact}))", "selection": "all"})
     return model
 
@@ -77,7 +92,7 @@ def solve(model, workdir=None):
 def _solve(model, workdir):
     res = runner.run(model, workdir)
     assert res.ok, f"failed: {res.error}\n{res.stderr[-2000:]}"
-    return res.results
+    return res.results["models"][md(model)["name"]]   # the results of the (single) model
 
 
 def l2_error(results):
@@ -88,7 +103,7 @@ def l2_error(results):
 
 def test_linear_solution_and_fluxes():
     m = error_quantity(base(), "X(1)")
-    m["outputs"]["quantities"] += [
+    md(m)["outputs"] += [
         {"name": "flux_xmin", "expr": "-k*Grad_T.Normal", "selection": "xmin"},
         {"name": "flux_xmax", "expr": "-k*Grad_T.Normal", "selection": "xmax"},
     ]
@@ -100,8 +115,8 @@ def test_linear_solution_and_fluxes():
 
 def test_quadratic_source_p2():
     m = base(degree=2)
-    m["physics"]["sources"] = [{"selection": "all", "value": 2.0}]
-    m["physics"]["boundary_conditions"][1]["value"] = 0.0
+    mod(m)["sources"] = [{"selection": "all", "value": 2.0}]
+    mod(m)["conditions"][1]["value"] = 0.0
     r = solve(error_quantity(m, "X(1)*(1-X(1))"))
     assert l2_error(r) < 1e-10
     assert abs(r["max_T"] - 0.25) < 1e-10
@@ -109,7 +124,7 @@ def test_quadratic_source_p2():
 
 def test_convection_on_quadrilaterals():
     m = base(element="quad")
-    m["physics"]["boundary_conditions"] = [
+    mod(m)["conditions"] = [
         {"type": "temperature", "selection": "xmin", "value": 1.0},
         {"type": "convection", "selection": "xmax", "h": 1.0, "T_ext": 0.0},
     ]
@@ -118,7 +133,7 @@ def test_convection_on_quadrilaterals():
 
 def test_imposed_flux():
     m = base()
-    m["physics"]["boundary_conditions"] = [
+    mod(m)["conditions"] = [
         {"type": "temperature", "selection": "xmin", "value": 0.0},
         {"type": "heat_flux", "selection": "xmax", "value": 2.0},
     ]
@@ -128,14 +143,14 @@ def test_imposed_flux():
 def test_3d_expression_on_whole_boundary():
     m = base(dim=3, n=3)
     exact = "X(1) + 2*X(2) - X(3)"
-    m["physics"]["boundary_conditions"] = [
+    mod(m)["conditions"] = [
         {"type": "temperature", "selection": "boundary", "value": exact}]
     assert l2_error(solve(error_quantity(m, exact))) < 1e-10
 
 
 def test_variable_conductivity():
     m = base(n=10, degree=2)
-    m["materials"][0]["properties"]["k"] = "1 + X(1)"
+    set_k(m, ("all", "1 + X(1)"))
     assert l2_error(solve(error_quantity(m, "log(1 + X(1)) / log(2)"))) < 1e-5
 
 
@@ -153,9 +168,9 @@ def test_selections_by_criteria():
         "middle_xmax": {"kind": "boundary", "criteria": {"type": "in_box", "min": [0.99, 0.25 - 1e-9], "max": [1.01, 0.75 + 1e-9]}},
         "walls": {"kind": "boundary", "criteria": {"type": "union", "of": ["ymin", "ymax"]}},
     }
-    m["materials"].append({"name": "metal", "selection": "right", "properties": {"k": 3.0}})
+    set_k(m, ("all", 1.0), ("right", 3.0))
     error_quantity(m, TWO_MATERIALS_EXACT)
-    m["outputs"]["quantities"] += [
+    md(m)["outputs"] += [
         {"name": "length_middle", "expr": "1", "selection": "middle_xmax"},
         {"name": "length_walls", "expr": "1", "selection": "walls"},
         {"name": "area_right", "expr": "1", "selection": "right"},
@@ -184,12 +199,12 @@ def annulus_model(mesher_spec):
                                  "criteria": {"type": "in_ball", "center": [0, 0], "radius": R1 + 0.05}}},
     }
     m["meshes"] = [dict(name="mesh", geometry="annulus", **mesher_spec)]
-    m["discretization"]["degree"] = 2
+    md(m)["variables"][0]["degree"] = 2
     exact = f"log(sqrt(sqr(X(1)) + sqr(X(2))) / {R2}) / log({R1 / R2})"
-    m["physics"]["boundary_conditions"] = [
+    mod(m)["conditions"] = [
         {"type": "temperature", "selection": "boundary", "value": exact}]
     error_quantity(m, exact)
-    m["outputs"]["quantities"].append(
+    md(m)["outputs"].append(
         {"name": "inner_flux", "expr": "-k*Grad_T.Normal", "selection": "inner"})
     return m, 2 * math.pi / math.log(R1 / R2)
 
@@ -224,9 +239,9 @@ def test_plane_versus_normal_on_plate_with_hole():
             "hole": {"kind": "boundary", "criteria": {"type": "in_ball", "center": [0.07, 0.05], "radius": 0.025}},
         }}
     m["meshes"][0] = {"name": "mesh", "geometry": "geometry", "mesher": "getfem", "h": 0.01, "order": 2}
-    m["physics"]["boundary_conditions"] = [
+    mod(m)["conditions"] = [
         {"type": "temperature", "selection": "left_plane", "value": 0.0}]
-    m["outputs"]["quantities"] = [
+    md(m)["outputs"] = [
         {"name": n, "expr": "1", "selection": n} for n in ("left_plane", "left_normal", "hole")]
     q = solve(m)["quantities"]
     assert abs(q["left_plane"] - 0.1) < 1e-12
@@ -240,20 +255,20 @@ def test_two_meshes_one_geometry_and_cache():
         {"name": "coarse", "geometry": "geometry", "mesher": "structured", "divisions": [4, 4]},
         {"name": "fine", "geometry": "geometry", "mesher": "structured", "divisions": [16, 16]},
     ]
-    m["physics"]["sources"] = [{"selection": "all", "value": 2.0}]
-    m["physics"]["boundary_conditions"][1]["value"] = 0.0
+    mod(m)["sources"] = [{"selection": "all", "value": 2.0}]
+    mod(m)["conditions"][1]["value"] = 0.0
     error_quantity(m, "X(1)*(1-X(1))")
     with tempfile.TemporaryDirectory() as tmp:
         errs = {}
         for name in ("coarse", "fine"):
-            m["physics"]["mesh"] = name
+            md(m)["variables"][0]["mesh"] = name
             r = solve(m, tmp)
             assert r["mesh"]["name"] == name
             errs[name] = l2_error(r)
         # P1, h divided by 4: L2 error divided by about 16
         assert 10 < errs["coarse"] / errs["fine"] < 20, errs
         # Changing the physics does not remesh; changing the mesh does.
-        m["physics"]["sources"][0]["value"] = 3.0
+        mod(m)["sources"][0]["value"] = 3.0
         assert mesher.ensure_mesh(m, "fine", tmp).cached
         m["meshes"][1]["divisions"] = [8, 8]
         assert not mesher.ensure_mesh(m, "fine", tmp).cached
@@ -295,16 +310,13 @@ def test_geometry_from_imported_mesh():
         m["geometries"][0]["selections"] = {
             "horizontal_edges": {"kind": "boundary", "criteria": {"type": "union", "of": ["bottom", "top"]}}}
         m["meshes"][0] = {"name": "mesh", "geometry": "geometry", "mesher": "import"}
-        m["materials"] = [
-            {"name": "insulator", "selection": "insulator", "properties": {"k": 1.0}},
-            {"name": "metal", "selection": "metal", "properties": {"k": 3.0}},
-        ]
-        m["physics"]["boundary_conditions"] = [
+        set_k(m, ("insulator", 1.0), ("metal", 3.0))
+        mod(m)["conditions"] = [
             {"type": "temperature", "selection": "left", "value": 0.0},
             {"type": "temperature", "selection": "right", "value": 1.0},
         ]
         error_quantity(m, TWO_MATERIALS_EXACT)
-        m["outputs"]["quantities"] += [
+        md(m)["outputs"] += [
             {"name": "flux_left", "expr": "-k*Grad_T.Normal", "selection": "left"},
             {"name": "length_horizontal", "expr": "1", "selection": "horizontal_edges"},
         ]
@@ -313,29 +325,6 @@ def test_geometry_from_imported_mesh():
         assert l2_error(r) < 1e-10
         assert abs(r["quantities"]["flux_left"] - 1.5) < 1e-10
         assert abs(r["quantities"]["length_horizontal"] - 2.0) < 1e-12
-
-
-def test_migration_from_v1():
-    v1 = {
-        "format_version": 1, "name": "old",
-        "mesh": {"type": "box", "origin": [0, 0], "size": [1, 1], "divisions": [6, 6]},
-        "discretization": {"degree": 2},
-        "materials": [{"name": "mat", "region": "all", "properties": {"k": 1}}],
-        "physics": {"type": "heat_stationary", "variable": "T",
-                    "sources": [{"region": "all", "value": 2}],
-                    "boundary_conditions": [
-                        {"type": "temperature", "region": "xmin", "value": 0},
-                        {"type": "temperature", "region": "xmax", "value": 0}]},
-        "outputs": {"vtu": "", "quantities": [
-            {"name": "err2", "expr": "sqr(T - X(1)*(1-X(1)))", "region": "all"}]},
-    }
-    with tempfile.TemporaryDirectory() as tmp:
-        p = Path(tmp) / "old.json"
-        p.write_text(json.dumps(v1), encoding="utf-8")
-        m = M.load(p)
-    assert m["format_version"] == 2 and M.validate(m) == []
-    assert m["physics"]["boundary_conditions"][0]["selection"] == "xmin"
-    assert l2_error(solve(m)) < 1e-10
 
 
 # ------------------------------------------------------------------ validation
@@ -348,18 +337,18 @@ def test_validation_messages():
 
     def bc(sel):
         def f(m):
-            m["physics"]["boundary_conditions"] = [{"type": "temperature", "selection": sel, "value": 0}]
+            mod(m)["conditions"] = [{"type": "temperature", "selection": sel, "value": 0}]
         return f
 
     assert any("unknown selection 'north'" in e for e in errs(bc("north")))
     assert any("is not a boundary" in e for e in errs(bc("all")))
-    assert any("up to a constant" in e for e in errs(lambda m: m["physics"].update(
-        boundary_conditions=[{"type": "heat_flux", "selection": "xmin", "value": 1}])))
+    assert any("up to a constant" in e for e in errs(lambda m: mod(m).update(
+        conditions=[{"type": "heat_flux", "selection": "xmin", "value": 1}])))
     assert any("missing thermal conductivity" in e for e in errs(
-        lambda m: m["materials"][0].update(properties={})))
+        lambda m: mod(m).update(properties={})))
     assert any("cannot mesh" in e for e in errs(lambda m: m["geometries"][0].update(
         source={"type": "csg", "dim": 2, "shape": {"type": "ball", "center": [0, 0], "radius": 1}})))
-    assert any("unknown mesh" in e for e in errs(lambda m: m["physics"].update(mesh="other")))
+    assert any("unknown mesh" in e for e in errs(lambda m: md(m)["variables"][0].update(mesh="other")))
     assert any("only applies to" in e for e in errs(lambda m: m["geometries"][0].update(
         selections={"s": {"kind": "domain", "criteria": {"type": "normal", "direction": [1, 0]}}})))
 
@@ -418,16 +407,17 @@ def layered_model(h=0.1):
         },
     }
     m["meshes"] = [{"name": "mesh", "geometry": "bar", "mesher": "getfem", "h": h, "order": 1}]
-    m["discretization"]["degree"] = 1
-    m["materials"] = [{"name": "soft", "selection": "left", "properties": {"k": 1.0}},
-                      {"name": "hard", "selection": "right", "properties": {"k": 3.0}}]
-    m["physics"]["sources"] = []
-    m["physics"]["boundary_conditions"] = [
+    md(m)["variables"][0]["degree"] = 1
+    m["materials"] = [{"name": "soft", "properties": {"k": 1.0}}, {"name": "hard", "properties": {"k": 3.0}}]
+    mod(m)["properties"]["k"] = [{"selection": "left", "material": "soft"},
+                                 {"selection": "right", "material": "hard"}]
+    mod(m)["sources"] = []
+    mod(m)["conditions"] = [
         {"type": "temperature", "selection": "x0", "value": 0.0},
         {"type": "temperature", "selection": "x1", "value": 1.0}]
     q = 1.0 / (0.5 / 1.0 + 0.5 / 3.0)
     error_quantity(m, f"{q}*X(1) - {2 * q / 3}*pos_part(X(1) - 0.5)")
-    m["outputs"]["quantities"] += [
+    md(m)["outputs"] += [
         {"name": "area_left", "expr": "1", "selection": "left"},
         {"name": "area_right", "expr": "1", "selection": "right"}]
     return m
@@ -459,8 +449,8 @@ def test_disk_inclusion_regions():
         },
     }
     m["meshes"] = [{"name": "mesh", "geometry": "g", "mesher": "getfem", "h": 0.08, "order": 1}]
-    m["physics"]["sources"] = []
-    m["physics"]["boundary_conditions"] = [{"type": "temperature", "selection": "boundary", "value": 0.0}]
+    mod(m)["sources"] = []
+    mod(m)["conditions"] = [{"type": "temperature", "selection": "boundary", "value": 0.0}]
     with tempfile.TemporaryDirectory() as tmp:
         res = mesher.ensure_mesh(m, "mesh", tmp)
         assert res.ok, res.error

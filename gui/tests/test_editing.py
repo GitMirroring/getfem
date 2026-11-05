@@ -34,18 +34,23 @@ def load(name):
     return M.load(Path(__file__).resolve().parents[1] / "examples" / name)
 
 
+def MB(k=0, i=0):
+    """Path of the module i of the model k."""
+    return ("models", k, "modules", i)
+
+
 def test_tree_and_fields_of_every_node():
     for ex in EXAMPLES:
         model = M.load(ex)
-        root = E.tree(model, result_fields=["T"])
+        root = E.tree(model, result_fields={"heat": ["T"]})
         kinds = {n.kind for n in root.walk()}
-        assert {"geometry", "mesh", "material", "physics", "bc"} <= kinds, ex.name
+        assert {"geometry", "mesh", "model", "module", "variable", "property"} <= kinds, ex.name
         for node in root.walk():
             for f in E.fields(model, node.path):
                 assert f.kind in ("text", "ident", "value", "vector", "numbers", "ints", "int",
                                   "number", "choice", "names", "file", "info"), (node.path, f)
-                if f.kind == "choice" and f.op is None:
-                    value = E.get_at(model, f.key)
+                if f.kind == "choice":
+                    value = E.field_value(model, f)
                     assert value is None or value in [c[0] for c in f.choices], (node.path, f, value)
 
 
@@ -56,11 +61,14 @@ def test_every_action_keeps_a_valid_model():
         assert M.validate(base) == [], ex.name
         for node in E.tree(base).walk():
             for action, _ in E.actions(base, node.path):
-                if action == "remove":
+                if action in ("remove", "add_import") or (action == "unfold"):
                     continue
                 model = copy.deepcopy(base)
                 new = E.do_action(model, node.path, action, name="rho" if E.needs_name(action) else None)
-                assert M.validate(model) == [], (ex.name, node.path, action, M.validate(model))
+                errors = M.validate(model)
+                if action.startswith(("add_model:", "add_module:")):   # new: conditions to be set
+                    errors = [e for e in errors if "up to a constant" not in e and "rigid body" not in e]
+                assert errors == [], (ex.name, node.path, action, errors)
                 assert new is None or E.find_node(E.tree(model), new) is not None, (action, new)
 
 
@@ -73,7 +81,7 @@ def test_rename_selection_updates_its_uses():
     new = E.apply(model, f, "circle")
     assert new == ("geometries", geom, "selections", "circle")
     assert list(model["geometries"][geom]["selections"]) == [("circle" if n == "hole" else n) for n in order]
-    uses = [bc["selection"] for bc in model["physics"]["boundary_conditions"]]
+    uses = [bc["selection"] for bc in E.get_at(model, MB() + ("conditions",))]
     assert "circle" in uses and "hole" not in uses
     assert M.validate(model) == []
     try:
@@ -83,24 +91,45 @@ def test_rename_selection_updates_its_uses():
         pass
 
 
-def test_rename_mesh_and_geometry():
-    model = load("plate_with_hole.json")
+def test_rename_mesh_geometry_model_variable_material():
+    model = load("thermoelastic_plate.json")
     E.apply(model, E.Field(("meshes", 0, "name"), "", "ident", op="rename_mesh"), "m1")
     E.apply(model, E.Field(("geometries", 0, "name"), "", "ident", op="rename_geometry"), "g1")
+    E.apply(model, E.Field(("models", 0, "name"), "", "ident", op="rename_model"), "heat")
+    E.apply(model, E.Field(("models", 0, "variables", 0, "name"), "", "ident", op="rename_variable"), "theta")
+    E.apply(model, E.Field(("materials", 0, "name"), "", "ident", op="rename_material"), "alu")
+    assert M.validate(model) == [], M.validate(model)
+    assert model["meshes"][0]["geometry"] == "g1" and model["models"][1]["variables"][0]["mesh"] == "m1"
+    assert model["solvers"][0]["steps"] == ["heat", "mechanical"]
+    imp = model["models"][1]["imports"][0]
+    assert imp == {"name": "T", "model": "heat", "variable": "theta"}      # the local name stays
+    th = model["models"][0]
+    assert th["modules"][0]["variable"] == "theta" and th["outputs"][0]["expr"] == "-k*Grad_theta.Normal"
+    assert model["models"][1]["modules"][1]["temperature"] == "T"
+    assert th["modules"][0]["properties"]["k"][0]["material"] == "alu"
+
+
+def test_rename_a_local_parameter_stays_local():
+    model = load("thermoelastic_plate.json")
+    for md in model["models"]:
+        md["parameters"] = [{"name": "c", "value": 1.0}]
+        md["outputs"].append({"name": "q2", "expr": "c*2", "selection": "all"})
+    E.apply(model, E.Field(("models", 0, "parameters", 0, "name"), "", "ident", op="rename_parameter"), "c0")
+    assert model["models"][0]["outputs"][-1]["expr"] == "c0*2"
+    assert model["models"][1]["outputs"][-1]["expr"] == "c*2"
     assert M.validate(model) == []
-    assert model["meshes"][0]["geometry"] == "g1"
 
 
 def test_type_changes_reset_fields():
     model = load("plate.json")
-    bcs = ("physics", "boundary_conditions")
-    E.apply(model, E.Field(bcs + (0, "type"), "", "choice", op="bc_type"), "convection")
-    bc = model["physics"]["boundary_conditions"][0]
+    bcs = MB() + ("conditions",)
+    E.apply(model, E.Field(bcs + (0, "type"), "", "choice", op="mcond_type"), "convection")
+    bc = E.get_at(model, bcs + (0,))
     assert set(bc) == {"type", "selection", "h", "T_ext"}
-    E.set_physics_type(model, "linear_elasticity")
-    assert model["physics"]["boundary_conditions"] == []
-    assert set(model["materials"][0]["properties"]) >= {"E", "nu"}
-    E.do_action(model, ("physics",), "add_bc")
+    # a generic condition
+    p = E.do_action(model, ("models", 0), "add_condition")
+    E.apply(model, E.Field(p + ("type",), "", "choice", op="cond_type"), "robin")
+    assert set(E.get_at(model, p)) == {"type", "variable", "selection", "h", "value"}
     assert M.validate(model) == []
     # mesher change: parameters of the new mesher only
     E.apply(model, E.Field(("meshes", 0, "mesher"), "", "choice", op="mesher"), "getfem")
@@ -108,14 +137,71 @@ def test_type_changes_reset_fields():
     assert M.validate(model) == []
 
 
+def test_modules_and_their_variables():
+    model = load("plate.json")
+    md = model["models"][0]
+    new = E.do_action(model, ("models", 0, "modules"), "add_module:thermal_expansion")
+    # the expansion needs a displacement and an elasticity module: both added
+    assert [m["type"] for m in md["modules"]] == ["heat_conduction", "linear_elasticity", "thermal_expansion"]
+    assert [v["name"] for v in md["variables"]] == ["T", "u"] and md["variables"][1]["components"] == "dim"
+    assert E.get_at(model, new)["temperature"] == "T"
+    md["modules"][1]["conditions"] = [{"type": "fixed", "selection": "xmin"}]
+    assert M.validate(model) == [], M.validate(model)
+    # a property given by a material, then by a value
+    piece = MB() + ("properties", "k", 0)
+    f = next(f for f in E.fields(model, piece) if f.op == "piece_source")
+    assert E.field_value(model, f) == "material:aluminium"
+    E.apply(model, f, "value")
+    assert E.get_at(model, piece) == {"selection": "all", "value": 237.0}
+    E.apply(model, f, "material:aluminium")
+    assert E.get_at(model, piece) == {"selection": "all", "material": "aluminium"}
+    p2 = E.do_action(model, MB(), "add_piece:k")
+    assert p2 == MB() + ("properties", "k", 1) and M.validate(model) == []
+
+
+def test_new_models_from_the_root():
+    model = load("plate.json")
+    p = E.do_action(model, (), "add_model:linear_elasticity")
+    md = E.get_at(model, p)
+    assert md["name"] == "mechanics" and md["variables"][0]["mesh"] == "mesh"
+    md["modules"][0]["conditions"] = [{"type": "fixed", "selection": "xmin"}]
+    md["modules"][0]["properties"] = {"E": [{"selection": "all", "value": 1.0}],
+                                      "nu": [{"selection": "all", "value": 0.3}]}
+    assert M.validate(model) == []
+    imp = E.do_action(model, p, "add_import")
+    assert E.get_at(model, imp) == {"name": "T2", "model": "heat", "variable": "T"} or \
+        E.get_at(model, imp)["model"] == "heat"
+    s = E.do_action(model, (), "add_solver")
+    assert model["solvers"][0]["steps"] == ["heat", "mechanics"] and M.validate(model) == []
+
+
+def test_unfold_heat_module():
+    from getfem_gui import runner
+    import tempfile
+    model = load("plate_with_hole.json")
+    ref = model
+    unfolded = copy.deepcopy(model)
+    E.do_action(unfolded, MB(), "unfold")
+    md = unfolded["models"][0]
+    assert md["modules"] == [] and md["fields"][0]["name"] == "k"
+    assert [t["name"] for t in md["terms"]][:1] == ["conduction"]
+    assert M.validate(unfolded) == [], M.validate(unfolded)
+    with tempfile.TemporaryDirectory() as tmp:
+        r1 = runner.run(ref, tmp + "/a").results["models"]["heat"]["quantities"]
+        r2 = runner.run(unfolded, tmp + "/b").results["models"]["heat"]["quantities"]
+    for k, v in r1.items():
+        assert abs(r2[k] - v) <= 1e-9 * max(1.0, abs(v)), (k, v, r2[k])
+
+
 def test_dimension_change_adapts_the_model():
     model = load("plate.json")
-    E.set_physics_type(model, "linear_elasticity")
-    model["physics"]["plane"] = "stress"
-    E.do_action(model, ("physics",), "add_bc")
+    E.do_action(model, ("models", 0, "modules"), "add_module:linear_elasticity")
+    md = model["models"][0]
+    assert md["modules"][1]["plane"] == "strain"
+    md["modules"][1]["conditions"] = [{"type": "fixed", "selection": "xmin"}]
     E.apply(model, E.Field(("geometries", 0, "source", "size"), "", "choice", op="box_dim"), 3)
     assert len(model["geometries"][0]["source"]["size"]) == 3
-    assert "plane" not in model["physics"]
+    assert "plane" not in md["modules"][1]
     assert M.validate(model) == [], M.validate(model)
 
 
@@ -134,11 +220,11 @@ def test_csg_shapes():
 def test_errors_are_placed_on_nodes_and_fields():
     model = load("plate.json")
     model["materials"][0]["properties"]["k"] = ""
-    model["physics"]["boundary_conditions"][0]["selection"] = "nowhere"
+    E.get_at(model, MB() + ("conditions", 0))["selection"] = "nowhere"
     errors = M.validate(model)
     by_node = E.errors_by_node(E.tree(model), errors)
     assert ("materials", 0) in by_node
-    assert ("physics", "boundary_conditions", 0) in by_node
+    assert MB() + ("conditions", 0) in by_node
     assert E.errors_at(errors, ("materials", 0, "properties", "k")) == ["empty expression"]
     assert E.error_path("format_version: 2 expected")[0] == ("format_version",)
     assert E.error_path("something without a path")[0] == ()
@@ -156,11 +242,13 @@ def test_values():
 
 def test_highlight():
     model = load("plate_with_hole.json")
-    mesh = M.physics_mesh(model)["name"]
-    assert E.highlighted_selection(model, ("physics", "boundary_conditions", 0))[0] == mesh
-    assert E.highlighted_selection(model, ("materials", 0)) == (mesh, model["materials"][0]["selection"])
-    assert E.highlighted_selection(model, ("physics",)) == (None, None)
+    mesh = model["models"][0]["variables"][0]["mesh"]
+    assert E.highlighted_selection(model, MB() + ("conditions", 0))[0] == mesh
+    piece = MB() + ("properties", "k", 0)
+    assert E.highlighted_selection(model, piece) == (mesh, E.get_at(model, piece)["selection"])
+    assert E.highlighted_selection(model, ("models", 0)) == (None, None)
     assert E.mesh_to_show(model, ("meshes", 0)) == model["meshes"][0]["name"]
+    assert E.mesh_to_show(model, ("models", 0, "terms")) == mesh
 
 
 if __name__ == "__main__":

@@ -14,52 +14,59 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
+
 """Application data model, independent of any graphical interface.
 
-A model is a Python dictionary serialized as JSON. This module provides
-loading (with migration of older format versions), saving, selection tables
-and validation. Validation returns readable messages rather than raising an
-exception, so that a GUI can display them next to the relevant fields.
+A model file is a Python dictionary serialized as JSON. This module provides
+loading, saving, the scopes of names, selection tables and validation.
+Validation returns readable messages rather than raising an exception, so
+that a GUI can display them next to the relevant fields. The design is
+described in doc/model_format_v3.md.
 
-Format version 2
+Format version 3
 ================
 
-Geometry and mesh are separate. A geometry carries *named selections*; every
-mesh of that geometry inherits them. The physics only knows selection names
-and the name of the mesh it uses.
+The file follows the logic of GetFEM: shared definitions, then *models*,
+each of them becoming one `gf.Model`, then global solvers chaining them.
 
 {
-  "format_version": 2,
-  "name": "Plate with a hole",
-  "geometries": [
-    {
-      "name": "plate",
-      "source": {...},                      # see GEOMETRY_SOURCES
-      "selections": {
-        "hole":  {"kind": "boundary", "criteria": {"type": "in_ball", "center": [0.5, 0.5], "radius": 0.21}},
-        "walls": {"kind": "boundary", "criteria": {"type": "union", "of": ["ymin", "ymax"]}}
-      }
-    }
-  ],
-  "meshes": [
-    {"name": "coarse", "geometry": "plate", "mesher": "getfem", "h": 0.1},
-    {"name": "fine",   "geometry": "plate", "mesher": "gmsh",   "size": 0.02, "order": 2}
-  ],
-  "discretization": {"degree": 2},
-  "materials": [{"name": "steel", "selection": "all", "properties": {"k": 50}}],
-  "physics": {
-    "type": "heat_stationary", "mesh": "fine", "variable": "T",
-    "sources": [{"selection": "all", "value": 0}],
-    "boundary_conditions": [
-      {"type": "temperature", "selection": "xmin", "value": 20},
-      {"type": "heat_flux",   "selection": "hole", "value": 100},
-      {"type": "convection",  "selection": "xmax", "h": 10, "T_ext": 20}
-    ]
-  },
-  "study": {"type": "stationary"},
-  "outputs": {"vtu": "result.vtu",
-              "quantities": [{"name": "flux", "expr": "-k*Grad_T.Normal", "selection": "xmin"}]}
+  "format_version": 3,
+  "name": "Plate with an inclusion",
+  "parameters": [{"name": "L", "value": 0.1}],
+  "materials":  [{"name": "copper", "properties": {"k": 400}}],
+  "geometries": [{"name": "plate", "source": {...}, "selections": {...}}],
+  "meshes":     [{"name": "mesh", "geometry": "plate", "mesher": "getfem", "h": "L/40"}],
+  "fields":     [{"name": "porosity", "geometry": "plate",
+                  "values": [{"selection": "all", "value": 0.1}]}],
+  "models": [{
+    "name": "thermal",
+    "parameters": [], "geometries": [], "meshes": [], "fields": [],   # local ones
+    "imports": [],                                  # results of other models
+    "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+    "modules": [{"type": "heat_conduction", "variable": "T",
+                 "properties": {"k": [{"selection": "matrix", "value": 0.2},
+                                      {"selection": "inclusion", "material": "copper"}]},
+                 "sources": [{"selection": "all", "value": 0}],
+                 "conditions": [{"type": "temperature", "selection": "cold", "value": 20}]}],
+    "terms": [{"name": "extra", "expr": "-q0*Test_T", "selection": "inclusion"}],
+    "conditions": [{"type": "dirichlet", "variable": "T", "selection": "hot", "value": 80}],
+    "solver": {"type": "auto"},
+    "outputs": [{"name": "heat_flow", "expr": "-k*Grad_T.Normal", "selection": "cold"}],
+    "vtu": "thermal.vtu"
+  }],
+  "solvers": [{"name": "main", "type": "sequence", "steps": ["thermal"]}],
+  "outputs": [],
+  "graphics": []
 }
+
+Names and scopes
+----------------
+Parameters, materials and fields of the top level are visible in every
+model; the local parameters, fields, variables, imports, module properties
+and macros of a model only in it. A local name may not hide a global one.
+Geometry and mesh names are unique in the whole file. A model takes the
+result of another one through an import, {"name": "T", "model": "thermal",
+"variable": "T"} (for now on the same mesh), and is then solved after it.
 
 Geometry sources
 ----------------
@@ -106,44 +113,28 @@ User selections: {"kind": "domain" | "boundary", "criteria": {...}} with
                                                          domain); Gmsh does not yet (staircase)
 Criteria are evaluated on the mesh, so they survive remeshing.
 
-Physics
--------
-The available physics, their material properties, options and boundary
-conditions are described declaratively in PHYSICS_SPECS (a GUI can build its
-forms from it):
-
-- heat_stationary   : -div(k grad T) = f
-                      properties k; sources: heat source (scalar)
-                      BCs: temperature {value}, heat_flux {value} (incoming),
-                           convection {h, T_ext}
-                      GWFL macro: q = -k*Grad_T (heat flux vector)
-- linear_elasticity : -div sigma(u) = f, small strains, isotropic material
-                      properties E, nu; option "plane": "strain" | "stress" (2D only)
-                      sources: body force (vector)
-                      BCs: fixed {}, displacement {value: vector}, roller {} (u.n = 0),
-                           traction {value: vector}, pressure {value} (on the outward normal)
-                      GWFL macros: eps, sigma, von_mises, mu_L, lambda_L
-
-Parameters and fields
----------------------
-"parameters": [{"name": "L", "value": 0.1, "description": "..."},
-               {"name": "a", "value": "L/10"}]
-    Named constants, evaluated in order (see parameters.py). The numerical
-    fields of geometries and meshes may be expressions of them ("L/2"), and
-    they are GetFEM data in the GWFL expressions of the physics.
-"fields": [{"name": "porosity", "description": "...",
-            "values": [{"selection": "all", "value": "0.1*(1+x)"},
-                       {"selection": "inclusion", "value": 0.3}]}]
-    User fields, defined per domain selection like material properties (the
-    last value listed wins), usable in every expression, including the
-    material properties, and exported with the results.
+Models
+------
+- variables : {"name", "mesh", "fem": "lagrange" | "lagrange_discontinuous",
+               "degree": 1..6, "components": 1 | "dim" | n}
+- modules   : predefined physics, see MODULE_SPECS (properties per domain
+              selection, given by a value or a material; sources;
+              conditions of the module)
+- terms     : GWFL weak forms, {"name", "expr", "selection", "linear": "auto"
+              | true | false}; the terms of a model sum to zero (a source
+              is written "-f*Test_u")
+- conditions: generic ones on a variable, see CONDITIONS
+- solver    : {"type": "auto" | "linear" | "newton", "max_iter", "max_res"}
+- outputs   : integrals {"name", "expr", "selection"}; "vtu": file name of
+              the export (variables, module fields, fields), null for none
+Global solvers: {"name", "type": "sequence" | "staggered", "steps": [model
+names], "max_iter", "tolerance", "relaxation"}; without any, the models are
+solved in an order compatible with their imports.
 
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
-Vector values are a list
-of such values (one per space dimension) or a GWFL vector expression such as
-"[0, -9.81*rho]". The macros of the physics may be used in the expressions of
-the derived quantities, e.g. "(sigma*Normal)(1)" for a reaction force.
+Vector values are a list of such values (one per space dimension) or a GWFL
+vector expression such as "[0, -9.81*rho]".
 """
 
 from __future__ import annotations
@@ -155,7 +146,7 @@ from pathlib import Path
 
 from . import parameters as P
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 ALL = "all"
 BOUNDARY = "boundary"
@@ -190,17 +181,35 @@ VECTOR = "vector"
 # up to the dimension of the mesh); these names cannot be used for anything else.
 COORDINATES = ("x", "y", "z")
 
-# Declarative description of the physics. Value kinds are SCALAR or VECTOR.
-PHYSICS_SPECS = {
-    "heat_stationary": {
-        "label": "Heat transfer (stationary)",
-        "field": SCALAR,
-        "variable": "T",
+FEMS = ("lagrange", "lagrange_discontinuous")
+SOLVER_TYPES = ("auto", "linear", "newton")
+GLOBAL_SOLVERS = ("sequence", "staggered")
+DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
+
+# Generic conditions on a variable: their values ("var": the kind of the
+# variable, scalar or vector)
+CONDITIONS = {
+    "dirichlet": {"value": "var"},
+    "normal_dirichlet": {"value": SCALAR},
+    "neumann": {"value": "var"},
+    "robin": {"h": SCALAR, "value": "var"},
+}
+ANCHORING_CONDITIONS = ("dirichlet", "normal_dirichlet", "robin")
+
+# Declarative description of the modules (predefined physics). "variables":
+# the roles of the variables a module acts on (key of the module holding the
+# name), with the defaults of a variable it creates; value kinds are SCALAR
+# or VECTOR.
+MODULE_SPECS = {
+    "heat_conduction": {
+        "label": "Heat conduction (stationary)",
+        "variables": {"variable": {"name": "T", "kind": SCALAR, "degree": 2, "label": "temperature"}},
         "properties": {"k": "thermal conductivity"},
         "property_defaults": {"k": 1.0},
         "options": {},
+        "values": {},
         "source": SCALAR,
-        "boundary_conditions": {
+        "conditions": {
             "temperature": {"value": SCALAR},
             "heat_flux": {"value": SCALAR},
             "convection": {"h": SCALAR, "T_ext": SCALAR},
@@ -209,16 +218,17 @@ PHYSICS_SPECS = {
         "anchoring_message": "without imposed temperature or convection, "
                              "the temperature is only defined up to a constant",
         "macros": ("q",),
+        "exports": {"heat_flux": ("q", VECTOR)},
     },
     "linear_elasticity": {
         "label": "Linear elasticity",
-        "field": VECTOR,
-        "variable": "u",
+        "variables": {"variable": {"name": "u", "kind": VECTOR, "degree": 2, "label": "displacement"}},
         "properties": {"E": "Young's modulus", "nu": "Poisson's ratio"},
         "property_defaults": {"E": 1.0, "nu": 0.3},
         "options": {"plane": ("strain", "stress")},
+        "values": {},
         "source": VECTOR,
-        "boundary_conditions": {
+        "conditions": {
             "fixed": {},
             "displacement": {"value": VECTOR},
             "roller": {},
@@ -228,7 +238,26 @@ PHYSICS_SPECS = {
         "anchoring": ("fixed", "displacement", "roller"),
         "anchoring_message": "without any displacement constraint, "
                              "rigid body motions are not prevented",
-        "macros": ("eps", "sigma", "sigma_zz", "von_mises", "mu_L", "lambda_L", "nitsche_gamma0"),
+        "macros": ("eps", "sigma", "sigma_zz", "von_mises", "mu_L", "lambda_L", "beta_L", "theta_L",
+                   "nitsche_gamma0"),
+        "exports": {"von_mises": ("von_mises", SCALAR)},
+    },
+    "thermal_expansion": {
+        "label": "Thermal expansion",
+        "variables": {"temperature": {"name": "T", "kind": SCALAR, "degree": 2, "label": "temperature",
+                                      "import": True},
+                      "displacement": {"name": "u", "kind": VECTOR, "degree": 2, "label": "displacement"}},
+        "properties": {"alpha": "thermal expansion coefficient"},
+        "property_defaults": {"alpha": 1e-5},
+        "options": {},
+        "values": {"T_ref": SCALAR},
+        "value_defaults": {"T_ref": 0.0},
+        "source": None,
+        "conditions": {},
+        "requires": ("linear_elasticity", "displacement"),
+        "anchoring": (),
+        "macros": (),
+        "exports": {},
     },
 }
 
@@ -240,11 +269,58 @@ def box_boundary_names(dim: int) -> list[str]:
     return [f"{_AXES[i]}{side}" for i in range(dim) for side in ("min", "max")]
 
 
+def new_module(mtype: str, dim: int = 2, names: dict | None = None) -> dict:
+    """A module of type mtype with default properties, acting on the variables
+    of the given names (roles -> names; the defaults of the spec otherwise)."""
+    spec = MODULE_SPECS[mtype]
+    mod = {"type": mtype}
+    for role, v in spec["variables"].items():
+        mod[role] = (names or {}).get(role, v["name"])
+    for opt, choices in spec["options"].items():
+        if opt != "plane" or dim == 2:
+            mod[opt] = choices[0]
+    for key, value in spec.get("value_defaults", {}).items():
+        mod[key] = value
+    mod["properties"] = {p: [{"selection": ALL, "value": v}]
+                         for p, v in spec["property_defaults"].items()}
+    if spec["source"] is not None:
+        mod["sources"] = []
+    if spec["conditions"]:
+        mod["conditions"] = []
+    return mod
+
+
+def new_variable(name: str, mesh: str, kind: str = SCALAR, degree: int = 2) -> dict:
+    var = {"name": name, "mesh": mesh, "fem": "lagrange", "degree": degree}
+    if kind == VECTOR:
+        var["components"] = "dim"
+    return var
+
+
+def new_model(name: str, mesh: str, mtype: str | None = None, dim: int = 2) -> dict:
+    """An empty model, or one with a module of type mtype and its variables."""
+    md = {"name": name, "variables": [], "modules": [], "terms": [], "conditions": [],
+          "solver": {"type": "auto"}, "outputs": [], "vtu": f"{name}.vtu"}
+    if mtype is not None:
+        spec = MODULE_SPECS[mtype]
+        for role, v in spec["variables"].items():
+            md["variables"].append(new_variable(v["name"], mesh, v["kind"], v["degree"]))
+        md["modules"].append(new_module(mtype, dim))
+    return md
+
+
 def default_model() -> dict:
-    """Starting model: unit square, conduction, left and right edges fixed."""
+    """Starting model: unit square, heat conduction, left and right edges fixed."""
+    md = new_model("heat", "mesh", "heat_conduction")
+    md["modules"][0]["conditions"] = [
+        {"type": "temperature", "selection": "xmin", "value": 0.0},
+        {"type": "temperature", "selection": "xmax", "value": 1.0},
+    ]
     return {
         "format_version": FORMAT_VERSION,
         "name": "New model",
+        "parameters": [],
+        "materials": [],
         "geometries": [{
             "name": "geometry",
             "source": {"type": "box", "origin": [0.0, 0.0], "size": [1.0, 1.0]},
@@ -254,40 +330,39 @@ def default_model() -> dict:
             "name": "mesh", "geometry": "geometry", "mesher": "structured",
             "divisions": [10, 10], "element": "simplex",
         }],
-        "discretization": {"degree": 2},
-        "materials": [{"name": "material", "selection": ALL, "properties": {"k": 1.0}}],
-        "physics": {
-            "type": "heat_stationary",
-            "mesh": "mesh",
-            "variable": "T",
-            "sources": [],
-            "boundary_conditions": [
-                {"type": "temperature", "selection": "xmin", "value": 0.0},
-                {"type": "temperature", "selection": "xmax", "value": 1.0},
-            ],
-        },
-        "study": {"type": "stationary"},
-        "outputs": {"vtu": "result.vtu", "quantities": []},
+        "fields": [],
+        "models": [md],
+        "solvers": [],
+        "outputs": [],
+        "graphics": [],
     }
 
 
 def load(path: str | Path) -> dict:
-    """Load a model; a file in an older format version is migrated in memory."""
     path = Path(path)
     with path.open(encoding="utf-8") as f:
         model = json.load(f)
-    model = migrate(model)
+    if model.get("format_version") != FORMAT_VERSION:
+        raise ValueError(f"format_version {FORMAT_VERSION} expected, got "
+                         f"{model.get('format_version')!r} (older formats are not supported)")
     model["_source_dir"] = str(path.resolve().parent)
     return model
 
 
-_TOP_ORDER = ("format_version", "name", "parameters", "geometries", "meshes", "discretization",
-              "fields", "materials", "physics", "study", "outputs")
+_TOP_ORDER = ("format_version", "name", "parameters", "materials", "geometries", "meshes", "fields",
+              "models", "solvers", "outputs", "graphics")
+_MODEL_ORDER = ("name", "description", "parameters", "geometries", "meshes", "fields", "imports",
+                "variables", "modules", "terms", "conditions", "solver", "outputs", "vtu", "graphics")
+
+
+def _ordered(d: dict, order) -> dict:
+    keys = [k for k in order if k in d] + [k for k in d if k not in order]
+    return {k: d[k] for k in keys if not k.startswith("_")}
 
 
 def save(model: dict, path: str | Path) -> None:
-    keys = [k for k in _TOP_ORDER if k in model] + [k for k in model if k not in _TOP_ORDER]
-    data = {k: model[k] for k in keys if not k.startswith("_")}
+    data = _ordered(model, _TOP_ORDER)
+    data["models"] = [_ordered(md, _MODEL_ORDER) for md in data.get("models", [])]
     with Path(path).open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
         f.write("\n")
@@ -317,23 +392,168 @@ def read_gmsh_physical_names(path: str | Path) -> dict[str, tuple[int, int]]:
     return names
 
 
-# ------------------------------------------------------------------ access
+
+# ------------------------------------------------------------------ access and scopes
 
 def by_name(items: list[dict], name: str) -> dict | None:
-    return next((it for it in items if it.get("name") == name), None)
+    return next((it for it in items if isinstance(it, dict) and it.get("name") == name), None)
 
 
-def physics_mesh(model: dict) -> dict | None:
-    """Mesh used by the physics (the first one if not specified)."""
-    meshes = model.get("meshes", [])
-    name = model.get("physics", {}).get("mesh")
-    if name is None:
-        return meshes[0] if meshes else None
-    return by_name(meshes, name)
+def all_geometries(model: dict) -> list[tuple[dict, dict | None]]:
+    """(geometry, model owning it or None for the top level), in file order."""
+    out = [(g, None) for g in model.get("geometries", [])]
+    for md in model.get("models", []):
+        out += [(g, md) for g in md.get("geometries", [])]
+    return out
+
+
+def all_meshes(model: dict) -> list[tuple[dict, dict | None]]:
+    out = [(m, None) for m in model.get("meshes", [])]
+    for md in model.get("models", []):
+        out += [(m, md) for m in md.get("meshes", [])]
+    return out
+
+
+def find_geometry(model: dict, name: str) -> dict | None:
+    return next((g for g, _ in all_geometries(model) if g.get("name") == name), None)
+
+
+def find_mesh(model: dict, name: str) -> dict | None:
+    return next((m for m, _ in all_meshes(model) if m.get("name") == name), None)
 
 
 def geometry_of(model: dict, mesh: dict) -> dict | None:
-    return by_name(model.get("geometries", []), mesh.get("geometry"))
+    return find_geometry(model, mesh.get("geometry"))
+
+
+def model_by_name(model: dict, name: str) -> dict | None:
+    return by_name(model.get("models", []), name)
+
+
+def model_mesh(model: dict, md: dict) -> dict | None:
+    """The mesh of a model: the one of its variables (all on the same mesh for now)."""
+    for v in md.get("variables", []):
+        mesh = find_mesh(model, v.get("mesh"))
+        if mesh is not None:
+            return mesh
+    return None
+
+
+def model_geometry(model: dict, md: dict) -> dict | None:
+    mesh = model_mesh(model, md)
+    return geometry_of(model, mesh) if mesh else None
+
+
+def model_dim(model: dict, md: dict) -> int | None:
+    geom = model_geometry(model, md)
+    return geometry_dim(model, geom) if geom else None
+
+
+def variable_kind(var: dict) -> str:
+    c = var.get("components", 1)
+    return SCALAR if c == 1 else VECTOR
+
+
+def module_variables(md: dict) -> list[tuple[dict, str, str]]:
+    """(module, role, variable name) for the variables the modules act on."""
+    out = []
+    for mod in md.get("modules", []):
+        spec = MODULE_SPECS.get(mod.get("type"), {})
+        for role, v in spec.get("variables", {}).items():
+            out.append((mod, role, mod.get(role, v["name"])))
+    return out
+
+
+def model_fields(model: dict, md: dict) -> list[dict]:
+    """The fields usable in a model: the top level ones of its geometry, then
+    its own ones."""
+    geom = model_geometry(model, md)
+    gname = geom.get("name") if geom else None
+    glob = [f for f in model.get("fields", []) if f.get("geometry", gname) == gname]
+    return glob + list(md.get("fields", []))
+
+
+def model_properties(md: dict) -> list[str]:
+    out = []
+    for mod in md.get("modules", []):
+        for p in MODULE_SPECS.get(mod.get("type"), {}).get("properties", {}):
+            if p not in out:
+                out.append(p)
+    return out
+
+
+def model_macros(md: dict) -> list[str]:
+    out = []
+    for mod in md.get("modules", []):
+        for m in MODULE_SPECS.get(mod.get("type"), {}).get("macros", ()):
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def global_names(model: dict) -> dict[str, str]:
+    """GWFL names of the top level: {name: what}."""
+    out = {}
+    for p in model.get("parameters", []):
+        out.setdefault(p.get("name"), "parameter")
+    for f in model.get("fields", []):
+        out.setdefault(f.get("name"), "field")
+    return out
+
+
+def local_names(md: dict) -> dict[str, str]:
+    """GWFL names defined by a model: {name: what}, in definition order."""
+    out = {}
+    for p in md.get("parameters", []):
+        out.setdefault(p.get("name"), "parameter")
+    for f in md.get("fields", []):
+        out.setdefault(f.get("name"), "field")
+    for im in md.get("imports", []):
+        out.setdefault(im.get("name"), "import")
+    for v in md.get("variables", []):
+        out.setdefault(v.get("name"), "variable")
+    for p in model_properties(md):
+        out.setdefault(p, "property")
+    for m in model_macros(md):
+        out.setdefault(m, "macro")
+    return out
+
+
+def scope_parameters(model: dict, md: dict | None) -> list[dict]:
+    """The parameters visible in a model (top level, then local), in order."""
+    return list(model.get("parameters", [])) + (list(md.get("parameters", [])) if md else [])
+
+
+def parameter_values(model: dict, md: dict | None = None) -> tuple[dict[str, float], list[str]]:
+    return P.values({"parameters": scope_parameters(model, md)})
+
+
+def material(model: dict, name: str) -> dict | None:
+    return by_name(model.get("materials", []), name)
+
+
+def solve_order(model: dict) -> list[str]:
+    """Model names in an order compatible with the imports (file order otherwise);
+    a cycle leaves the remaining models in file order."""
+    names = [md.get("name") for md in model.get("models", [])]
+    deps = {md.get("name"): {im.get("model") for im in md.get("imports", [])} & set(names)
+            for md in model.get("models", [])}
+    order: list[str] = []
+    while len(order) < len(names):
+        ready = [n for n in names if n not in order and deps[n] <= set(order)]
+        if not ready:
+            order += [n for n in names if n not in order]
+            break
+        order.append(ready[0])
+    return order
+
+
+def main_solver(model: dict) -> dict:
+    """The solver run by Compute: the first global one, or a sequence of all
+    the models in the order of their imports."""
+    if model.get("solvers"):
+        return model["solvers"][0]
+    return {"name": "default", "type": "sequence", "steps": solve_order(model)}
 
 
 def geometry_dim(model: dict, geom: dict) -> int | None:
@@ -620,30 +840,60 @@ def _validate_mesh(model, mesh, where, errors):
         errors.append(f"{where}.order: 1, 2 or 3 expected")
 
 
-def _validate_parameters(model: dict, errors: list[str]) -> None:
-    spec = PHYSICS_SPECS.get(model.get("physics", {}).get("type"), {})
-    taken = set(P.GWFL_NAMES) | set(COORDINATES) | set(spec.get("macros", ()))
-    var = model.get("physics", {}).get("variable", spec.get("variable"))
-    seen: set[str] = set()
-    for i, p in enumerate(model.get("parameters", [])):
+
+def _check_name(name, where, errors, taken: dict[str, str] | None = None, what="name") -> bool:
+    """An identifier, not reserved, not in `taken` ({name: what it is})."""
+    if not isinstance(name, str) or not _IDENT.match(name):
+        errors.append(f"{where}: identifier expected, got {name!r}")
+    elif name in COORDINATES:
+        errors.append(f"{where}: {name!r} is reserved for the coordinates")
+    elif name in P.GWFL_NAMES:
+        errors.append(f"{where}: {name!r} is a reserved GWFL name")
+    elif taken is not None and name in taken:
+        errors.append(f"{where}: {name!r} is already a {taken[name]}")
+    else:
+        return True
+    return False
+
+
+def _validate_parameter_list(params, prefix, errors, taken: dict[str, str]) -> None:
+    for i, p in enumerate(params):
         name = p.get("name") if isinstance(p, dict) else None
-        where = f"parameters[{i}].name"
-        if not isinstance(name, str) or not _IDENT.match(name):
-            errors.append(f"{where}: identifier expected, got {name!r}")
-        elif name in seen:
-            errors.append(f"{where}: name {name!r} used more than once")
-        elif name in COORDINATES:
-            errors.append(f"{where}: {name!r} is reserved for the coordinates")
-        elif name in taken:
-            errors.append(f"{where}: {name!r} is a reserved name (GWFL or physics)")
-        elif name == var:
-            errors.append(f"{where}: {name!r} is the name of the unknown")
-        else:
-            seen.add(name)
+        if _check_name(name, f"{prefix}[{i}].name", errors, taken):
+            taken[name] = "parameter"
 
 
-def parameter_names(model: dict) -> set[str]:
-    return {p.get("name") for p in model.get("parameters", []) if isinstance(p, dict)}
+def _validate_fields(fields, prefix, table_of, errors, taken: dict[str, str]) -> None:
+    """Fields defined per domain selection; table_of(field) gives the
+    selection table, or None (an error was reported)."""
+    for i, f in enumerate(fields):
+        where = f"{prefix}[{i}]"
+        if _check_name(f.get("name"), f"{where}.name", errors, taken):
+            taken[f["name"]] = "field"
+        table = table_of(f, where)
+        values = f.get("values", [])
+        if not values:
+            errors.append(f"{where}.values: at least one value (on a domain selection) is required")
+        for j, v in enumerate(values):
+            if table is not None:
+                _check_selection(table, v.get("selection", ALL), DOMAIN, f"{where}.values[{j}].selection",
+                                 errors)
+            _check_value(v.get("value"), f"{where}.values[{j}].value", errors)
+
+
+def _check_selection(table, name, kind, where, errors) -> None:
+    if name not in table:
+        errors.append(f"{where}: unknown selection {name!r} (available: {', '.join(table)})")
+    elif kind is not None and table[name]["kind"] != kind:
+        what = "a domain" if kind == DOMAIN else "a boundary"
+        errors.append(f"{where}: {name!r} is not {what}")
+
+
+def _check_int(v, lo, hi, where, errors) -> bool:
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        errors.append(f"{where}: integer between {lo} and {hi} expected, got {v!r}")
+        return False
+    return True
 
 
 def validate(model: dict) -> list[str]:
@@ -654,249 +904,432 @@ def validate(model: dict) -> list[str]:
 
     # --- Parameters; the numerical fields of geometries and meshes may be
     # expressions of them: the rest of the validation works on their values.
-    _validate_parameters(model, errors)
+    taken: dict[str, str] = {}
+    _validate_parameter_list(model.get("parameters", []), "parameters", errors, taken)
+    for k, md in enumerate(model.get("models", [])):
+        _validate_parameter_list(md.get("parameters", []), f"models[{k}].parameters", errors, dict(taken))
     resolved, perrors = P.resolve(model)
     if perrors:
         return errors + perrors
     model = resolved
 
-    # --- Geometries and meshes
-    for key in ("geometries", "meshes"):
-        items = model.get(key, [])
-        if not items:
-            errors.append(f"{key}: at least one item is required")
-        names = [it.get("name") for it in items]
-        for i, name in enumerate(names):
-            if not isinstance(name, str) or not _IDENT.match(name):
-                errors.append(f"{key}[{i}].name: identifier expected, got {name!r}")
-            elif names.count(name) > 1:
-                errors.append(f"{key}[{i}].name: name {name!r} used more than once")
-    for i, geom in enumerate(model.get("geometries", [])):
-        _validate_geometry(model, geom, f"geometries[{i}]", errors)
-    for i, mesh in enumerate(model.get("meshes", [])):
-        _validate_mesh(model, mesh, f"meshes[{i}]", errors)
-
-    degree = model.get("discretization", {}).get("degree", 1)
-    if not isinstance(degree, int) or isinstance(degree, bool) or not 1 <= degree <= 6:
-        errors.append("discretization.degree: integer between 1 and 6 expected")
-
-    phys = model.get("physics", {})
-    mesh = physics_mesh(model)
-    if mesh is None:
-        errors.append(f"physics.mesh: unknown mesh {phys.get('mesh')!r}")
-        return errors
-    geom = geometry_of(model, mesh)
-    if geom is None:
-        return errors
-    table = selection_table(model, geom)
-
-    def check_sel(name, kind, where):
-        if name not in table:
-            errors.append(f"{where}: unknown selection {name!r} (geometry {geom['name']!r}: "
-                          f"{', '.join(table)})")
-        elif table[name]["kind"] != kind:
-            what = "a domain" if kind == DOMAIN else "a boundary"
-            errors.append(f"{where}: {name!r} is not {what}")
-
-    # --- Physics type
-    ptype = phys.get("type")
-    spec = PHYSICS_SPECS.get(ptype)
-    if spec is None:
-        errors.append(f"physics.type: {', '.join(PHYSICS_SPECS)} expected, got {ptype!r}")
-        return errors
-    dim = geometry_dim(model, geom)
-    var = phys.get("variable", spec["variable"])
-    if not _IDENT.match(str(var)):
-        errors.append(f"physics.variable: identifier expected, got {var!r}")
-    elif var in COORDINATES:
-        errors.append(f"physics.variable: {var!r} is reserved for the coordinates")
-    elif var in spec["macros"]:
-        errors.append(f"physics.variable: {var!r} is a reserved name for this physics")
-    reserved = set(spec["macros"]) | {str(var)}
-
-    # --- User fields (defined before the materials, which may use them)
-    field_names: set[str] = set()
-    params = parameter_names(model)
-    for i, f in enumerate(model.get("fields", [])):
-        where = f"fields[{i}]"
-        name = f.get("name")
+    # --- Materials
+    seen: set[str] = set()
+    for i, mat in enumerate(model.get("materials", [])):
+        where = f"materials[{i}]"
+        name = mat.get("name")
         if not isinstance(name, str) or not _IDENT.match(name):
             errors.append(f"{where}.name: identifier expected, got {name!r}")
-        elif name in field_names:
+        elif name in seen:
             errors.append(f"{where}.name: name {name!r} used more than once")
-        elif name in COORDINATES:
-            errors.append(f"{where}.name: {name!r} is reserved for the coordinates")
-        elif name in reserved or name in P.GWFL_NAMES:
-            errors.append(f"{where}.name: {name!r} is a reserved name (GWFL or physics)")
-        elif name in params:
-            errors.append(f"{where}.name: {name!r} is already a parameter")
-        else:
-            field_names.add(name)
-        values = f.get("values", [])
-        if not values:
-            errors.append(f"{where}.values: at least one value (on a domain selection) is required")
-        for j, v in enumerate(values):
-            check_sel(v.get("selection", ALL), DOMAIN, f"{where}.values[{j}].selection")
-            _check_value(v.get("value"), f"{where}.values[{j}].value", errors)
-
-    # --- Materials
-    materials = model.get("materials", [])
-    if not materials:
-        errors.append("materials: at least one material is required")
-    seen = set()
-    for i, mat in enumerate(materials):
-        where = f"materials[{i}]"
-        name = mat.get("name", "")
-        if not _IDENT.match(str(name)):
-            errors.append(f"{where}.name: identifier expected, got {name!r}")
-        if name in seen:
-            errors.append(f"{where}.name: name {name!r} already used")
         seen.add(name)
-        check_sel(mat.get("selection", ALL), DOMAIN, f"{where}.selection")
-        props = mat.get("properties", {})
-        for prop, label in spec["properties"].items():
-            if prop not in props:
-                errors.append(f"{where}.properties.{prop}: missing {label}")
-        for prop, v in props.items():
-            if not _IDENT.match(prop):
+        for prop, v in (mat.get("properties") or {}).items():
+            if not _IDENT.match(str(prop)):
                 errors.append(f"{where}.properties: invalid name {prop!r}")
-            elif prop in COORDINATES:
-                errors.append(f"{where}.properties: {prop!r} is reserved for the coordinates")
-            elif prop in parameter_names(model):
-                errors.append(f"{where}.properties: {prop!r} is already a parameter")
-            elif prop in field_names:
-                errors.append(f"{where}.properties: {prop!r} is already a field")
-            elif prop in reserved:
-                errors.append(f"{where}.properties: {prop!r} is a reserved name for this physics")
             _check_value(v, f"{where}.properties.{prop}", errors)
 
-    # --- Options
-    for opt, value in phys.items():
-        if opt in ("type", "mesh", "variable", "sources", "boundary_conditions"):
+    # --- Geometries and meshes (names unique in the whole file)
+    for key, items in (("geometries", all_geometries(model)), ("meshes", all_meshes(model))):
+        if key == "geometries" and not items:
+            errors.append("geometries: at least one geometry is required")
+        names = [it.get("name") for it, _ in items]
+        for (it, owner), name in zip(items, names):
+            where = _where(model, key, it, owner)
+            if not isinstance(name, str) or not _IDENT.match(name):
+                errors.append(f"{where}.name: identifier expected, got {name!r}")
+            elif names.count(name) > 1:
+                errors.append(f"{where}.name: name {name!r} used more than once in the file")
+    for geom, owner in all_geometries(model):
+        _validate_geometry(model, geom, _where(model, "geometries", geom, owner), errors)
+    for mesh, owner in all_meshes(model):
+        where = _where(model, "meshes", mesh, owner)
+        visible = [g.get("name") for g in model.get("geometries", [])] + \
+            ([g.get("name") for g in owner.get("geometries", [])] if owner else [])
+        if mesh.get("geometry") not in visible and find_geometry(model, mesh.get("geometry")) is not None:
+            errors.append(f"{where}.geometry: {mesh.get('geometry')!r} belongs to another model")
             continue
-        if opt not in spec["options"]:
-            errors.append(f"physics.{opt}: unknown option for {ptype!r}")
-        elif value not in spec["options"][opt]:
-            errors.append(f"physics.{opt}: {', '.join(spec['options'][opt])} expected, got {value!r}")
-        elif opt == "plane" and dim is not None and dim != 2:
-            errors.append("physics.plane: only meaningful in 2D")
+        _validate_mesh(model, mesh, where, errors)
 
-    # --- Sources and boundary conditions
-    for i, src in enumerate(phys.get("sources", [])):
-        check_sel(src.get("selection", ALL), DOMAIN, f"physics.sources[{i}].selection")
-        _check_value(src.get("value"), f"physics.sources[{i}].value", errors, spec["source"], dim)
+    # --- Fields of the top level
+    def global_table(f, where):
+        geoms = model.get("geometries", [])
+        gname = f.get("geometry", geoms[0].get("name") if len(geoms) == 1 else None)
+        geom = by_name(geoms, gname)
+        if geom is None:
+            errors.append(f"{where}.geometry: unknown geometry {f.get('geometry')!r}")
+            return None
+        return selection_table(model, geom)
+    _validate_fields(model.get("fields", []), "fields", global_table, errors, taken)
 
-    bc_specs = spec["boundary_conditions"]
-    anchored = False
-    for i, bc in enumerate(phys.get("boundary_conditions", [])):
-        where = f"physics.boundary_conditions[{i}]"
+    # --- Models
+    models = model.get("models", [])
+    if not models:
+        errors.append("models: at least one model is required")
+    mnames = [md.get("name") for md in models]
+    for k, md in enumerate(models):
+        name = md.get("name")
+        if not isinstance(name, str) or not _IDENT.match(name):
+            errors.append(f"models[{k}].name: identifier expected, got {name!r}")
+        elif mnames.count(name) > 1:
+            errors.append(f"models[{k}].name: name {name!r} used more than once")
+        _validate_model(model, md, k, errors, taken)
+
+    # --- Global solvers, and the order of the imports
+    snames = [s.get("name") for s in model.get("solvers", [])]
+    for i, s in enumerate(model.get("solvers", [])):
+        where = f"solvers[{i}]"
+        if not isinstance(s.get("name"), str) or not _IDENT.match(s.get("name", "")):
+            errors.append(f"{where}.name: identifier expected, got {s.get('name')!r}")
+        elif snames.count(s["name"]) > 1:
+            errors.append(f"{where}.name: name {s['name']!r} used more than once")
+        if s.get("type") not in GLOBAL_SOLVERS:
+            errors.append(f"{where}.type: {', '.join(GLOBAL_SOLVERS)} expected, got {s.get('type')!r}")
+        steps = s.get("steps", [])
+        if not isinstance(steps, list) or not steps:
+            errors.append(f"{where}.steps: list of model names expected")
+            steps = []
+        for j, st in enumerate(steps):
+            if st not in mnames:
+                errors.append(f"{where}.steps[{j}]: unknown model {st!r}")
+        if s.get("type") == "staggered":
+            _check_int(s.get("max_iter", 20), 1, 10000, f"{where}.max_iter", errors)
+            tol = s.get("tolerance", 1e-6)
+            if isinstance(tol, bool) or not isinstance(tol, (int, float)) or tol <= 0:
+                errors.append(f"{where}.tolerance: strictly positive number expected")
+            rel = s.get("relaxation", 1.0)
+            if isinstance(rel, bool) or not isinstance(rel, (int, float)) or not 0 < rel <= 1:
+                errors.append(f"{where}.relaxation: number in ]0, 1] expected")
+    if not errors and models:
+        _check_import_order(model, errors)
+
+    for key in ("outputs", "graphics"):
+        if not isinstance(model.get(key, []), list):
+            errors.append(f"{key}: list expected")
+    return errors
+
+
+def _where(model, key, item, owner) -> str:
+    """Path of a geometry or a mesh, for the messages."""
+    if owner is None:
+        return f"{key}[{next(i for i, it in enumerate(model[key]) if it is item)}]"
+    k = next(i for i, md in enumerate(model["models"]) if md is owner)
+    return f"models[{k}].{key}[{next(i for i, it in enumerate(owner[key]) if it is item)}]"
+
+
+def _check_import_order(model, errors) -> None:
+    """Each import must be computed before: by the order of the main solver,
+    or inside a staggered loop."""
+    solver = main_solver(model)
+    steps = solver.get("steps", [])
+    for k, md in enumerate(model.get("models", [])):
+        for j, im in enumerate(md.get("imports", [])):
+            src = im.get("model")
+            where = f"models[{k}].imports[{j}].model"
+            if md.get("name") not in steps:
+                continue
+            if src not in steps:
+                errors.append(f"{where}: model {src!r} is not solved by the solver "
+                              f"{solver.get('name')!r}")
+            elif solver.get("type") == "sequence" and steps.index(src) > steps.index(md["name"]):
+                errors.append(f"{where}: model {src!r} is solved after {md['name']!r}: "
+                              "change the order of the steps, or use a staggered solver")
+
+
+def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: dict[str, str]) -> None:
+    w = f"models[{k}]"
+    taken = dict(gtaken)
+    for p in md.get("parameters", []):
+        if isinstance(p, dict) and isinstance(p.get("name"), str):
+            taken.setdefault(p["name"], "parameter")
+
+    # --- Variables (all on the same mesh for now)
+    variables = md.get("variables", [])
+    if not variables:
+        errors.append(f"{w}.variables: at least one variable is required")
+    visible = {m.get("name") for m in model.get("meshes", [])} | {m.get("name") for m in md.get("meshes", [])}
+    mesh = None
+    for i, v in enumerate(variables):
+        where = f"{w}.variables[{i}]"
+        if _check_name(v.get("name"), f"{where}.name", errors, taken):
+            taken[v["name"]] = "variable"
+        if v.get("mesh") not in visible:
+            errors.append(f"{where}.mesh: unknown mesh {v.get('mesh')!r}")
+        elif mesh is None:
+            mesh = find_mesh(model, v["mesh"])
+        elif v["mesh"] != mesh.get("name"):
+            errors.append(f"{where}.mesh: all the variables of a model are on the same mesh "
+                          f"for now ({mesh.get('name')!r})")
+        fem = v.get("fem", "lagrange")
+        if fem not in FEMS:
+            errors.append(f"{where}.fem: {', '.join(FEMS)} expected, got {fem!r}")
+        _check_int(v.get("degree", 1), 0 if fem == "lagrange_discontinuous" else 1, 6,
+                   f"{where}.degree", errors)
+        c = v.get("components", 1)
+        if c != "dim" and (isinstance(c, bool) or not isinstance(c, int) or c < 1):
+            errors.append(f"{where}.components: 1, \"dim\" or a positive integer expected, got {c!r}")
+    if mesh is None:
+        return
+    geom = geometry_of(model, mesh)
+    if geom is None:
+        return
+    table = selection_table(model, geom)
+    dim = geometry_dim(model, geom)
+    var_kinds = {v.get("name"): variable_kind(v) for v in variables}
+
+    # --- Imports
+    known_kinds = dict(var_kinds)
+    for i, im in enumerate(md.get("imports", [])):
+        where = f"{w}.imports[{i}]"
+        if _check_name(im.get("name"), f"{where}.name", errors, taken):
+            taken[im["name"]] = "import"
+        src = model_by_name(model, im.get("model"))
+        if src is None or src is md:
+            errors.append(f"{where}.model: unknown model {im.get('model')!r}")
+            continue
+        var = by_name(src.get("variables", []), im.get("variable"))
+        if var is None:
+            errors.append(f"{where}.variable: model {src.get('name')!r} has no variable {im.get('variable')!r}")
+            continue
+        if var.get("mesh") != mesh.get("name"):
+            errors.append(f"{where}: {im.get('variable')!r} is on the mesh {var.get('mesh')!r}, "
+                          f"not on {mesh.get('name')!r} (imports on the same mesh only, for now)")
+        known_kinds[im.get("name")] = variable_kind(var)
+
+    # --- Local fields
+    _validate_fields(md.get("fields", []), f"{w}.fields", lambda f, where: table, errors, taken)
+
+    # --- Modules: their properties and macros join the names of the model
+    macro_owner: dict[str, int] = {}
+    for i, mod in enumerate(md.get("modules", [])):
+        spec = MODULE_SPECS.get(mod.get("type"))
+        if spec is None:
+            continue
+        for p in spec["properties"]:
+            if p not in taken:
+                taken[p] = "property"
+            elif taken[p] != "property":
+                errors.append(f"{w}.modules[{i}]: its property {p!r} is already a {taken[p]}")
+        for m in spec["macros"]:
+            if m in macro_owner:
+                errors.append(f"{w}.modules[{i}]: macro {m!r} is already defined by module "
+                              f"{macro_owner[m] + 1} (one module of this type per model)")
+            elif m in taken:
+                errors.append(f"{w}.modules[{i}]: its macro {m!r} is already a {taken[m]}")
+            else:
+                macro_owner[m] = i
+                taken[m] = "macro"
+    anchored: set[str] = {c.get("variable") for c in md.get("conditions", [])
+                          if c.get("type") in ANCHORING_CONDITIONS}
+    for i, mod in enumerate(md.get("modules", [])):
+        _validate_module(model, md, mod, f"{w}.modules[{i}]", table, dim, var_kinds, known_kinds,
+                         errors, anchored)
+
+    # --- Terms
+    tnames = [t.get("name") for t in md.get("terms", [])]
+    for i, t in enumerate(md.get("terms", [])):
+        where = f"{w}.terms[{i}]"
+        name = t.get("name")
+        if not isinstance(name, str) or not _IDENT.match(name):
+            errors.append(f"{where}.name: identifier expected, got {name!r}")
+        elif tnames.count(name) > 1:
+            errors.append(f"{where}.name: name {name!r} used more than once")
+        expr = t.get("expr")
+        if not isinstance(expr, str) or not expr.strip():
+            errors.append(f"{where}.expr: GWFL expression expected")
+        _check_selection(table, t.get("selection", ALL), None, f"{where}.selection", errors)
+        if t.get("linear", "auto") not in ("auto", True, False):
+            errors.append(f"{where}.linear: \"auto\", true or false expected")
+
+    # --- Generic conditions
+    for i, c in enumerate(md.get("conditions", [])):
+        where = f"{w}.conditions[{i}]"
+        ctype = c.get("type")
+        if ctype not in CONDITIONS:
+            errors.append(f"{where}.type: {', '.join(CONDITIONS)} expected, got {ctype!r}")
+            continue
+        var = c.get("variable")
+        if var not in var_kinds:
+            errors.append(f"{where}.variable: unknown variable {var!r}")
+            continue
+        _check_selection(table, c.get("selection"), BOUNDARY, f"{where}.selection", errors)
+        for key, kind in CONDITIONS[ctype].items():
+            _check_value(c.get(key), f"{where}.{key}", errors, var_kinds[var] if kind == "var" else kind, dim)
+        if ctype == "normal_dirichlet" and var_kinds[var] != VECTOR:
+            errors.append(f"{where}.variable: a normal condition needs a vector variable")
+        if ctype in ("dirichlet", "normal_dirichlet"):
+            method = c.get("method", "simplification" if ctype == "dirichlet" else "multiplier")
+            allowed = DIRICHLET_METHODS if ctype == "dirichlet" else DIRICHLET_METHODS[1:]
+            if method not in allowed:
+                errors.append(f"{where}.method: {', '.join(allowed)} expected, got {method!r}")
+            elif method == "penalization":
+                _check_positive(c.get("penalty", 1e10), f"{where}.penalty", errors)
+        for key in c:
+            if key not in ("type", "variable", "selection", "method", "penalty") and key not in CONDITIONS[ctype]:
+                errors.append(f"{where}.{key}: unknown field for a {ctype!r} condition")
+
+    # --- Solver
+    s = md.get("solver", {"type": "auto"})
+    if s.get("type", "auto") not in SOLVER_TYPES:
+        errors.append(f"{w}.solver.type: {', '.join(SOLVER_TYPES)} expected, got {s.get('type')!r}")
+    if "max_iter" in s:
+        _check_int(s["max_iter"], 1, 10000, f"{w}.solver.max_iter", errors)
+    if "max_res" in s:
+        _check_positive(s["max_res"], f"{w}.solver.max_res", errors)
+
+    # --- Outputs
+    onames = [q.get("name") for q in md.get("outputs", [])]
+    for i, q in enumerate(md.get("outputs", [])):
+        where = f"{w}.outputs[{i}]"
+        if not _IDENT.match(str(q.get("name", ""))):
+            errors.append(f"{where}.name: identifier expected")
+        elif onames.count(q["name"]) > 1:
+            errors.append(f"{where}.name: name {q['name']!r} used more than once")
+        _check_value(q.get("expr"), f"{where}.expr", errors)
+        _check_selection(table, q.get("selection", ALL), None, f"{where}.selection", errors)
+    vtu = md.get("vtu", f"{md.get('name')}.vtu")
+    if vtu is not None and (not isinstance(vtu, str) or not vtu.endswith(".vtu") or "/" in vtu):
+        errors.append(f"{w}.vtu: file name ending with .vtu expected (or null)")
+
+
+def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, errors, anchored) -> None:
+    mtype = mod.get("type")
+    spec = MODULE_SPECS.get(mtype)
+    if spec is None:
+        errors.append(f"{w}.type: {', '.join(MODULE_SPECS)} expected, got {mtype!r}")
+        return
+    # variables of the module
+    for role, v in spec["variables"].items():
+        name = mod.get(role, v["name"])
+        kinds = known_kinds if v.get("import") else var_kinds
+        if name not in kinds:
+            what = "variable or import" if v.get("import") else "variable"
+            errors.append(f"{w}.{role}: unknown {what} {name!r} (the {v['label']})")
+        elif kinds[name] != v["kind"]:
+            errors.append(f"{w}.{role}: the {v['label']} {name!r} should be a {v['kind']} variable")
+    if "requires" in spec:
+        other, role = spec["requires"]
+        name = mod.get(role, spec["variables"][role]["name"])
+        if not any(m.get("type") == other and m.get("variable", MODULE_SPECS[other]["variables"]["variable"]["name"])
+                   == name for m in md.get("modules", [])):
+            errors.append(f"{w}: requires a {MODULE_SPECS[other]['label'].lower()} module on {name!r}")
+    # options and values
+    known = {"type", "properties", "sources", "conditions"} | set(spec["variables"])
+    for opt, value in mod.items():
+        if opt in known:
+            continue
+        if opt in spec["options"]:
+            if value not in spec["options"][opt]:
+                errors.append(f"{w}.{opt}: {', '.join(spec['options'][opt])} expected, got {value!r}")
+            elif opt == "plane" and dim is not None and dim != 2:
+                errors.append(f"{w}.plane: only meaningful in 2D")
+        elif opt in spec["values"]:
+            _check_value(value, f"{w}.{opt}", errors, spec["values"][opt], dim)
+        else:
+            errors.append(f"{w}.{opt}: unknown option for {mtype!r}")
+    # properties, per domain selection
+    props = mod.get("properties", {})
+    for prop, label in spec["properties"].items():
+        pieces = props.get(prop)
+        where = f"{w}.properties.{prop}"
+        if not isinstance(pieces, list) or not pieces:
+            errors.append(f"{where}: missing {label} (a value per domain selection)")
+            continue
+        for j, pc in enumerate(pieces):
+            _check_selection(table, pc.get("selection", ALL), DOMAIN, f"{where}[{j}].selection", errors)
+            if "material" in pc:
+                mat = material(model, pc["material"])
+                if mat is None:
+                    errors.append(f"{where}[{j}].material: unknown material {pc['material']!r}")
+                elif prop not in (mat.get("properties") or {}):
+                    errors.append(f"{where}[{j}].material: {pc['material']!r} has no {prop!r}")
+            else:
+                _check_value(pc.get("value"), f"{where}[{j}].value", errors)
+    for prop in props:
+        if prop not in spec["properties"]:
+            errors.append(f"{w}.properties.{prop}: not a property of {mtype!r}")
+    # sources and conditions
+    for i, src in enumerate(mod.get("sources", [])):
+        _check_selection(table, src.get("selection", ALL), DOMAIN, f"{w}.sources[{i}].selection", errors)
+        _check_value(src.get("value"), f"{w}.sources[{i}].value", errors, spec["source"], dim)
+    bc_specs = spec["conditions"]
+    is_anchored = False
+    for i, bc in enumerate(mod.get("conditions", [])):
+        where = f"{w}.conditions[{i}]"
         btype = bc.get("type")
         if btype not in bc_specs:
             errors.append(f"{where}.type: {', '.join(bc_specs)} expected, got {btype!r}")
             continue
-        check_sel(bc.get("selection"), BOUNDARY, f"{where}.selection")
+        _check_selection(table, bc.get("selection"), BOUNDARY, f"{where}.selection", errors)
         for key, kind in bc_specs[btype].items():
             _check_value(bc.get(key), f"{where}.{key}", errors, kind, dim)
         for key in bc:
             if key not in ("type", "selection") and key not in bc_specs[btype]:
                 errors.append(f"{where}.{key}: unknown field for a {btype!r} condition")
-        anchored |= btype in spec["anchoring"]
-    if not anchored and not errors:
-        errors.append(f"physics.boundary_conditions: {spec['anchoring_message']}")
-
-    # --- Outputs
-    for i, q in enumerate(model.get("outputs", {}).get("quantities", [])):
-        where = f"outputs.quantities[{i}]"
-        if not _IDENT.match(str(q.get("name", ""))):
-            errors.append(f"{where}.name: identifier expected")
-        _check_value(q.get("expr"), f"{where}.expr", errors)
-        sel = q.get("selection", ALL)
-        if sel not in table:
-            errors.append(f"{where}.selection: unknown selection {sel!r}")
-
-    return errors
+        is_anchored |= btype in spec["anchoring"]
+    var = mod.get("variable", spec["variables"].get("variable", {}).get("name"))
+    if spec["anchoring"] and not is_anchored and var not in anchored and not errors:
+        errors.append(f"{w}.conditions: {spec['anchoring_message']}")
 
 
 def with_defaults(model: dict) -> dict:
     """Copy of the model completed with the optional default values."""
     m = copy.deepcopy(model)
-    m.setdefault("discretization", {}).setdefault("degree", 1)
-    for geom in m.get("geometries", []):
+    for key in ("parameters", "materials", "fields", "models", "solvers", "outputs", "graphics"):
+        m.setdefault(key, [])
+    for geom, _ in all_geometries(m):
         geom.setdefault("selections", {})
-    for mesh in m.get("meshes", []):
+    for mesh, _ in all_meshes(m):
         if mesh.get("mesher") == "structured":
             mesh.setdefault("element", "simplex")
         if mesh.get("mesher") in ("getfem", "gmsh"):
             mesh.setdefault("order", 1)
-    phys = m.setdefault("physics", {})
-    phys.setdefault("mesh", m["meshes"][0]["name"] if m.get("meshes") else None)
-    spec = PHYSICS_SPECS.get(phys.get("type"), {})
-    phys.setdefault("variable", spec.get("variable", "u"))
-    phys.setdefault("sources", [])
-    phys.setdefault("boundary_conditions", [])
-    for mat in m.get("materials", []):
-        mat.setdefault("selection", ALL)
-    for f in m.get("fields", []):
+    geoms = m.get("geometries", [])
+    for f in m["fields"]:
+        if len(geoms) == 1:
+            f.setdefault("geometry", geoms[0].get("name"))
         for v in f.get("values", []):
             v.setdefault("selection", ALL)
-    for src in phys["sources"]:
-        src.setdefault("selection", ALL)
-    out = m.setdefault("outputs", {})
-    out.setdefault("vtu", "result.vtu")
-    out.setdefault("quantities", [])
-    for q in out["quantities"]:
-        q.setdefault("selection", ALL)
-    return m
-
-
-# ------------------------------------------------------------------ migration
-
-def migrate(model: dict) -> dict:
-    """Bring a model from an older format version to the current one (copy)."""
-    version = model.get("format_version")
-    if version == FORMAT_VERSION:
-        return model
-    if version == 1:
-        return _migrate_v1(model)
-    raise ValueError(f"unknown format_version {version!r}")
-
-
-def _migrate_v1(old: dict) -> dict:
-    m = copy.deepcopy(old)
-    mesh = m.pop("mesh", {})
-    extra_regions = m.pop("regions", {})
-
-    if mesh.get("type") == "box":
-        geom = {"name": "geometry", "source": {"type": "box", "origin": mesh.get("origin"),
-                                                "size": mesh.get("size")}, "selections": {}}
-        new_mesh = {"name": "mesh", "geometry": "geometry", "mesher": "structured",
-                    "divisions": mesh.get("divisions"), "element": mesh.get("element", "simplex")}
-    else:
-        geom = {"name": "geometry", "source": {"type": "mesh_file", "file": mesh.get("file")},
-                "selections": {}}
-        new_mesh = {"name": "mesh", "geometry": "geometry", "mesher": "import"}
-
-    # region -> selection everywhere, keeping the key order
-    def rename(items):
-        for it in items:
-            if "region" in it:
-                renamed = {("selection" if k == "region" else k): v for k, v in it.items()}
-                it.clear()
-                it.update(renamed)
-    phys = m.setdefault("physics", {})
-    rename(m.get("materials", []))
-    rename(phys.get("sources", []))
-    rename(phys.get("boundary_conditions", []))
-    rename(m.get("outputs", {}).get("quantities", []))
-
-    # Regions declared by hand become selections by physical group number.
-    domain_uses = {it.get("selection") for it in m.get("materials", []) + phys.get("sources", [])}
-    for name, tag in extra_regions.items():
-        kind = DOMAIN if name in domain_uses else BOUNDARY
-        geom["selections"][name] = {"kind": kind, "criteria": {"type": "physical", "tag": int(tag)}}
-
-    m["geometries"] = [geom]
-    m["meshes"] = [new_mesh]
-    phys["mesh"] = "mesh"
-    m["format_version"] = FORMAT_VERSION
+    for md in m["models"]:
+        for key in ("parameters", "geometries", "meshes", "fields", "imports", "variables",
+                    "modules", "terms", "conditions", "outputs", "graphics"):
+            md.setdefault(key, [])
+        md.setdefault("solver", {"type": "auto"})
+        md["solver"].setdefault("type", "auto")
+        md.setdefault("vtu", f"{md.get('name')}.vtu")
+        for f in md["fields"]:
+            for v in f.get("values", []):
+                v.setdefault("selection", ALL)
+        for v in md["variables"]:
+            v.setdefault("fem", "lagrange")
+            v.setdefault("degree", 1)
+            v.setdefault("components", 1)
+        for mod in md["modules"]:
+            spec = MODULE_SPECS.get(mod.get("type"), {})
+            for role, v in spec.get("variables", {}).items():
+                mod.setdefault(role, v["name"])
+            for key, value in spec.get("value_defaults", {}).items():
+                mod.setdefault(key, value)
+            mod.setdefault("properties", {})
+            for pieces in mod["properties"].values():
+                for pc in pieces:
+                    pc.setdefault("selection", ALL)
+            mod.setdefault("sources", [])
+            mod.setdefault("conditions", [])
+            for src in mod["sources"]:
+                src.setdefault("selection", ALL)
+        for t in md["terms"]:
+            t.setdefault("selection", ALL)
+            t.setdefault("linear", "auto")
+        for c in md["conditions"]:
+            if c.get("type") == "dirichlet":
+                c.setdefault("method", "simplification")
+            elif c.get("type") == "normal_dirichlet":
+                c.setdefault("method", "multiplier")
+        for q in md["outputs"]:
+            q.setdefault("selection", ALL)
+    for s in m["solvers"]:
+        if s.get("type") == "staggered":
+            s.setdefault("max_iter", 20)
+            s.setdefault("tolerance", 1e-6)
+            s.setdefault("relaxation", 1.0)
     return m

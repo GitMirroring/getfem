@@ -1,0 +1,51 @@
+{
+  "format_version": 3,
+  "name": "Heated plate that expands (two models, solved in sequence)",
+  "parameters": [
+    {"name": "L", "value": 0.2, "description": "length (m)"},
+    {"name": "H", "value": 0.05, "description": "height (m)"},
+    {"name": "T_cold", "value": 20, "description": "temperature of the clamped side (degC)"},
+    {"name": "T_hot", "value": 120, "description": "temperature of the heated side (degC)"}
+  ],
+  "materials": [
+    {"name": "aluminium", "properties": {"k": 237, "E": 70e9, "nu": 0.33, "alpha": 23e-6}}
+  ],
+  "geometries": [
+    {"name": "plate", "source": {"type": "box", "origin": [0, 0], "size": ["L", "H"]}, "selections": {}}
+  ],
+  "meshes": [
+    {"name": "mesh", "geometry": "plate", "mesher": "structured", "divisions": [40, 10], "element": "simplex"}
+  ],
+  "models": [
+    {
+      "name": "thermal",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {"type": "heat_conduction", "variable": "T",
+         "properties": {"k": [{"selection": "all", "material": "aluminium"}]},
+         "sources": [],
+         "conditions": [{"type": "temperature", "selection": "xmin", "value": "T_cold"},
+                        {"type": "temperature", "selection": "xmax", "value": "T_hot"}]}
+      ],
+      "outputs": [{"name": "heat_flow", "expr": "-k*Grad_T.Normal", "selection": "xmin"}],
+      "vtu": "thermal.vtu"
+    },
+    {
+      "name": "mechanical",
+      "imports": [{"name": "T", "model": "thermal", "variable": "T"}],
+      "variables": [{"name": "u", "mesh": "mesh", "fem": "lagrange", "degree": 2, "components": "dim"}],
+      "modules": [
+        {"type": "linear_elasticity", "variable": "u", "plane": "stress",
+         "properties": {"E": [{"selection": "all", "material": "aluminium"}],
+                        "nu": [{"selection": "all", "material": "aluminium"}]},
+         "sources": [],
+         "conditions": [{"type": "fixed", "selection": "xmin"}]},
+        {"type": "thermal_expansion", "temperature": "T", "displacement": "u", "T_ref": "T_cold",
+         "properties": {"alpha": [{"selection": "all", "material": "aluminium"}]}}
+      ],
+      "outputs": [{"name": "elongation", "expr": "u(1)/H", "selection": "xmax"}],
+      "vtu": "mechanical.vtu"
+    }
+  ],
+  "solvers": [{"name": "main", "type": "sequence", "steps": ["thermal", "mechanical"]}]
+}

@@ -180,25 +180,41 @@ def _resolve_shape(shape, where, vals, errors):
         _resolve_shape(s, f"{where}.of[{j}]", vals, errors)
 
 
-def resolve(model: dict) -> tuple[dict, list[str]]:
-    """Copy of the model where the numerical fields of the geometries and
-    meshes are numbers (expressions of parameters evaluated), and the errors."""
-    m = copy.deepcopy(model)
-    vals, errors = values(m)
-    for i, g in enumerate(m.get("geometries", [])):
+def _resolve_geometries(geoms, meshes, prefix, vals, errors):
+    for i, g in enumerate(geoms):
         src = g.get("source", {})
-        where = f"geometries[{i}].source"
+        where = f"{prefix}geometries[{i}].source"
         if src.get("type") == "box":
             _resolve(src, BOX_KEYS, where, vals, errors)
         elif src.get("type") == "csg":
             _resolve_shape(src.get("shape"), f"{where}.shape", vals, errors)
         for name, sel in (g.get("selections") or {}).items():
             if isinstance(sel, dict) and isinstance(sel.get("criteria"), dict):
-                _resolve(sel["criteria"], CRITERIA_KEYS, f"geometries[{i}].selections.{name}.criteria",
+                _resolve(sel["criteria"], CRITERIA_KEYS, f"{prefix}geometries[{i}].selections.{name}.criteria",
                          vals, errors)
-    for i, mesh in enumerate(m.get("meshes", [])):
-        _resolve(mesh, MESH_KEYS, f"meshes[{i}]", vals, errors)
-        _resolve(mesh, INTEGER_KEYS, f"meshes[{i}]", vals, errors, integer=True)
+    for i, mesh in enumerate(meshes):
+        _resolve(mesh, MESH_KEYS, f"{prefix}meshes[{i}]", vals, errors)
+        _resolve(mesh, INTEGER_KEYS, f"{prefix}meshes[{i}]", vals, errors, integer=True)
+
+
+def resolve(model: dict) -> tuple[dict, list[str]]:
+    """Copy of the model where the numerical fields of the geometries and
+    meshes are numbers (expressions of parameters evaluated), and the errors.
+    The geometries and meshes of a model also see its local parameters."""
+    m = copy.deepcopy(model)
+    vals, errors = values(m)
+    _resolve_geometries(m.get("geometries", []), m.get("meshes", []), "", vals, errors)
+    for k, md in enumerate(m.get("models", [])):
+        if not isinstance(md, dict):
+            continue
+        local, lerr = values({"parameters": list(m.get("parameters", [])) + list(md.get("parameters", []))})
+        n = len(m.get("parameters", []))
+        for e in lerr:
+            i = int(e.split("[", 1)[1].split("]", 1)[0])
+            if i >= n:
+                errors.append(f"models[{k}].parameters[{i - n}]" + e.split("]", 1)[1])
+        _resolve_geometries(md.get("geometries", []), md.get("meshes", []), f"models[{k}].",
+                            local, errors)
     return m, errors
 
 

@@ -1,7 +1,11 @@
 # getfem_gui — a graphical user interface for GetFEM
 
-A model described in JSON is meshed, then translated into a readable GetFEM
-Python script, each step running in a separate process. A first graphical
+A model file described in JSON is meshed, then translated into a readable
+GetFEM Python script, each step running in a separate process. The file
+follows the logic of GetFEM: shared definitions (parameters, materials,
+geometries, meshes, fields), then *models*, each one a `gf.Model` with its
+variables, modules (predefined physics), weak form terms and conditions, then
+global solvers chaining the models (see `doc/model_format_v3.md`). A first graphical
 interface (PySide6 window, PyVista 3D view) edits the model, builds the
 meshes, runs the computation and shows the results; everything it does is
 also available from the command line.
@@ -33,10 +37,13 @@ python -m pytest tests/        # or: python tests/test_heat.py
        mesh A                 mesh B          (structured, GetFEM mesher, Gmsh, import)
           │                      │            selections evaluated -> GetFEM regions
           ▼                      ▼            cache: <workdir>/meshes/<name>.mesh/.json
-   physics ── uses one mesh, only knows selection names
-          │
-          ▼
-   run_getfem.py ──► results.json + .vtu
+   model "thermal"         model "mechanical"   one gf.Model each: variables on a mesh,
+   (heat conduction)  ──►  (elasticity,          modules, terms, conditions; an import
+                            expansion, imports T) passes a result from one to the other
+          │                      │
+          └────── solver: sequence or staggered iterations
+                     ▼
+   run_getfem.py ──► results.json + one .vtu per model
 ```
 
 ## Usage
@@ -48,7 +55,6 @@ python -m getfem_gui mesh examples/plate_with_hole.json     # all meshes, with s
 python -m getfem_gui run examples/plate_with_hole.json -w results/
 python -m getfem_gui generate model.json -o solve.py        # solve script only
 python -m getfem_gui export model.json -o model_getfem.py   # standalone script: mesh + solve
-python -m getfem_gui migrate old_v1.json -o new.json
 ```
 
 `--python /path/to/python` selects the interpreter that provides GetFEM (and Gmsh).
@@ -69,9 +75,9 @@ to the interpreter that runs the computations (`getfem.util_version()`).
 │   plate (csg)       │ Boundary [right    ▾] │   mesh, highlighted selection │
 │     Selections      │ Value    [50] [0]     │   or result field             │
 │ Meshes              │                       │                               │
-│ Materials           │ [Remove]              │                               │
-│ Linear elasticity   │                       │                               │
-│   Boundary cond.    │                       │                               │
+│ Models              │ [Remove]              │                               │
+│   mechanics         │                       │                               │
+│     Modules, Terms… │                       │                               │
 │ Results             │                       │                               │
 ├─────────────────────┴───────────────────────┴───────────────────────────────┤
 │ Messages | Problems (n)                                                     │
@@ -128,7 +134,12 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   go to `<model>_work/` next to the model file (a temporary folder for an
   unsaved model), and are found again when the model is reopened; results
   are marked *out of date* as soon as the model changes.
-- **Results**: with a result field selected, its form sets the component
+- **Tree**: it follows the file (Parameters, Materials, Geometries, Meshes,
+  Fields, Models with their Variables, Modules, Terms, Conditions, Solver,
+  Outputs, then Solvers and Results). A right click on a node lists its
+  actions; the **+** button above the tree lists what can be added to the
+  selected node (a model from a module, a module, a term, a condition...).
+- **Results**: one entry per model, then its fields; with a result field selected, its form sets the component
   (or magnitude), the deformed shape, the colormap, the color range (empty
   bounds: the range of the values), isolines (evenly spaced in the range),
   color bands, and arrows of a vector field (on a regular grid, length
@@ -156,7 +167,7 @@ widget itself needs a real display.
 
 | File | Role |
 |---|---|
-| `getfem_gui/model.py` | JSON format (v2), selections, validation, migration from v1 |
+| `getfem_gui/model.py` | JSON format (v3), scopes of names, selections, validation |
 | `getfem_gui/mesher.py` | meshing step: generated script, regions, hash-based cache |
 | `getfem_gui/codegen.py` | GetFEM solve script (loads the prepared mesh) |
 | `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
@@ -175,10 +186,11 @@ widget itself needs a real display.
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
 | `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
+| `tests/test_coupling.py` | thermal expansion (monolithic, sequence), staggered two-way coupling, user terms and generic conditions |
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
-| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions) |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence) |
 
 ## Geometry, selections, meshes
 
@@ -225,8 +237,8 @@ like the left edge of the part). For "the left face", use `plane`; this is
 what the predefined faces `xmin…zmax` do.
 
 GetFEM region numbers are assigned by the application, never by the user.
-When two materials cover the same area, the last one listed wins: one can
-thus define a default material on `all`, then exceptions.
+When two values of a property (or of a field) cover the same area, the last
+one listed wins: one can thus define a default on `all`, then exceptions.
 
 **Cache**: a mesh is only rebuilt when its geometry, its parameters or its
 source file change (SHA-256 hash). Changing the physics does not remesh.
@@ -240,39 +252,54 @@ source file change (SHA-256 hash). Changing the physics does not remesh.
 - CAD units: Gmsh/OpenCASCADE keeps the units of the STEP file (often mm);
   a scaling option will be needed.
 
-## Physics
+## Models, modules, terms
 
-| Physics | Properties | Boundary conditions | GWFL macros |
+A model is one `gf.Model`. Its **variables** carry their discretization
+(mesh, Lagrange element and degree, scalar or vector); its **modules** are
+predefined physics acting on them:
+
+| Module | Properties | Conditions | GWFL macros |
 |---|---|---|---|
-| `heat_stationary` | `k` | `temperature`, `heat_flux`, `convection` | `q` (heat flux) |
+| `heat_conduction` | `k` | `temperature`, `heat_flux`, `convection` | `q` (heat flux) |
 | `linear_elasticity` | `E`, `nu` (option `plane`: `strain` / `stress` in 2D) | `fixed`, `displacement`, `roller`, `traction`, `pressure` | `eps`, `sigma`, `von_mises`, `mu_L`, `lambda_L` |
+| `thermal_expansion` | `alpha` (value `T_ref`) | | adds `- beta alpha (T - T_ref) I` to `sigma` |
 
-Values may be numbers or GWFL expressions; vector values (displacement,
-traction, body force) are lists of components or a GWFL vector expression
-such as `"[0, -9.81*rho]"`, where `rho` is any extra material property. The
-macros can be used in derived quantities: `(sigma*Normal)(1)` integrated on a
-boundary gives the x component of the reaction force.
+Properties are given per domain selection, by a value (number or GWFL
+expression, possibly depending on the variables: a conductivity `k(T)` makes
+the model nonlinear) or by a **material** of the top level. **Terms** are
+GWFL weak forms integrated on a selection, summing to zero (`"-f*Test_u"` for
+a source); a term that GetFEM does not accept as linear is added as a
+nonlinear one, and the model is then solved by Newton's method. **Generic
+conditions** act on a variable: `dirichlet` (simplification, multipliers or
+penalization), `normal_dirichlet`, `neumann`, `robin`. The heat conduction
+module can be *unfolded* into its terms and conditions (tree action).
+
+Several models are solved by a global **solver**: `sequence` (in order), or
+`staggered` (iterated until the relative change of the variables is below a
+tolerance, with relaxation). A model takes the variable of another one with
+an import, `{"name": "T", "model": "thermal", "variable": "T"}`, on the same
+mesh for now. Without global solver, the models are solved in the order of
+their imports. `test_staggered_two_way_coupling` checks that staggered
+iterations between two models converge to the monolithic Newton solution.
 
 `roller` imposes `u.n = 0` with Nitsche's method (GetFEM's
 `add_normal_Dirichlet_condition_with_Nitsche_method`), without additional
-unknowns. A first version with multipliers made the system singular as soon
-as a roller shared a node with a `fixed` or `displacement` condition
-(simplified Dirichlet), e.g. a clamped edge next to a symmetry plane.
+unknowns, so that it may share nodes with a `fixed` condition.
 
 **Solve check.** On a singular system, GetFEM releases up to 5.4 only print
-a warning and may leave a zero solution. Every solve script therefore checks
-the relative residual `|K U - F| / |F|` and stops with an explicit error if
-it exceeds 1e-6. When `md.solve()` reports `converged = 0` while the residual
-is small, the system is singular but compatible (e.g. a rigid motion left
-free but not loaded): it is solved, with a warning in `results["warnings"]`.
+a warning and may leave a zero solution. For a linear model, the solve
+script therefore checks the relative residual `|K U - F| / |F|` and stops
+with an explicit error if it exceeds 1e-6. When `md.solve()` reports
+`converged = 0` while the residual is small, the system is singular but
+compatible: it is solved, with a warning.
 
-## Adding a physics
+## Adding a module
 
-Add a declarative entry to `model.PHYSICS_SPECS` (field kind, properties,
-options, boundary conditions and their fields, anchoring conditions, macro
-names): validation uses it, and a GUI can build its forms from it. Then write
-three functions in `codegen.py` (declaration of the unknown and of the
-macros, GWFL terms, post-processing) and register them in `PHYSICS`; the
+Add a declarative entry to `model.MODULE_SPECS` (variables and their roles,
+properties, options, values, conditions and their fields, anchoring
+conditions, macro names): validation uses it, and the interface builds its
+forms from it. Then write three functions in `codegen.py` (macros, GWFL
+terms and conditions, post-processing) and register them in `MODULES`; the
 first one is also used to check the user expressions.
 
 ## Parameters, fields, coordinates
@@ -294,29 +321,34 @@ first one is also used to check the user expressions.
   Python and GWFL: numbers, `+ - * /`, parentheses, `pi`, `sqr`, `sqrt`,
   `pow`, `exp`, `log`, trigonometric and hyperbolic functions, `abs`, `min`,
   `max`; it is evaluated without `eval`.
-- **Fields** have a value per domain selection (the last one listed wins),
-  like material properties; they may use the coordinates, the parameters and
-  the fields defined before them, are usable in every expression, including
-  material properties, and are exported with the results.
+- **Fields** have a value per domain selection of a geometry (the last one
+  listed wins); they may use the coordinates, the parameters and the fields
+  defined before them, are usable in every expression of the models on that
+  geometry, and are exported with the results.
+- **Scopes**: the parameters, materials and fields of the top level are
+  visible everywhere; a model may have its own parameters and fields (and
+  geometries and meshes), visible in it only. A local name may not hide a
+  global one.
 - **Coordinates** are `x`, `y`, `z` in every expression (up to the dimension of
-  the mesh; `X(1)`... also works). These names, the GWFL functions and the
-  names of the physics are reserved.
+  the mesh; `X(1)`... also works). These names and the GWFL functions are
+  reserved.
 
 `examples/plate_hole_tension.json` is written with parameters.
 
 ## Checking the GWFL expressions
 
-`model.validate` checks the structure of a model without GetFEM. The
-expressions written by the user (material properties, sources, boundary
-values, integrated quantities) are then checked by GetFEM itself
-(`gwfl.check`): a small script evaluates each of them in the context of the
-solve script (same unknown, property names and macros), on a mesh of one or
-two elements, and reports the errors as `path: message`, e.g.
+`model.validate` checks the structure of a file without GetFEM. The
+expressions written by the user (properties, sources, condition values,
+terms, integrated quantities) are then checked by GetFEM itself
+(`gwfl.check`): a small script evaluates each of them in the context of its
+model in the solve script (same variables, imports, property names and
+macros), on a mesh of one or two elements, and reports the errors as
+`path: message`, e.g.
 
 ```
 materials[0].properties.E: Unbalanced parenthesis (at character 12)
-physics.sources[0].value: a vector of 2 components is expected, got 3 components
-outputs.quantities[3].expr: Invalid outward unit normal vector. Possible reasons: not on boundary ...
+models[0].modules[0].sources[0].value: a vector of 2 components is expected, got 3 components
+models[0].outputs[3].expr: Invalid outward unit normal vector. Possible reasons: not on boundary ...
 ```
 
 `validate` and `run` (command line, `runner.run`) perform this check before
@@ -326,10 +358,10 @@ each change and shows the errors on the fields, in the tree and in the
 
 ## Open topics
 
-- Discretization: it belongs with the physics (finite element method and
-  degree of each unknown), rather than as a global node. To share it between
-  several parts of a model, finite element methods could instead be defined
-  per geometry (or mesh) and referred to by the physics.
-- Local Gmsh refinement per selection, CAD face names.
-- Several physics on different meshes in the same model (GetFEM allows it)
-  and convergence studies over several meshes.
+- Editing the geometries and meshes local to a model in the interface (the
+  format, the validation and the solve already support them).
+- Imports between different meshes (interpolation), time dependent models
+  and the `time_loop` and `sweep` solvers, global outputs and saved graphics.
+- Unfolding the elasticity module (its macros), a library of terms.
+- Local Gmsh refinement per selection, CAD face names; fragmenting the CSG
+  shapes for conforming subdomains with Gmsh.

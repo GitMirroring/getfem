@@ -36,33 +36,50 @@ def elastic(dim=2, size=None, n=4, degree=2, plane=None, element="simplex"):
     m = M.default_model()
     m["geometries"][0]["source"] = {"type": "box", "origin": [0.0] * dim, "size": size}
     m["meshes"][0].update(divisions=[n] * dim, element=element)
-    m["discretization"]["degree"] = degree
-    m["materials"] = [{"name": "steel", "selection": "all", "properties": {"E": E, "nu": NU}}]
-    m["physics"] = {"type": "linear_elasticity", "mesh": "mesh", "variable": "u",
-                    "sources": [], "boundary_conditions": []}
+    m["materials"] = [{"name": "steel", "properties": {"E": E, "nu": NU}}]
+    md = M.new_model("mechanics", "mesh", "linear_elasticity", dim)
+    md["variables"][0]["degree"] = degree
+    mod = md["modules"][0]
+    mod["properties"] = {p: [{"selection": "all", "material": "steel"}] for p in ("E", "nu")}
+    mod.pop("plane", None)
     if plane:
-        m["physics"]["plane"] = plane
+        mod["plane"] = plane
+    m["models"] = [md]
     return m
 
 
+def md(m):
+    return m["models"][0]
+
+
+def mod(m):
+    """The elasticity module."""
+    return m["models"][0]["modules"][0]
+
+
 def bc(model, *conds):
-    model["physics"]["boundary_conditions"] += [dict(c) for c in conds]
+    mod(model)["conditions"] += [dict(c) for c in conds]
     return model
 
 
 def error_quantity(model, exact):
-    model["outputs"]["quantities"].append(
+    md(model)["outputs"].append(
         {"name": "err2", "expr": f"Norm_sqr(u - {exact})", "selection": "all"})
-    model["outputs"]["quantities"].append(
+    md(model)["outputs"].append(
         {"name": "ref2", "expr": f"Norm_sqr({exact})", "selection": "all"})
     return model
 
 
-def solve(model):
+def run(model):
     with tempfile.TemporaryDirectory() as tmp:
         res = runner.run(model, tmp)
         assert res.ok, f"failed: {res.error}\n{res.stderr[-2000:]}"
         return res.results
+
+
+def solve(model):
+    """The results of the (first) model."""
+    return run(model)["models"][md(model)["name"]]
 
 
 def rel_error(r):
@@ -81,14 +98,14 @@ def uniaxial(dim, plane):
     bc(m, *rollers(*["xmin", "ymin", "zmin"][:dim]))
     traction = [S] + [0.0] * (dim - 1)
     bc(m, {"type": "traction", "selection": "xmax", "value": traction})
-    m["outputs"]["quantities"].append(
+    md(m)["outputs"].append(
         {"name": "reaction_x", "expr": "(sigma*Normal)(1)", "selection": "xmin"})
     return m
 
 
 def test_uniaxial_plane_stress():
     m = error_quantity(uniaxial(2, "stress"), f"[{S}/{E}*X(1), -{NU}*{S}/{E}*X(2)]")
-    m["outputs"]["quantities"].append({"name": "vm", "expr": "von_mises", "selection": "all"})
+    md(m)["outputs"].append({"name": "vm", "expr": "von_mises", "selection": "all"})
     r = solve(m)
     assert rel_error(r) < 1e-10
     assert abs(r["quantities"]["reaction_x"] + S * 1.0) < 1e-8      # height 1
@@ -101,7 +118,7 @@ def test_uniaxial_plane_strain():
     b = -S * NU * (1 + NU) / E
     m = error_quantity(uniaxial(2, "strain"), f"[{a}*X(1), {b}*X(2)]")
     # sigma_zz = nu*S, so von Mises = S*sqrt(1 - nu + nu^2)
-    m["outputs"]["quantities"].append({"name": "vm", "expr": "von_mises", "selection": "all"})
+    md(m)["outputs"].append({"name": "vm", "expr": "von_mises", "selection": "all"})
     r = solve(m)
     assert rel_error(r) < 1e-10
     assert abs(r["quantities"]["vm"] / 2.0 - S * math.sqrt(1 - NU + NU ** 2)) < 1e-8
@@ -119,7 +136,7 @@ def test_uniaxial_3d():
 def test_uniaxial_quadrilaterals_p1():
     m = error_quantity(uniaxial(2, "stress"), f"[{S}/{E}*X(1), -{NU}*{S}/{E}*X(2)]")
     m["meshes"][0]["element"] = "quad"
-    m["discretization"]["degree"] = 1
+    md(m)["variables"][0]["degree"] = 1
     assert rel_error(solve(m)) < 1e-10
 
 
@@ -143,7 +160,7 @@ def test_manufactured_solution_with_body_force():
     lam = E * NU / ((1 + NU) * (1 - 2 * NU))
     mu = E / (2 * (1 + NU))
     exact = ["sqr(X(1))", "X(1)*X(2)"]
-    m["physics"]["sources"] = [{"selection": "all", "value": [-(3 * lam + 5 * mu), 0.0]}]
+    mod(m)["sources"] = [{"selection": "all", "value": [-(3 * lam + 5 * mu), 0.0]}]
     bc(m, {"type": "displacement", "selection": "boundary", "value": exact})
     r = solve(error_quantity(m, "[sqr(X(1)), X(1)*X(2)]"))
     assert rel_error(r) < 1e-10
@@ -155,14 +172,14 @@ def test_gravity_as_expression_with_density():
     u_y = rho g / (lambda + 2 mu) * (y^2/2 - H y)   (plane strain)."""
     H, rho, g = 1.0, 8e-3, 9.81
     m = elastic(size=[0.2, H], n=4, plane="strain")
-    m["materials"][0]["properties"]["rho"] = rho
-    m["physics"]["sources"] = [{"selection": "all", "value": f"[0, -{g}*rho]"}]
+    md(m)["parameters"] = [{"name": "rho", "value": rho, "description": "density (a local parameter)"}]
+    mod(m)["sources"] = [{"selection": "all", "value": f"[0, -{g}*rho]"}]
     bc(m, {"type": "displacement", "selection": "ymin", "value": [0.0, 0.0]},
        *rollers("xmin", "xmax"))
     lam = E * NU / ((1 + NU) * (1 - 2 * NU))
     mu = E / (2 * (1 + NU))
     c = rho * g / (lam + 2 * mu)
-    m["outputs"]["quantities"].append(
+    md(m)["outputs"].append(
         {"name": "reaction_y", "expr": "(sigma*Normal)(2)", "selection": "ymin"})
     r = solve(error_quantity(m, f"[0, {c}*(sqr(X(2))/2 - {H}*X(2))]"))
     assert rel_error(r) < 1e-10
@@ -176,7 +193,7 @@ def test_fixed_and_roller_sharing_a_corner():
     m = elastic(plane="stress", n=8)
     bc(m, {"type": "fixed", "selection": "xmin"}, *rollers("ymin"),
        {"type": "traction", "selection": "xmax", "value": [S, 0.0]})
-    m["outputs"]["quantities"].append(
+    md(m)["outputs"].append(
         {"name": "reaction_x", "expr": "(sigma*Normal)(1)", "selection": "xmin"})
     r = solve(m)
     # reaction computed from the stress near the singular clamped corners: approximate
@@ -195,10 +212,11 @@ def test_singular_systems():
         with tempfile.TemporaryDirectory() as tmp:
             res = runner.run(m, tmp)
         if solvable:
-            assert res.ok and "not unique" in res.results["warnings"][0]
-            assert abs(res.results["max_von_mises"] - S) < 1e-8
+            r = res.results["models"]["mechanics"]
+            assert res.ok and "not unique" in r["warnings"][0]
+            assert abs(r["max_von_mises"] - S) < 1e-8
         else:
-            assert not res.ok and "linear solve failed" in res.error, res.error
+            assert not res.ok and "solve failed" in res.error, res.error
 
 
 def test_stress_concentration_around_a_hole():
@@ -233,19 +251,19 @@ def test_elasticity_validation_messages():
 
     assert M.validate(bc(elastic(), {"type": "fixed", "selection": "xmin"})) == []
     assert any("missing Poisson's ratio" in e for e in errs(
-        lambda m: m["materials"][0]["properties"].pop("nu")))
+        lambda m: mod(m)["properties"].pop("nu")))
     assert any("2 components expected" in e for e in errs(lambda m: bc(
         m, {"type": "traction", "selection": "xmax", "value": [1, 2, 3]})))
     assert any("only meaningful in 2D" in e for e in errs(
-        lambda m: m["physics"].update(plane="stress"), dim=3))
+        lambda m: mod(m).update(plane="stress"), dim=3))
     assert any("strain, stress expected" in e for e in errs(
-        lambda m: m["physics"].update(plane="axisymmetric")))
+        lambda m: mod(m).update(plane="axisymmetric")))
     assert any("expected, got 'temperature'" in e for e in errs(lambda m: bc(
         m, {"type": "temperature", "selection": "xmax", "value": 1})))
     assert any("unknown field" in e for e in errs(lambda m: bc(
         m, {"type": "roller", "selection": "xmax", "value": 1})))
-    assert any("reserved name" in e for e in errs(
-        lambda m: m["materials"][0]["properties"].update(sigma=1.0)))
+    assert any("macro 'sigma' is already a parameter" in e for e in errs(
+        lambda m: md(m).update(parameters=[{"name": "sigma", "value": 1.0}])))
     assert any("rigid body motions" in e for e in M.validate(
         bc(elastic(), {"type": "traction", "selection": "xmax", "value": [1, 0]})))
 

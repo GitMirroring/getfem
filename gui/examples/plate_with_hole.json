@@ -1,6 +1,14 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "name": "Plate with a heated hole, cooled edges",
+  "materials": [
+    {
+      "name": "steel",
+      "properties": {
+        "k": 50.0
+      }
+    }
+  ],
   "geometries": [
     {
       "name": "plate_with_hole",
@@ -91,63 +99,73 @@
       "order": 2
     }
   ],
-  "discretization": {
-    "degree": 2
-  },
-  "materials": [
+  "models": [
     {
-      "name": "steel",
-      "selection": "all",
-      "properties": {
-        "k": 50.0
-      }
+      "name": "heat",
+      "variables": [
+        {
+          "name": "T",
+          "mesh": "coarse",
+          "fem": "lagrange",
+          "degree": 2
+        }
+      ],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {
+            "k": [
+              {
+                "selection": "all",
+                "material": "steel"
+              }
+            ]
+          },
+          "sources": [],
+          "conditions": [
+            {
+              "type": "heat_flux",
+              "selection": "hole",
+              "value": 20000.0
+            },
+            {
+              "type": "temperature",
+              "selection": "left",
+              "value": 20.0
+            },
+            {
+              "type": "convection",
+              "selection": "right",
+              "h": 50.0,
+              "T_ext": 20.0
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "hole_power",
+          "expr": "k*Grad_T.Normal",
+          "selection": "hole"
+        },
+        {
+          "name": "outflow_left",
+          "expr": "-k*Grad_T.Normal",
+          "selection": "left"
+        },
+        {
+          "name": "outflow_right",
+          "expr": "-k*Grad_T.Normal",
+          "selection": "right"
+        }
+      ],
+      "vtu": "plate_with_hole.vtu"
     }
-  ],
-  "physics": {
-    "type": "heat_stationary",
-    "mesh": "coarse",
-    "variable": "T",
-    "sources": [],
-    "boundary_conditions": [
-      {
-        "type": "heat_flux",
-        "selection": "hole",
-        "value": 20000.0
-      },
-      {
-        "type": "temperature",
-        "selection": "left",
-        "value": 20.0
-      },
-      {
-        "type": "convection",
-        "selection": "right",
-        "h": 50.0,
-        "T_ext": 20.0
-      }
-    ]
-  },
-  "study": {
-    "type": "stationary"
-  },
-  "outputs": {
-    "vtu": "plate_with_hole.vtu",
-    "quantities": [
-      {
-        "name": "hole_power",
-        "expr": "k*Grad_T.Normal",
-        "selection": "hole"
-      },
-      {
-        "name": "outflow_left",
-        "expr": "-k*Grad_T.Normal",
-        "selection": "left"
-      },
-      {
-        "name": "outflow_right",
-        "expr": "-k*Grad_T.Normal",
-        "selection": "right"
-      }
-    ]
-  }
+  ]
 }

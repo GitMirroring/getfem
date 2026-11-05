@@ -58,7 +58,7 @@ def test_mesh_and_selection():
     from getfem_gui.app import scene
     model = M.load(EXAMPLES / "plate_with_hole.json")
     with tempfile.TemporaryDirectory() as tmp:
-        name = M.physics_mesh(model)["name"]
+        name = model["models"][0]["variables"][0]["mesh"]
         mres = mesher.ensure_mesh(model, name, tmp)
         assert mres.ok, mres.error
         mesh = scene.read(mres.view_file())
@@ -79,16 +79,16 @@ def test_result_field_and_deformed_shape():
     with tempfile.TemporaryDirectory() as tmp:
         res = runner.run(model, tmp)
         assert res.ok, res.error
-        ds = scene.read(Path(tmp) / res.results["vtu"])
+        ds = scene.read(Path(tmp) / res.results["models"]["mechanics"]["vtu"])
         names = scene.field_names(ds)
-        assert {"displacement", "von_mises"} <= set(names)
+        assert {"u", "von_mises"} <= set(names)
         p = plotter()
-        scale = scene.deformation_scale(ds, "displacement")
+        scale = scene.deformation_scale(ds, "u")
         assert scale > 1
-        scene.show_field(p, ds, "von_mises", warp="displacement", scale=scale)
+        scene.show_field(p, ds, "von_mises", warp="u", scale=scale)
         img = p.screenshot(return_img=True)
         assert img.std() > 5
-        scene.show_field(p, ds, "displacement", component=0)
+        scene.show_field(p, ds, "u", component=0)
         assert p.scalar_bars
         p.close()
 
@@ -130,7 +130,7 @@ def test_preview_and_picking_in_the_window():
             assert win.viewer._hover.side.side == "xmax"
             assert win.errors == []
             # a boundary condition shows its support on the preview, without mesh
-            win.select(("physics", "boundary_conditions", 2))
+            win.select(("models", 0, "modules", 0, "conditions", 2))
             last = win.viewer._last
             assert last[0] == "geometry" and [p.side.side for p in last[3]] == ["xmax"]
             img = win.viewer.plotter.screenshot(return_img=True)
@@ -139,18 +139,18 @@ def test_preview_and_picking_in_the_window():
             # since 'loaded_edge' is also used by an output
             assert win.viewer._pieces
             win.viewer.pick_world((0.05, 0.05))                       # top edge
-            bc = win.model["physics"]["boundary_conditions"][2]
+            bc = win.model["models"][0]["modules"][0]["conditions"][2]
             assert bc["selection"] == "traction_3"
             sels = win.model["geometries"][0]["selections"]
             assert sels["traction_3"]["criteria"]["edges"] == [
                 {"shape": [0], "side": "xmax"}, {"shape": [0], "side": "ymax"}]
-            assert "loaded_edge" in sels and win.current_path() == ("physics", "boundary_conditions", 2)
+            assert "loaded_edge" in sels and win.current_path() == ("models", 0, "modules", 0, "conditions", 2)
             assert "traction_3" in win.tree.currentItem().text(0)
             win.viewer.pick_world((0.1, 0.02))                        # xmax: removed, in place
             assert sels["traction_3"]["criteria"]["edges"] == [{"shape": [0], "side": "ymax"}]
             win.undo()
             win.undo()
-            assert win.model["physics"]["boundary_conditions"][2]["selection"] == "loaded_edge"
+            assert win.model["models"][0]["modules"][0]["conditions"][2]["selection"] == "loaded_edge"
             assert "traction_3" not in win.model["geometries"][0]["selections"]
             win.select(("materials", 0))
             assert not win.viewer._pieces                              # a domain: not pickable
@@ -176,7 +176,7 @@ def test_regions_picked_in_the_window():
         win = MainWindow(path)
         try:
             # the material of the inclusion: its region is highlighted
-            win.select(("materials", 1))
+            win.select(("models", 0, "modules", 0, "properties", "k", 1))
             last = win.viewer._last
             assert last[0] == "geometry" and callable(last[4]) and last[6] == "regions"
             img = win.viewer.plotter.screenshot(return_img=True)
@@ -187,7 +187,7 @@ def test_regions_picked_in_the_window():
             # material gets a new selection, starting from 'inclusion'
             win.viewer.pick_world((0.01, 0.01))
             sels = win.model["geometries"][0]["selections"]
-            assert win.model["materials"][1]["selection"] == "copper"
+            assert E_get(win, ("models", 0, "modules", 0, "properties", "k", 1))["selection"] == "copper"
             assert sels["copper"]["criteria"]["regions"] == [[[0], [1]], [[0]]]
             assert sels["inclusion"]["criteria"]["regions"] == [[[0], [1]]]
             win.viewer.pick_world((0.05, 0.05))                       # used once: edited in place
@@ -195,13 +195,13 @@ def test_regions_picked_in_the_window():
             win.viewer.pick_world((0.2, 0.2))                         # outside: nothing
             win.undo()
             win.undo()
-            assert win.model["materials"][1]["selection"] == "inclusion"
+            assert E_get(win, ("models", 0, "modules", 0, "properties", "k", 1))["selection"] == "inclusion"
             assert "copper" not in win.model["geometries"][0]["selections"]
             # a material on the whole domain: a new selection, from empty
-            win.model["materials"][0]["selection"] = "all"
-            win.select(("materials", 0))
+            E_get(win, ("models", 0, "modules", 0, "properties", "k", 0))["selection"] = "all"
+            win.select(("models", 0, "modules", 0, "properties", "k", 0))
             win.viewer.pick_world((0.05, 0.05))
-            mat = win.model["materials"][0]
+            mat = E_get(win, ("models", 0, "modules", 0, "properties", "k", 0))
             assert mat["selection"] == "epoxy"
             assert win.model["geometries"][0]["selections"]["epoxy"] == {
                 "kind": "domain", "criteria": {"type": "regions", "regions": [[[0], [1]]]}}
@@ -218,7 +218,7 @@ def test_regions_picked_in_the_window():
             assert win.model["geometries"][0]["selections"][sp[3]]["criteria"] == {
                 "type": "regions", "regions": [[[0]]]}
             # boundary conditions keep picking edges
-            win.select(("physics", "boundary_conditions", 0))
+            win.select(("models", 0, "modules", 0, "conditions", 0))
             assert win.viewer._last[6] is True and win.viewer._pieces
         finally:
             win.setWindowModified(False)
@@ -242,7 +242,7 @@ def test_drawing_in_the_window():
         win = MainWindow(path)
         try:
             v = win.viewer
-            win.select(("physics",))
+            win.select(("models", 0))
             assert v.draw_bar.isHidden()                               # only for a 2D geometry
             win.select(("geometries", 0))
             assert not v.draw_bar.isHidden()
@@ -348,7 +348,7 @@ def test_field_display_options():
                 app.processEvents()
                 time.sleep(0.01)
             assert win.results is not None, win.log.toPlainText()
-            win.select((E.RESULTS, "T"))
+            win.select((E.RESULTS, "heat", "T"))
             p = win.props
             assert {"cmap", "isolines", "bands", "arrows", "cut", "range_min"} <= {
                 w.objectName() for w in p.findChildren(object)}
@@ -359,7 +359,7 @@ def test_field_display_options():
             lo = p.findChild(QLineEdit, "range_min")
             lo.setText("30")
             lo.editingFinished.emit()
-            s = win.view_settings["T"]
+            s = win.view_settings[("heat", "T")]
             assert s["isolines"] == 6 and s["arrows"] == "heat_flux" and s["range"] == [30.0, None]
             plotter = win.viewer.plotter
             assert {"isolines", "arrows", "field"} <= set(plotter.actors)
@@ -384,7 +384,7 @@ def test_field_display_options():
             lines = csv.read_text().splitlines()
             assert lines[0] == "distance,x,y,T" and len(lines) == len(d) + 1
             # the same cut line for another field; removed with the panel button
-            win.select((E.RESULTS, "heat_flux"))
+            win.select((E.RESULTS, "heat", "heat_flux"))
             assert "cut" in plotter.actors and "magnitude" in [
                 p.findChild(QComboBox, "component").itemText(i) for i in range(4)]
             assert p.findChild(QLineEdit, "cut").text() == "0, 0.05; 0.1, 0.05"

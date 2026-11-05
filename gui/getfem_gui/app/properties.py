@@ -195,12 +195,10 @@ class PropertiesPanel(QScrollArea):
         return holder
 
     def _editor(self, model: dict, f: E.Field) -> QWidget:
-        value = E.get_at(model, f.key)
+        value = E.field_value(model, f)
         k = f.kind
         if f.op == "rename_selection":
             value = f.key[-1]
-        if f.op == "box_dim":
-            value = len(value or [])
         if k in ("text", "ident"):
             return self._line("" if value is None else str(value), f, lambda s: s.strip())
         if k == "value":

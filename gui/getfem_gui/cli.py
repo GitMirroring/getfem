@@ -21,7 +21,6 @@
     python -m getfem_gui mesh model.json [-m fine] [-w dir]   # all meshes by default
     python -m getfem_gui generate model.json [-w dir] [-o solve.py]
     python -m getfem_gui run model.json [-w dir]
-    python -m getfem_gui migrate old.json -o new.json
 """
 
 from __future__ import annotations
@@ -58,8 +57,6 @@ def main(argv: list[str] | None = None) -> int:
     cmd("run", "mesh then solve")
     pe = cmd("export", "write a standalone Python script (meshing and solving)")
     pe.add_argument("-o", "--output", help="output file (default: standard output)")
-    pmi = cmd("migrate", "convert a model to the current format")
-    pmi.add_argument("-o", "--output", required=True)
     for sp in (pm, pg, sub.choices["run"]):
         sp.add_argument("-w", "--workdir", help="working directory (default: <model>_run/)")
         sp.add_argument("--python", help="Python interpreter that provides GetFEM")
@@ -87,11 +84,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    if args.cmd == "migrate":
-        M.save(model, args.output)
-        print(f"model in format {M.FORMAT_VERSION} written to {args.output}")
-        return 0
-
     errors = M.validate(model)
     if not errors and args.cmd in ("validate", "run"):
         try:
@@ -118,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     workdir = _workdir(args)
 
     if args.cmd == "mesh":
-        names = args.mesh or [m["name"] for m in model["meshes"]]
+        names = args.mesh or [m["name"] for m, _ in M.all_meshes(model)]
         status = 0
         for name in names:
             res = mesher.ensure_mesh(model, name, workdir, python=args.python, force=args.force)
@@ -135,12 +127,14 @@ def main(argv: list[str] | None = None) -> int:
         return status
 
     if args.cmd == "generate":
-        name = M.physics_mesh(model)["name"]
-        res = mesher.ensure_mesh(model, name, workdir, python=args.python)
-        if not res.ok:
-            print(f"meshing of {name!r} failed: {res.error}", file=sys.stderr)
-            return 1
-        script = codegen.generate(model, res.path, res.info)
+        meshes = {}
+        for name in runner.meshes_needed(model):
+            res = mesher.ensure_mesh(model, name, workdir, python=args.python)
+            if not res.ok:
+                print(f"meshing of {name!r} failed: {res.error}", file=sys.stderr)
+                return 1
+            meshes[name] = (res.path, res.info)
+        script = codegen.generate(model, meshes)
         if args.output:
             Path(args.output).write_text(script, encoding="utf-8")
         else:

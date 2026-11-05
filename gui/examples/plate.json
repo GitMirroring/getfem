@@ -1,6 +1,14 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "name": "Heated plate cooled by convection",
+  "materials": [
+    {
+      "name": "aluminium",
+      "properties": {
+        "k": 237.0
+      }
+    }
+  ],
   "geometries": [
     {
       "name": "plate",
@@ -41,68 +49,78 @@
       "element": "simplex"
     }
   ],
-  "discretization": {
-    "degree": 2
-  },
-  "materials": [
+  "models": [
     {
-      "name": "aluminium",
-      "selection": "all",
-      "properties": {
-        "k": 237.0
-      }
+      "name": "heat",
+      "variables": [
+        {
+          "name": "T",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 2
+        }
+      ],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {
+            "k": [
+              {
+                "selection": "all",
+                "material": "aluminium"
+              }
+            ]
+          },
+          "sources": [
+            {
+              "selection": "all",
+              "value": "5e5 * exp(-(sqr(x-0.1) + sqr(y-0.05)) / 1e-4)"
+            }
+          ],
+          "conditions": [
+            {
+              "type": "temperature",
+              "selection": "xmin",
+              "value": 20.0
+            },
+            {
+              "type": "convection",
+              "selection": "convective_edges",
+              "h": 25.0,
+              "T_ext": 20.0
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "injected_power",
+          "expr": "5e5 * exp(-(sqr(x-0.1) + sqr(y-0.05)) / 1e-4)",
+          "selection": "all"
+        },
+        {
+          "name": "outflow_xmin",
+          "expr": "-k*Grad_T.Normal",
+          "selection": "xmin"
+        },
+        {
+          "name": "outflow_convection",
+          "expr": "-k*Grad_T.Normal",
+          "selection": "convective_edges"
+        },
+        {
+          "name": "mean_temperature",
+          "expr": "T / 0.02",
+          "selection": "all"
+        }
+      ],
+      "vtu": "plate.vtu"
     }
-  ],
-  "physics": {
-    "type": "heat_stationary",
-    "mesh": "mesh",
-    "variable": "T",
-    "sources": [
-      {
-        "selection": "all",
-        "value": "5e5 * exp(-(sqr(x-0.1) + sqr(y-0.05)) / 1e-4)"
-      }
-    ],
-    "boundary_conditions": [
-      {
-        "type": "temperature",
-        "selection": "xmin",
-        "value": 20.0
-      },
-      {
-        "type": "convection",
-        "selection": "convective_edges",
-        "h": 25.0,
-        "T_ext": 20.0
-      }
-    ]
-  },
-  "study": {
-    "type": "stationary"
-  },
-  "outputs": {
-    "vtu": "plate.vtu",
-    "quantities": [
-      {
-        "name": "injected_power",
-        "expr": "5e5 * exp(-(sqr(x-0.1) + sqr(y-0.05)) / 1e-4)",
-        "selection": "all"
-      },
-      {
-        "name": "outflow_xmin",
-        "expr": "-k*Grad_T.Normal",
-        "selection": "xmin"
-      },
-      {
-        "name": "outflow_convection",
-        "expr": "-k*Grad_T.Normal",
-        "selection": "convective_edges"
-      },
-      {
-        "name": "mean_temperature",
-        "expr": "T / 0.02",
-        "selection": "all"
-      }
-    ]
-  }
+  ]
 }

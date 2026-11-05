@@ -15,18 +15,18 @@
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
 
-"""Editing a model from a user interface, independently of any toolkit.
+"""Editing a model file from a user interface, independently of any toolkit.
 
-- `tree(model)`: the tree of the model, as shown in the model browser;
+- `tree(model)`: the tree of the file, as shown in the model browser;
 - `fields(model, path)`: the form fields of a node;
-- `apply(model, field, value)`: change a field, keeping the model consistent
-  (renaming a selection updates its uses, changing the type of a boundary
-  condition resets its values, ...);
+- `apply(model, field, value)`: change a field, keeping the file consistent
+  (renaming a selection or a variable updates its uses, changing the type of
+  a condition resets its values, ...);
 - `actions(model, path)` / `do_action(...)`: add and remove items;
 - `errors_by_node` / `errors_at`: place the messages of `model.validate`.
 
 A node or a field is designated by its path in the model dictionary, e.g.
-("physics", "boundary_conditions", 0) or ("materials", 0, "properties", "E").
+("models", 0, "modules", 0, "conditions", 1) or ("materials", 0, "properties", "E").
 Functions modify the model in place.
 """
 
@@ -98,14 +98,27 @@ def set_at(model: dict, key: Path, value) -> None:
     obj[key[-1]] = value
 
 
-def physics_geometry(model: dict) -> dict | None:
-    mesh = M.physics_mesh(model)
-    return M.geometry_of(model, mesh) if mesh else None
+def owner(model: dict, path: Path) -> dict | None:
+    """The model (gf.Model) a node belongs to, if any."""
+    if path[:1] == ("models",) and len(path) >= 2:
+        return get_at(model, path[:2])
+    return None
 
 
-def physics_dim(model: dict) -> int:
-    geom = physics_geometry(model)
-    return (M.geometry_dim(model, geom) if geom else None) or 2
+def item_geometry(model: dict, path: Path) -> dict | None:
+    """The geometry whose selections an item uses: its model's one, a field's
+    one, or the geometry itself."""
+    md = owner(model, path)
+    if md is not None:
+        return M.model_geometry(model, md)
+    if path[:1] == ("fields",) and len(path) >= 2:
+        f = get_at(model, path[:2], {})
+        geoms = model.get("geometries", [])
+        name = f.get("geometry", geoms[0].get("name") if len(geoms) == 1 else None)
+        return M.by_name(geoms, name)
+    if path[:1] == ("geometries",) and len(path) >= 2:
+        return get_at(model, path[:2])
+    return None
 
 
 def geometry_dim(model: dict, gi: int) -> int:
@@ -113,8 +126,18 @@ def geometry_dim(model: dict, gi: int) -> int:
     return (M.geometry_dim(model, geoms[gi]) if gi < len(geoms) else None) or 2
 
 
-def selections_of_kind(model: dict, kind: str | None, geom: dict | None = None) -> list[str]:
-    geom = geom if geom is not None else physics_geometry(model)
+def item_dim(model: dict, path: Path) -> int:
+    geom = item_geometry(model, path)
+    return (M.geometry_dim(model, geom) if geom else None) or 2
+
+
+def main_model(model: dict) -> dict | None:
+    """The model shown by default (the first one)."""
+    models = model.get("models", [])
+    return models[0] if models else None
+
+
+def selections_of_kind(model: dict, kind: str | None, geom: dict | None) -> list[str]:
     if geom is None:
         return []
     return [n for n, s in M.selection_table(model, geom).items() if kind is None or s["kind"] == kind]
@@ -128,6 +151,10 @@ def unique_name(base: str, used) -> str:
     while f"{base}{i}" in used:
         i += 1
     return f"{base}{i}"
+
+
+def _choices(names) -> tuple:
+    return tuple((n, n) for n in names)
 
 
 # ------------------------------------------------------------------ values
@@ -221,23 +248,109 @@ def _shape_node(shape: dict, path: Path) -> Node:
     return node
 
 
-def _bc_label(bc: dict) -> str:
-    return f"{bc.get('type', '?').replace('_', ' ').capitalize()} — {bc.get('selection', '?')}"
+def _cond_label(c: dict) -> str:
+    return f"{str(c.get('type', '?')).replace('_', ' ').capitalize()} — {c.get('selection', '?')}"
 
 
-def tree(model: dict, result_fields=(), has_results: bool = False) -> Node:
-    root = Node((), model.get("name", "Model"), "model")
-
-    params = Node(("parameters",), "Parameters", "parameters")
-    vals, _ = P.values(model)
-    for i, p in enumerate(model.get("parameters", [])):
+def _params_node(path: Path, params: list, vals: dict) -> Node:
+    node = Node(path, "Parameters", "parameters")
+    for i, p in enumerate(params):
         name = p.get("name", "?")
         v = p.get("value")
         label = f"{name} = {format_value(v)}"
         if isinstance(v, str) and name in vals:
             label += f"  ({format_number(vals[name])})"
-        params.children.append(Node(("parameters", i), label, "parameter"))
-    root.children.append(params)
+        node.children.append(Node(path + (i,), label, "parameter"))
+    return node
+
+
+def _fields_node(path: Path, fields_: list) -> Node:
+    node = Node(path, "Fields", "fields")
+    for i, f in enumerate(fields_):
+        node.children.append(Node(path + (i,), f.get("name", "?"), "field"))
+    return node
+
+
+def _module_node(md_path: Path, i: int, mod: dict) -> Node:
+    spec = M.MODULE_SPECS.get(mod.get("type"), {})
+    path = md_path + ("modules", i)
+    node = Node(path, spec.get("label", str(mod.get("type"))), "module")
+    for p in spec.get("properties", {}):
+        for j, pc in enumerate(mod.get("properties", {}).get(p, [])):
+            what = pc["material"] if "material" in pc else format_value(pc.get("value"))
+            node.children.append(Node(path + ("properties", p, j),
+                                      f"{p} = {what} — {pc.get('selection', M.ALL)}", "property"))
+    if spec.get("source") is not None:
+        srcs = Node(path + ("sources",), "Sources", "sources")
+        for j, s in enumerate(mod.get("sources", [])):
+            srcs.children.append(Node(path + ("sources", j), f"Source — {s.get('selection', M.ALL)}", "source"))
+        node.children.append(srcs)
+    if spec.get("conditions"):
+        bcs = Node(path + ("conditions",), "Conditions", "conditions")
+        for j, c in enumerate(mod.get("conditions", [])):
+            bcs.children.append(Node(path + ("conditions", j), _cond_label(c), "condition"))
+        node.children.append(bcs)
+    return node
+
+
+def _model_node(model: dict, k: int, md: dict) -> Node:
+    path = ("models", k)
+    kinds = ", ".join(M.MODULE_SPECS.get(m.get("type"), {}).get("label", "?").split(" (")[0]
+                      for m in md.get("modules", []))
+    node = Node(path, f"{md.get('name', '?')}" + (f" ({kinds})" if kinds else ""), "model")
+    vals, _ = M.parameter_values(model, md)
+    if md.get("parameters"):
+        node.children.append(_params_node(path + ("parameters",), md["parameters"], vals))
+    if md.get("fields"):
+        node.children.append(_fields_node(path + ("fields",), md["fields"]))
+    if md.get("imports"):
+        imps = Node(path + ("imports",), "Imports", "imports")
+        for i, im in enumerate(md["imports"]):
+            imps.children.append(Node(path + ("imports", i),
+                                      f"{im.get('name')} ← {im.get('model')}.{im.get('variable')}", "import"))
+        node.children.append(imps)
+    vars_ = Node(path + ("variables",), "Variables", "variables")
+    for i, v in enumerate(md.get("variables", [])):
+        fem = "P" if v.get("fem", "lagrange") == "lagrange" else "discontinuous P"
+        comp = "" if v.get("components", 1) == 1 else " (vector)"
+        vars_.children.append(Node(path + ("variables", i),
+                                   f"{v.get('name')}{comp}: {fem}{v.get('degree', 1)} on {v.get('mesh')}",
+                                   "variable"))
+    node.children.append(vars_)
+    mods = Node(path + ("modules",), "Modules", "modules")
+    for i, mod in enumerate(md.get("modules", [])):
+        mods.children.append(_module_node(path, i, mod))
+    node.children.append(mods)
+    terms = Node(path + ("terms",), "Terms", "terms")
+    for i, t in enumerate(md.get("terms", [])):
+        terms.children.append(Node(path + ("terms", i), f"{t.get('name')} — {t.get('selection', M.ALL)}", "term"))
+    node.children.append(terms)
+    conds = Node(path + ("conditions",), "Conditions", "conditions")
+    for i, c in enumerate(md.get("conditions", [])):
+        conds.children.append(Node(path + ("conditions", i), f"{_cond_label(c)} ({c.get('variable')})",
+                                   "condition"))
+    node.children.append(conds)
+    s = md.get("solver", {})
+    node.children.append(Node(path + ("solver",), f"Solver ({s.get('type', 'auto')})", "solver"))
+    outs = Node(path + ("outputs",), "Outputs", "outputs")
+    for i, q in enumerate(md.get("outputs", [])):
+        outs.children.append(Node(path + ("outputs", i), q.get("name", "?"), "quantity"))
+    node.children.append(outs)
+    return node
+
+
+def tree(model: dict, result_fields: dict | None = None, has_results: bool = False) -> Node:
+    """result_fields: {model name: [field names]} of the results, if any."""
+    root = Node((), model.get("name", "Model"), "file")
+    vals, _ = P.values(model)
+    root.children.append(_params_node(("parameters",), model.get("parameters", []), vals))
+
+    mats = Node(("materials",), "Materials", "materials")
+    for i, mat in enumerate(model.get("materials", [])):
+        props = ", ".join(mat.get("properties", {}))
+        mats.children.append(Node(("materials", i), f"{mat.get('name', '?')}" + (f" ({props})" if props else ""),
+                                  "material"))
+    root.children.append(mats)
 
     geoms = Node(("geometries",), "Geometries", "geometries")
     for i, g in enumerate(model.get("geometries", [])):
@@ -255,50 +368,33 @@ def tree(model: dict, result_fields=(), has_results: bool = False) -> Node:
     root.children.append(geoms)
 
     meshes = Node(("meshes",), "Meshes", "meshes")
-    used = (M.physics_mesh(model) or {}).get("name")
     for i, m in enumerate(model.get("meshes", [])):
-        label = f"{m.get('name', '?')} ({m.get('mesher', '?')})"
-        if m.get("name") == used:
-            label += " — used"
+        users = [md.get("name") for md in model.get("models", [])
+                 if any(v.get("mesh") == m.get("name") for v in md.get("variables", []))]
+        label = f"{m.get('name', '?')} ({m.get('mesher', '?')})" + (f" — {', '.join(users)}" if users else "")
         meshes.children.append(Node(("meshes", i), label, "mesh"))
     root.children.append(meshes)
 
-    root.children.append(Node(("discretization",), "Discretization", "discretization"))
+    root.children.append(_fields_node(("fields",), model.get("fields", [])))
 
-    fields_node = Node(("fields",), "Fields", "fields")
-    for i, f in enumerate(model.get("fields", [])):
-        fields_node.children.append(Node(("fields", i), f.get("name", "?"), "field"))
-    root.children.append(fields_node)
+    models = Node(("models",), "Models", "models")
+    for k, md in enumerate(model.get("models", [])):
+        models.children.append(_model_node(model, k, md))
+    root.children.append(models)
 
-    mats = Node(("materials",), "Materials", "materials")
-    for i, mat in enumerate(model.get("materials", [])):
-        mats.children.append(Node(("materials", i),
-                                  f"{mat.get('name', '?')} — {mat.get('selection', M.ALL)}", "material"))
-    root.children.append(mats)
-
-    phys = model.get("physics", {})
-    spec = M.PHYSICS_SPECS.get(phys.get("type"), {})
-    pn = Node(("physics",), spec.get("label", "Physics"), "physics")
-    srcs = Node(("physics", "sources"), "Sources", "sources")
-    for i, s in enumerate(phys.get("sources", [])):
-        srcs.children.append(Node(("physics", "sources", i), f"Source — {s.get('selection', M.ALL)}", "source"))
-    bcs = Node(("physics", "boundary_conditions"), "Boundary conditions", "bcs")
-    for i, bc in enumerate(phys.get("boundary_conditions", [])):
-        bcs.children.append(Node(("physics", "boundary_conditions", i), _bc_label(bc), "bc"))
-    pn.children += [srcs, bcs]
-    root.children.append(pn)
-
-    root.children.append(Node(("study",), "Study (stationary)", "study"))
-
-    outs = Node(("outputs",), "Outputs", "outputs")
-    for i, q in enumerate(model.get("outputs", {}).get("quantities", [])):
-        outs.children.append(Node(("outputs", "quantities", i), q.get("name", "?"), "quantity"))
-    root.children.append(outs)
+    solvers = Node(("solvers",), "Solvers", "solvers")
+    for i, s in enumerate(model.get("solvers", [])):
+        solvers.children.append(Node(("solvers", i), f"{s.get('name')} ({s.get('type')}: "
+                                     f"{', '.join(s.get('steps', []))})", "global_solver"))
+    root.children.append(solvers)
 
     if has_results or result_fields:
         res = Node((RESULTS,), "Results", "results")
-        for name in result_fields:
-            res.children.append(Node((RESULTS, name), name, "result_field"))
+        for mname, names in (result_fields or {}).items():
+            mn = Node((RESULTS, mname), mname, "result_model")
+            for name in names:
+                mn.children.append(Node((RESULTS, mname, name), name, "result_field"))
+            res.children.append(mn)
         root.children.append(res)
     return root
 
@@ -420,11 +516,201 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
     return out
 
 
+def _param_fields(model, path) -> list[Field]:
+    md = owner(model, path)
+    vals, _ = M.parameter_values(model, md)
+    name = get_at(model, path + ("name",))
+    out = [Field(path + ("name",), "Name", "ident", op="rename_parameter"),
+           Field(path + ("value",), "Value", "value",
+                 help="number or expression: + - * /, pi, " + ", ".join(sorted(P.FUNCTIONS))),
+           Field(path + ("description",), "Description", "text")]
+    if isinstance(get_at(model, path + ("value",)), str) and name in vals:
+        out.append(Field(path, "", "info", help=f"= {format_number(vals[name])}"))
+    return out
+
+
+def _field_fields(model, path) -> list[Field]:
+    out = [Field(path + ("name",), "Name", "ident", op="rename_field"),
+           Field(path + ("description",), "Description", "text")]
+    if path[:1] == ("fields",):
+        out.append(Field(path + ("geometry",), "Geometry", "choice",
+                         _choices(g.get("name") for g in model.get("geometries", []))))
+    domains = _choices(selections_of_kind(model, M.DOMAIN, item_geometry(model, path)))
+    for j, _ in enumerate(get_at(model, path + ("values",), [])):
+        out += [Field(path + ("values", j, "selection"), f"Domain {j + 1}", "choice", domains),
+                Field(path + ("values", j, "value"), f"Value {j + 1}", "value",
+                      remove=path + ("values", j))]
+    return out
+
+
+def _value_field(key, label, kind, dim) -> Field:
+    if kind == M.VECTOR:
+        return Field(key, label, "vector", size=dim)
+    return Field(key, label, "value")
+
+
+_LABELS = {"value": "Value", "h": "Exchange coefficient h", "T_ext": "External temperature",
+           "T_ref": "Reference temperature"}
+
+
+def _model_fields(model, path) -> list[Field]:
+    """Fields of the nodes inside a model (path starts with ("models", k))."""
+    k, rest = path[1], path[2:]
+    md = model["models"][k]
+    base = ("models", k)
+    n = len(rest)
+    geom = M.model_geometry(model, md)
+    dim = item_dim(model, path)
+    domains = _choices(selections_of_kind(model, M.DOMAIN, geom))
+    boundaries = _choices(selections_of_kind(model, M.BOUNDARY, geom))
+    anywhere = _choices(selections_of_kind(model, None, geom))
+    if n == 0:
+        return [Field(base + ("name",), "Name", "ident", op="rename_model"),
+                Field(base + ("description",), "Description", "text"),
+                Field(base + ("vtu",), "VTU file", "text", help="file of the exported fields")]
+    head = rest[0]
+    if head == "parameters":
+        if n == 1:
+            return [Field(path, "", "info", help="Parameters of this model only.")]
+        return _param_fields(model, path)
+    if head == "fields":
+        if n == 1:
+            return [Field(path, "", "info", help="Fields of this model only.")]
+        return _field_fields(model, path)
+    if head == "imports":
+        if n == 1:
+            return [Field(path, "", "info", help="Variables of other models, used here as data "
+                          "(the other model is solved first).")]
+        im = get_at(model, path, {})
+        src = M.model_by_name(model, im.get("model")) or {}
+        return [Field(path + ("name",), "Name here", "ident"),
+                Field(path + ("model",), "From the model", "choice",
+                      _choices(m.get("name") for m in model.get("models", []) if m is not md)),
+                Field(path + ("variable",), "Variable", "choice",
+                      _choices(v.get("name") for v in src.get("variables", [])))]
+    if head == "variables":
+        if n == 1:
+            return [Field(path, "", "info", help="The unknowns, with their finite element method.")]
+        v = get_at(model, path, {})
+        lo = 0 if v.get("fem") == "lagrange_discontinuous" else 1
+        meshes = [m.get("name") for m in model.get("meshes", [])] + [m.get("name") for m in md.get("meshes", [])]
+        return [Field(path + ("name",), "Name", "ident", op="rename_variable"),
+                Field(path + ("mesh",), "Mesh", "choice", _choices(meshes)),
+                Field(path + ("fem",), "Finite element", "choice",
+                      (("lagrange", "Lagrange (continuous)"), ("lagrange_discontinuous", "discontinuous Lagrange"))),
+                Field(path + ("degree",), "Degree", "choice", tuple((d, str(d)) for d in range(lo, 7))),
+                Field(path + ("components",), "Components", "choice", ((1, "scalar"), ("dim", "vector")))]
+    if head == "modules":
+        if n == 1:
+            return [Field(path, "", "info", help="Predefined physics, with their properties per domain, "
+                          "sources and conditions.")]
+        mod = model["models"][k]["modules"][rest[1]]
+        spec = M.MODULE_SPECS.get(mod.get("type"), {})
+        mpath = base + ("modules", rest[1])
+        if n == 2:
+            out = []
+            kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
+            for role, v in spec.get("variables", {}).items():
+                names = [x for x, kd in kinds.items() if kd == v["kind"]]
+                if v.get("import"):
+                    names += [im.get("name") for im in md.get("imports", [])]
+                out.append(Field(mpath + (role,), v["label"].capitalize(), "choice", _choices(names)))
+            for opt, values in spec.get("options", {}).items():
+                if opt == "plane" and dim != 2:
+                    continue
+                out.append(Field(mpath + (opt,), "2D model" if opt == "plane" else opt, "choice",
+                                 tuple((x, f"plane {x}" if opt == "plane" else x) for x in values)))
+            for key, kind in spec.get("values", {}).items():
+                out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
+            props = ", ".join(f"{p} ({label})" for p, label in spec.get("properties", {}).items())
+            out.append(Field(mpath, "", "info", help=f"Properties: {props}, each given per domain "
+                             "(the last one listed wins)."))
+            return out
+        if rest[2] == "properties" and n == 5:
+            p, j = rest[3], rest[4]
+            pc = get_at(model, path, {})
+            mats = [m.get("name") for m in model.get("materials", []) if p in (m.get("properties") or {})]
+            out = [Field(path + ("selection",), "Domain", "choice", domains),
+                   Field(path, "Given by", "choice",
+                         (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
+                         op="piece_source")]
+            if "material" not in pc:
+                out.append(Field(path + ("value",), f"{p} ({spec['properties'].get(p, p)})", "value"))
+            return out
+        if rest[2] == "sources":
+            if n == 3:
+                return [Field(path, "", "info", help="Volume sources (right-hand side).")]
+            kind = spec.get("source", M.SCALAR)
+            return [Field(path + ("selection",), "Domain", "choice", domains),
+                    _value_field(path + ("value",), "Value", kind, dim)]
+        if rest[2] == "conditions":
+            if n == 3:
+                return [Field(path, "", "info", help="Boundaries without condition are free "
+                              "(zero flux, zero traction).")]
+            bc = get_at(model, path, {})
+            specs = spec.get("conditions", {})
+            out = [Field(path + ("type",), "Type", "choice",
+                         tuple((t, t.replace("_", " ")) for t in specs), op="mcond_type"),
+                   Field(path + ("selection",), "Boundary", "choice", boundaries)]
+            for key, kind in specs.get(bc.get("type"), {}).items():
+                out.append(_value_field(path + (key,), _LABELS.get(key, key), kind, dim))
+            return out
+        return []
+    if head == "terms":
+        if n == 1:
+            return [Field(path, "", "info", help="Terms of the weak formulation in GWFL; the terms "
+                          "of a model sum to zero (a source is written -f*Test_u).")]
+        return [Field(path + ("name",), "Name", "ident"),
+                Field(path + ("expr",), "Expression (GWFL)", "value"),
+                Field(path + ("selection",), "Integrated on", "choice", anywhere),
+                Field(path + ("linear",), "Linear", "choice",
+                      (("auto", "detected"), (True, "yes"), (False, "no")))]
+    if head == "conditions":
+        if n == 1:
+            return [Field(path, "", "info", help="Generic conditions on a variable (the modules "
+                          "have their own ones).")]
+        c = get_at(model, path, {})
+        kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
+        vkind = kinds.get(c.get("variable"), M.SCALAR)
+        out = [Field(path + ("type",), "Type", "choice",
+                     tuple((t, t.replace("_", " ")) for t in M.CONDITIONS), op="cond_type"),
+               Field(path + ("variable",), "Variable", "choice", _choices(kinds)),
+               Field(path + ("selection",), "Boundary", "choice", boundaries)]
+        for key, kind in M.CONDITIONS.get(c.get("type"), {}).items():
+            out.append(_value_field(path + (key,), _LABELS.get(key, key),
+                                    vkind if kind == "var" else kind, dim))
+        if c.get("type") in ("dirichlet", "normal_dirichlet"):
+            methods = M.DIRICHLET_METHODS if c.get("type") == "dirichlet" else M.DIRICHLET_METHODS[1:]
+            out.append(Field(path + ("method",), "Method", "choice", _choices(methods)))
+            if c.get("method") == "penalization":
+                out.append(Field(path + ("penalty",), "Penalty coefficient", "number"))
+        return out
+    if head == "solver":
+        out = [Field(path + ("type",), "Type", "choice",
+                     (("auto", "automatic (linear or Newton)"), ("linear", "linear"), ("newton", "Newton")))]
+        if get_at(model, path + ("type",), "auto") != "linear":
+            out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
+                    Field(path + ("max_res",), "Residual tolerance", "number")]
+        return out
+    if head == "outputs":
+        if n == 1:
+            return [Field(base + ("vtu",), "VTU file", "text")]
+        return [Field(path + ("name",), "Name", "ident"),
+                Field(path + ("expr",), "Integrand (GWFL)", "value"),
+                Field(path + ("selection",), "Integrated on", "choice", anywhere)]
+    return []
+
+
 def fields(model: dict, path: Path) -> list[Field]:
     """Form fields of the node at `path`."""
     n = len(path)
     if path == ():
-        return [Field(("name",), "Model name", "text")]
+        return [Field(("name",), "Name", "text")]
+    if path[0] == "models":
+        if n == 1:
+            return [Field(path, "", "info", help="Each model is a GetFEM model (gf.Model): variables, "
+                          "modules, terms and conditions solved together.")]
+        return _model_fields(model, path)
 
     if path[0] == "geometries" and n >= 2:
         gi = path[1]
@@ -453,8 +739,8 @@ def fields(model: dict, path: Path) -> list[Field]:
         if path[2] == "source":
             return _shape_fields(model, path, dim)
         if path[2] == "selections" and n == 3:
-            return [Field(path, "", "info", help="Named parts of the geometry, used by materials, "
-                                                 "conditions and outputs.")]
+            return [Field(path, "", "info", help="Named parts of the geometry, used by properties, "
+                                                 "conditions, terms and outputs.")]
         if path[2] == "selections" and n == 4:
             name = path[3]
             table = M.selection_table(model, geom)
@@ -471,36 +757,28 @@ def fields(model: dict, path: Path) -> list[Field]:
         return [Field(path, "", "info", help="Named constants, usable in every numerical field "
                       "(\"L/2\") and expression. A parameter may use the ones listed before it.")]
     if path[0] == "parameters" and n == 2:
-        vals, _ = P.values(model)
-        name = get_at(model, path + ("name",))
-        out = [Field(path + ("name",), "Name", "ident", op="rename_parameter"),
-               Field(path + ("value",), "Value", "value",
-                     help="number or expression: + - * /, pi, " + ", ".join(sorted(P.FUNCTIONS))),
+        return _param_fields(model, path)
+    if path == ("materials",):
+        return [Field(path, "", "info", help="Named sets of property values, used by the "
+                      "properties of the modules.")]
+    if path[0] == "materials" and n == 2:
+        out = [Field(path + ("name",), "Name", "ident", op="rename_material"),
                Field(path + ("description",), "Description", "text")]
-        if isinstance(get_at(model, path + ("value",)), str) and name in vals:
-            out.append(Field(path, "", "info", help=f"= {format_number(vals[name])}"))
+        for p in get_at(model, path + ("properties",), {}):
+            out.append(Field(path + ("properties", p), p, "value", remove=path + ("properties", p)))
         return out
     if path == ("fields",):
-        return [Field(path, "", "info", help="Fields defined by a value per domain selection (the "
-                      "last one wins), usable in every expression, including material properties.")]
+        return [Field(path, "", "info", help="Fields defined by a value per domain selection of a "
+                      "geometry (the last one wins), usable in every expression.")]
     if path[0] == "fields" and n == 2:
-        out = [Field(path + ("name",), "Name", "ident", op="rename_field"),
-               Field(path + ("description",), "Description", "text")]
-        domains = tuple((s, s) for s in selections_of_kind(model, M.DOMAIN))
-        for j, _ in enumerate(get_at(model, path + ("values",), [])):
-            out += [Field(path + ("values", j, "selection"), f"Domain {j + 1}", "choice", domains),
-                    Field(path + ("values", j, "value"), f"Value {j + 1}", "value",
-                          remove=path + ("values", j))]
-        return out
+        return _field_fields(model, path)
 
     if path == ("geometries",):
         return [Field(path, "", "info", help="Geometries and their named selections.")]
     if path == ("meshes",):
         return [Field(path, "", "info", help="Several meshes may be defined for one geometry; "
-                                             "the physics uses one of them.")]
-
+                                             "the variables of the models say which one they use.")]
     if path[0] == "meshes" and n == 2:
-        mi = path[1]
         mesh = get_at(model, path, {})
         geom = M.geometry_of(model, mesh) or {}
         stype = geom.get("source", {}).get("type")
@@ -508,9 +786,8 @@ def fields(model: dict, path: Path) -> list[Field]:
         meshers = [x for x, srcs in M.MESHERS.items() if stype in srcs] or list(M.MESHERS)
         out = [Field(path + ("name",), "Name", "ident", op="rename_mesh"),
                Field(path + ("geometry",), "Geometry", "choice",
-                     tuple((g["name"], g["name"]) for g in model.get("geometries", []))),
-               Field(path + ("mesher",), "Mesher", "choice", tuple((x, x) for x in meshers),
-                     op="mesher")]
+                     _choices(g["name"] for g in model.get("geometries", []))),
+               Field(path + ("mesher",), "Mesher", "choice", _choices(meshers), op="mesher")]
         mesher = mesh.get("mesher")
         if mesher == "structured":
             out += [_vec_field(path + ("divisions",), "Divisions", "ints", dim),
@@ -524,78 +801,21 @@ def fields(model: dict, path: Path) -> list[Field]:
                           ((1, "1 (straight)"), (2, "2 (curved)"), (3, "3")))]
         return out
 
-    if path == ("discretization",):
-        return [Field(("discretization", "degree"), "Finite element degree", "choice",
-                      tuple((d, f"P{d}") for d in range(1, 7)))]
-
-    if path == ("materials",):
-        return [Field(path, "", "info", help="The last material listed wins where several overlap.")]
-    if path[0] == "materials" and n == 2:
-        spec = M.PHYSICS_SPECS.get(model.get("physics", {}).get("type"), {})
-        mat = get_at(model, path, {})
+    if path == ("solvers",):
+        return [Field(path, "", "info", help="Global solvers chain the models (the first one is run "
+                      "by Compute). Without any, the models are solved in the order of their imports.")]
+    if path[0] == "solvers" and n == 2:
+        s = get_at(model, path, {})
         out = [Field(path + ("name",), "Name", "ident"),
-               Field(path + ("selection",), "Domain", "choice",
-                     tuple((s, s) for s in selections_of_kind(model, M.DOMAIN)))]
-        props = mat.get("properties", {})
-        for p, label in spec.get("properties", {}).items():
-            out.append(Field(path + ("properties", p), f"{p} ({label})", "value"))
-        for p in props:
-            if p not in spec.get("properties", {}):
-                out.append(Field(path + ("properties", p), p, "value",
-                                 remove=path + ("properties", p)))
+               Field(path + ("type",), "Type", "choice",
+                     (("sequence", "sequence"), ("staggered", "staggered iterations"))),
+               Field(path + ("steps",), "Models, in order", "names",
+                     _choices(m.get("name") for m in model.get("models", [])))]
+        if s.get("type") == "staggered":
+            out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
+                    Field(path + ("tolerance",), "Tolerance (relative change)", "number"),
+                    Field(path + ("relaxation",), "Relaxation", "number")]
         return out
-
-    if path == ("physics",):
-        phys = model.get("physics", {})
-        spec = M.PHYSICS_SPECS.get(phys.get("type"), {})
-        out = [Field(("physics", "type"), "Physics", "choice",
-                     tuple((k, s["label"]) for k, s in M.PHYSICS_SPECS.items()), op="physics_type"),
-               Field(("physics", "mesh"), "Mesh", "choice",
-                     tuple((m["name"], m["name"]) for m in model.get("meshes", []))),
-               Field(("physics", "variable"), "Unknown", "ident")]
-        for opt, values in spec.get("options", {}).items():
-            if opt == "plane" and physics_dim(model) != 2:
-                continue
-            out.append(Field(("physics", opt), "2D model" if opt == "plane" else opt, "choice",
-                             tuple((v, f"plane {v}" if opt == "plane" else v) for v in values)))
-        return out
-
-    spec = M.PHYSICS_SPECS.get(model.get("physics", {}).get("type"), {})
-    dim = physics_dim(model)
-    if path == ("physics", "sources"):
-        return [Field(path, "", "info", help="Volume sources (right-hand side).")]
-    if path[:2] == ("physics", "sources") and n == 3:
-        kind = "vector" if spec.get("source") == M.VECTOR else "value"
-        return [Field(path + ("selection",), "Domain", "choice",
-                      tuple((s, s) for s in selections_of_kind(model, M.DOMAIN))),
-                Field(path + ("value",), "Value", kind, size=dim if kind == "vector" else None)]
-    if path == ("physics", "boundary_conditions"):
-        return [Field(path, "", "info", help="Boundaries without condition are free "
-                                             "(zero flux, zero traction).")]
-    if path[:2] == ("physics", "boundary_conditions") and n == 3:
-        bc = get_at(model, path, {})
-        specs = spec.get("boundary_conditions", {})
-        out = [Field(path + ("type",), "Type", "choice",
-                     tuple((t, t.replace("_", " ")) for t in specs), op="bc_type"),
-               Field(path + ("selection",), "Boundary", "choice",
-                     tuple((s, s) for s in selections_of_kind(model, M.BOUNDARY)))]
-        for key, kind in specs.get(bc.get("type"), {}).items():
-            label = {"value": "Value", "h": "Exchange coefficient h", "T_ext": "External temperature"}.get(key, key)
-            if kind == M.VECTOR:
-                out.append(Field(path + (key,), label, "vector", size=dim))
-            else:
-                out.append(Field(path + (key,), label, "value"))
-        return out
-
-    if path == ("study",):
-        return [Field(path, "", "info", help="Stationary study (the only one for now).")]
-    if path == ("outputs",):
-        return [Field(("outputs", "vtu"), "VTU file", "text")]
-    if path[:2] == ("outputs", "quantities") and n == 3:
-        return [Field(path + ("name",), "Name", "ident"),
-                Field(path + ("expr",), "Integrand (GWFL)", "value"),
-                Field(path + ("selection",), "Integrated on", "choice",
-                      tuple((s, s) for s in selections_of_kind(model, None)))]
     return []
 
 
@@ -666,31 +886,61 @@ def _zero(kind: str, dim: int):
     return [0.0] * dim if kind == M.VECTOR else 0.0
 
 
-def _default_bc(btype: str, spec: dict, selection: str, dim: int) -> dict:
+def _zero(kind: str, dim: int):
+    return [0.0] * dim if kind == M.VECTOR else 0.0
+
+
+def _default_condition(btype: str, values: dict, selection: str, dim: int) -> dict:
     bc = {"type": btype, "selection": selection}
-    for key, kind in spec["boundary_conditions"][btype].items():
+    for key, kind in values.items():
         bc[key] = 20.0 if key == "T_ext" else (1.0 if key == "h" else _zero(kind, dim))
     return bc
 
 
+def field_value(model: dict, f: Field):
+    """The current value shown by a field (the model value, but for a few
+    special fields)."""
+    if f.op == "piece_source":
+        pc = get_at(model, f.key, {})
+        return f"material:{pc['material']}" if "material" in pc else "value"
+    if f.op == "box_dim":
+        return len(get_at(model, f.key, []))
+    return get_at(model, f.key)
+
+
 _WORD = r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])"
+_NOT_EXPRESSIONS = ("name", "selection", "geometry", "mesh", "type", "file", "description", "vtu",
+                    "kind", "element", "mesher", "fem", "method", "model", "material", "linear",
+                    "components", "side", "plane")
 
 
-def rename_identifier(model: dict, old: str, new: str) -> None:
-    """Rename a parameter or a field, and its uses in every expression (whole
-    words only: Grad_L is not a use of L)."""
-    pattern = re.compile(_WORD.format(re.escape(old)))
+def rename_identifier(scope: dict, old: str, new: str) -> None:
+    """Rename a parameter, a field or a variable, and its uses in the
+    expressions of `scope` (the whole file or one model), whole words only
+    (Grad_L is not a use of L, but Grad_T and Test_T are uses of the variable
+    T). Variable references of the modules and conditions ("variable",
+    "temperature"...) follow."""
+    pattern = re.compile(r"(?<![A-Za-z0-9_])((?:Grad_|Hess_|Div_|Test_|Test2_|Dot_|Dot2_|Previous_|Previous2_)*)"
+                         + re.escape(old) + r"(?![A-Za-z0-9_])")
+    sub = pattern.sub
+
+    class _P:      # pattern.sub(new, text), keeping the prefixes
+        @staticmethod
+        def sub(repl, text):
+            return sub(lambda mt: mt.group(1) + repl, text)
+    pattern = _P
 
     def walk(obj):
         if isinstance(obj, dict):
             for k, v in obj.items():
-                if k == "name" and v == old and obj in named:
+                if k == "name" and v == old and any(obj is x for x in named):
                     obj[k] = new
-                elif isinstance(v, str) and k not in ("name", "selection", "geometry", "mesh",
-                                                       "type", "file", "description", "vtu",
-                                                       "kind", "element", "mesher"):
+                elif k == "variable" and "model" in obj:
+                    continue                 # an import: a variable of the other model
+                elif isinstance(v, str) and k not in _NOT_EXPRESSIONS:
                     obj[k] = pattern.sub(new, v)
-                elif k != "of" or not all(isinstance(x, str) for x in v):  # union: names
+                elif isinstance(v, (dict, list)) and not (k in ("of", "steps")
+                                                          and all(isinstance(x, str) for x in v)):
                     walk(v)
         elif isinstance(obj, list):
             for i, v in enumerate(obj):
@@ -698,9 +948,35 @@ def rename_identifier(model: dict, old: str, new: str) -> None:
                     obj[i] = pattern.sub(new, v)
                 else:
                     walk(v)
-    named = [p for p in model.get("parameters", []) if p.get("name") == old] + \
-        [f for f in model.get("fields", []) if f.get("name") == old]
-    walk({k: v for k, v in model.items() if not k.startswith("_")})
+    named = [x for key in ("parameters", "fields", "variables", "imports") for x in scope.get(key, [])
+             if isinstance(x, dict) and x.get("name") == old]
+    walk({k: v for k, v in scope.items() if not k.startswith("_")})
+    # the imports of other models referring to a renamed variable keep their local name
+
+
+def _items_with_selection(model: dict, geom: dict) -> list[dict]:
+    """The items using a selection of a geometry: in the models on that
+    geometry (properties, sources, conditions, terms, outputs, filtered
+    variables, local fields) and the fields of the top level on it."""
+    out = []
+
+    def collect(obj):
+        if isinstance(obj, dict):
+            if isinstance(obj.get("selection"), str):
+                out.append(obj)
+            for v in obj.values():
+                collect(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                collect(v)
+    for md in model.get("models", []):
+        if M.model_geometry(model, md) is geom:
+            collect({k: v for k, v in md.items() if k not in ("geometries", "meshes")})
+    geoms = model.get("geometries", [])
+    for f in model.get("fields", []):
+        if M.by_name(geoms, f.get("geometry", geoms[0].get("name") if len(geoms) == 1 else None)) is geom:
+            collect(f)
+    return out
 
 
 def _rename_selection(model, gi, old, new) -> None:
@@ -710,12 +986,7 @@ def _rename_selection(model, gi, old, new) -> None:
         crit = sel.get("criteria", {})
         if crit.get("type") == "union":
             crit["of"] = [new if o == old else o for o in crit.get("of", [])]
-    if physics_geometry(model) is not geom:
-        return
-    phys = model.get("physics", {})
-    items = model.get("materials", []) + phys.get("sources", []) + phys.get("boundary_conditions", []) \
-        + model.get("outputs", {}).get("quantities", [])
-    for it in items:
+    for it in _items_with_selection(model, geom):
         if it.get("selection") == old:
             it["selection"] = new
 
@@ -730,18 +1001,47 @@ def apply(model: dict, f: Field, value) -> Path | None:
     if f.op == "rename_geometry":
         old = get_at(model, key)
         set_at(model, key, value)
-        for mesh in model.get("meshes", []):
+        for mesh, _ in M.all_meshes(model):
             if mesh.get("geometry") == old:
                 mesh["geometry"] = value
-    elif f.op in ("rename_parameter", "rename_field"):
+        for fld in model.get("fields", []):
+            if fld.get("geometry") == old:
+                fld["geometry"] = value
+    elif f.op in ("rename_parameter", "rename_field", "rename_variable"):
         old = get_at(model, key)
         if value != old:
-            rename_identifier(model, old, value)
+            md = owner(model, key)
+            rename_identifier(md if md is not None else model, old, value)
+            if f.op == "rename_variable":
+                for other in model.get("models", []):
+                    for im in other.get("imports", []):
+                        if im.get("model") == md.get("name") and im.get("variable") == old:
+                            im["variable"] = value
     elif f.op == "rename_mesh":
         old = get_at(model, key)
         set_at(model, key, value)
-        if model.get("physics", {}).get("mesh") == old:
-            model["physics"]["mesh"] = value
+        for md in model.get("models", []):
+            for v in md.get("variables", []):
+                if v.get("mesh") == old:
+                    v["mesh"] = value
+    elif f.op == "rename_model":
+        old = get_at(model, key)
+        set_at(model, key, value)
+        for md in model.get("models", []):
+            for im in md.get("imports", []):
+                if im.get("model") == old:
+                    im["model"] = value
+        for s in model.get("solvers", []):
+            s["steps"] = [value if x == old else x for x in s.get("steps", [])]
+    elif f.op == "rename_material":
+        old = get_at(model, key)
+        set_at(model, key, value)
+        for md in model.get("models", []):
+            for mod in md.get("modules", []):
+                for pieces in mod.get("properties", {}).values():
+                    for pc in pieces:
+                        if pc.get("material") == old:
+                            pc["material"] = value
     elif f.op == "rename_selection":
         gi, old = key[1], key[3]
         if value == old:
@@ -750,6 +1050,16 @@ def apply(model: dict, f: Field, value) -> Path | None:
             raise ValueError(f"the name {value!r} is already used")
         _rename_selection(model, gi, old, value)
         return ("geometries", gi, "selections", value)
+    elif f.op == "piece_source":
+        pc = get_at(model, key)
+        if value == "value":
+            if "material" in pc:
+                mat = M.material(model, pc.pop("material")) or {}
+                p = key[-2]
+                pc["value"] = (mat.get("properties") or {}).get(p, 1.0)
+        else:
+            pc.pop("value", None)
+            pc["material"] = value.split(":", 1)[1]
     elif f.op == "source_type":
         gi = key[1]
         if get_at(model, key) != value:
@@ -799,22 +1109,34 @@ def apply(model: dict, f: Field, value) -> Path | None:
                 mesh.pop(k, None)
             mesh["mesher"] = value
             mesh.update(_default_mesh_params(value, dim))
-    elif f.op == "bc_type":
+    elif f.op == "mcond_type":
         bc = get_at(model, key[:-1])
         if bc.get("type") != value:
-            spec = M.PHYSICS_SPECS[model["physics"]["type"]]
-            set_at(model, key[:-1], _default_bc(value, spec, bc.get("selection", M.BOUNDARY),
-                                                physics_dim(model)))
-    elif f.op == "physics_type":
-        set_physics_type(model, value)
+            mod = get_at(model, key[:-3])
+            spec = M.MODULE_SPECS[mod["type"]]
+            set_at(model, key[:-1], _default_condition(value, spec["conditions"][value],
+                                                       bc.get("selection", M.BOUNDARY), item_dim(model, key)))
+    elif f.op == "cond_type":
+        c = get_at(model, key[:-1])
+        if c.get("type") != value:
+            md = owner(model, key)
+            var = M.by_name(md.get("variables", []), c.get("variable")) or {}
+            vk = M.variable_kind(var)
+            values = {k2: (vk if kd == "var" else kd) for k2, kd in M.CONDITIONS[value].items()}
+            new = _default_condition(value, values, c.get("selection", M.BOUNDARY), item_dim(model, key))
+            new = {"type": value, "variable": c.get("variable"), **{k2: v for k2, v in new.items() if k2 != "type"}}
+            if value in ("dirichlet", "normal_dirichlet"):
+                new["method"] = "simplification" if value == "dirichlet" else "multiplier"
+            set_at(model, key[:-1], new)
     else:
         raise ValueError(f"unknown operation {f.op!r}")
     return None
 
 
 def _fit_dimension(model: dict, gi: int, dim: int) -> None:
-    """After a change of dimension: adapt the meshes of the geometry, drop the
-    selections whose criteria no longer fit, and the plane option if not 2D."""
+    """After a change of dimension: adapt the meshes of the geometry, the
+    criteria of its selections, and the models using it (the plane option,
+    the vector values)."""
     geom = model["geometries"][gi]
     for mesh in model.get("meshes", []):
         if mesh.get("geometry") == geom["name"] and mesh.get("mesher") == "structured":
@@ -823,59 +1145,59 @@ def _fit_dimension(model: dict, gi: int, dim: int) -> None:
     for sel in geom.get("selections", {}).values():
         crit = sel.get("criteria", {})
         for k, v in list(crit.items()):
-            if isinstance(v, list) and k != "of":
+            if isinstance(v, list) and k not in ("of", "edges", "regions"):
                 crit[k] = (list(v) + [0.0] * dim)[:dim]
-    phys = model.get("physics", {})
-    if physics_geometry(model) is geom:
-        if dim != 2:
-            phys.pop("plane", None)
-        spec = M.PHYSICS_SPECS.get(phys.get("type"), {})
-        if spec.get("source") == M.VECTOR:
-            for s in phys.get("sources", []):
-                if isinstance(s.get("value"), list):
-                    s["value"] = (s["value"] + [0.0] * dim)[:dim]
-        for bc in phys.get("boundary_conditions", []):
-            for k, kind in spec.get("boundary_conditions", {}).get(bc.get("type"), {}).items():
-                if kind == M.VECTOR and isinstance(bc.get(k), list):
-                    bc[k] = (bc[k] + [0.0] * dim)[:dim]
-
-
-def set_physics_type(model: dict, ptype: str) -> None:
-    """Change the physics: conditions and sources are dropped (they do not
-    translate), materials keep their name and domain, and get the properties
-    of the new physics (existing values are kept when the name matches)."""
-    spec = M.PHYSICS_SPECS[ptype]
-    phys = model.setdefault("physics", {})
-    if phys.get("type") == ptype:
-        return
-    old_spec = M.PHYSICS_SPECS.get(phys.get("type"), {})
-    model["physics"] = {"type": ptype, "mesh": phys.get("mesh"), "variable": spec["variable"],
-                        "sources": [], "boundary_conditions": []}
-    if model["physics"]["mesh"] is None:
-        model["physics"].pop("mesh")
-    for mat in model.get("materials", []):
-        props = mat.get("properties", {})
-        new = {p: props.get(p, spec["property_defaults"][p]) for p in spec["properties"]}
-        for p, v in props.items():   # user properties (density, ...) are kept
-            if p not in old_spec.get("properties", {}) and p not in new:
-                new[p] = v
-        mat["properties"] = new
+    for md in model.get("models", []):
+        if M.model_geometry(model, md) is not geom:
+            continue
+        for mod in md.get("modules", []):
+            spec = M.MODULE_SPECS.get(mod.get("type"), {})
+            if dim != 2:
+                mod.pop("plane", None)
+            elif "plane" in spec.get("options", {}):
+                mod.setdefault("plane", spec["options"]["plane"][0])
+            if spec.get("source") == M.VECTOR:
+                for s in mod.get("sources", []):
+                    if isinstance(s.get("value"), list):
+                        s["value"] = (s["value"] + [0.0] * dim)[:dim]
+            for bc in mod.get("conditions", []):
+                for k, kind in spec.get("conditions", {}).get(bc.get("type"), {}).items():
+                    if kind == M.VECTOR and isinstance(bc.get(k), list):
+                        bc[k] = (bc[k] + [0.0] * dim)[:dim]
+        for c in md.get("conditions", []):
+            for k in ("value",):
+                if isinstance(c.get(k), list):
+                    c[k] = (c[k] + [0.0] * dim)[:dim]
 
 
 # ------------------------------------------------------------------ actions
 
 def actions(model: dict, path: Path) -> list[tuple[str, str]]:
-    """Possible operations on a node: [(identifier, label)]."""
+    """Possible operations on a node: [(identifier, label)]. Headers offer to
+    add their items (the interface shows them in a context menu and as a +
+    button)."""
     n = len(path)
     out: list[tuple[str, str]] = []
-    if path == ("parameters",):
+    md = owner(model, path)
+    rest = path[2:] if md is not None else ()
+    if path == ():
+        out += [("add_parameter", "Add a parameter"), ("add_material", "Add a material"),
+                ("add_geometry", "Add a geometry"), ("add_field", "Add a field")]
+        out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                if "requires" not in s]
+        out += [("add_model:", "Add an empty model"), ("add_solver", "Add a global solver")]
+    elif path == ("parameters",):
         out.append(("add_parameter", "Add a parameter"))
-    elif path[:1] == ("parameters",) and n == 2:
-        out.append(("remove", "Remove"))
+    elif path == ("materials",):
+        out.append(("add_material", "Add a material"))
+    elif path[:1] == ("materials",) and n == 2:
+        out += [("add_property", "Add a property"), ("remove", "Remove")]
     elif path == ("fields",):
         out.append(("add_field", "Add a field"))
-    elif path[:1] == ("fields",) and n == 2:
-        out += [("add_field_value", "Add a value on a domain"), ("remove", "Remove")]
+    elif path[:1] in (("fields",), ("parameters",)) and n == 2:
+        if path[0] == "fields":
+            out.append(("add_field_value", "Add a value on a domain"))
+        out.append(("remove", "Remove"))
     elif path == ("geometries",):
         out.append(("add_geometry", "Add a geometry"))
     elif path[:1] == ("geometries",) and n == 2:
@@ -899,34 +1221,92 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif path == ("meshes",):
         out.append(("add_mesh", "Add a mesh"))
     elif path[:1] == ("meshes",) and n == 2:
-        out.append(("use_mesh", "Use for the physics"))
         if len(model.get("meshes", [])) > 1:
             out.append(("remove", "Remove"))
-    elif path == ("materials",):
-        out.append(("add_material", "Add a material"))
-    elif path[:1] == ("materials",) and n == 2:
-        out.append(("add_property", "Add a property"))
+    elif path == ("models",):
+        out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                if "requires" not in s]
+        out.append(("add_model:", "Add an empty model"))
+    elif path == ("solvers",):
+        out.append(("add_solver", "Add a global solver"))
+    elif path[:1] == ("solvers",) and n == 2:
         out.append(("remove", "Remove"))
-    elif path == ("physics",) or path == ("physics", "boundary_conditions"):
-        out.append(("add_bc", "Add a boundary condition"))
-        if path == ("physics",):
-            out.append(("add_source", "Add a source"))
-    elif path == ("physics", "sources"):
-        out.append(("add_source", "Add a source"))
-    elif path[:2] in (("physics", "sources"), ("physics", "boundary_conditions")) and n == 3:
-        out.append(("remove", "Remove"))
-    elif path == ("outputs",):
+    elif md is not None and not rest:
+        out += [("add_variable", "Add a variable"), ("add_module", "Add a module…"),
+                ("add_term", "Add a term"), ("add_condition", "Add a condition"),
+                ("add_quantity", "Add an integrated quantity"),
+                ("add_local_parameter", "Add a parameter"), ("add_local_field", "Add a field"),
+                ("add_import", "Import a variable of another model")]
+        if len(model.get("models", [])) > 1:
+            out.append(("remove", "Remove"))
+    elif rest == ("parameters",):
+        out.append(("add_local_parameter", "Add a parameter"))
+    elif rest == ("fields",):
+        out.append(("add_local_field", "Add a field"))
+    elif rest == ("imports",):
+        out.append(("add_import", "Import a variable of another model"))
+    elif rest == ("variables",):
+        out.append(("add_variable", "Add a variable"))
+    elif rest == ("modules",):
+        present = {m.get("type") for m in md.get("modules", [])}
+        out += [(f"add_module:{t}", f"Add {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                if t not in present]      # one module of each type per model
+    elif rest == ("terms",):
+        out.append(("add_term", "Add a term"))
+    elif rest == ("conditions",):
+        out.append(("add_condition", "Add a condition"))
+    elif rest == ("outputs",):
         out.append(("add_quantity", "Add an integrated quantity"))
-    elif path[:2] == ("outputs", "quantities") and n == 3:
+    elif rest[:1] == ("modules",) and len(rest) == 2:
+        spec = M.MODULE_SPECS.get(get_at(model, path + ("type",)), {})
+        out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in spec.get("properties", {})]
+        if spec.get("source") is not None:
+            out.append(("add_source", "Add a source"))
+        if spec.get("conditions"):
+            out.append(("add_bc", "Add a condition"))
+        out += [("unfold", "Unfold into terms and conditions")] if _can_unfold(get_at(model, path)) else []
+        out.append(("remove", "Remove"))
+    elif rest[:1] == ("modules",) and len(rest) == 3 and rest[2] == "sources":
+        out.append(("add_source", "Add a source"))
+    elif rest[:1] == ("modules",) and len(rest) == 3 and rest[2] == "conditions":
+        out.append(("add_bc", "Add a condition"))
+    elif rest[:1] == ("modules",) and len(rest) == 5 and rest[2] == "properties":
+        if len(get_at(model, path[:-1], [])) > 1:
+            out.append(("remove", "Remove"))
+    elif rest[:1] in (("parameters",), ("fields",), ("imports",), ("variables",), ("terms",),
+                      ("conditions",), ("outputs",)) and len(rest) == 2:
+        if rest[0] == "fields":
+            out.append(("add_field_value", "Add a value on a domain"))
+        out.append(("remove", "Remove"))
+    elif rest[:1] == ("modules",) and len(rest) == 4 and rest[2] in ("sources", "conditions"):
         out.append(("remove", "Remove"))
     return out
 
 
+def needs_name(action: str) -> bool:
+    """Actions for which the interface asks for a name first."""
+    return action == "add_property"
+
+
+def _names_in(model: dict, md: dict | None) -> set:
+    names = set(M.global_names(model))
+    for m in model.get("models", []):
+        if md is None or m is md:
+            names |= set(M.local_names(m))
+    return names
+
+
+def _first_boundary(model, md, used=()) -> str:
+    boundaries = selections_of_kind(model, M.BOUNDARY, M.model_geometry(model, md))
+    return next((s for s in boundaries if s != M.BOUNDARY and s not in used),
+                boundaries[0] if boundaries else M.BOUNDARY)
+
+
 def do_action(model: dict, path: Path, action: str, name: str | None = None) -> Path | None:
     """Perform an action; returns the path of the node to select afterwards."""
-    dim = physics_dim(model)
-    phys = model.setdefault("physics", {})
-    spec = M.PHYSICS_SPECS.get(phys.get("type"), {})
+    md = owner(model, path)
+    dim = item_dim(model, path) if md is not None else \
+        ((M.geometry_dim(model, model["geometries"][0]) if model.get("geometries") else None) or 2)
     if action == "remove":
         parent = get_at(model, path[:-1])
         if isinstance(parent, list):
@@ -936,23 +1316,41 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         else:
             del parent[path[-1]]
         return path[:-2] if path[-2] == "of" else path[:-1]
-    if action == "add_parameter":
-        params = model.setdefault("parameters", [])
-        taken = {p.get("name") for p in params} | {f.get("name") for f in model.get("fields", [])}
-        params.append({"name": unique_name(name or "p", taken), "value": 1.0, "description": ""})
-        return ("parameters", len(params) - 1)
-    if action == "add_field":
-        fields_ = model.setdefault("fields", [])
-        taken = {p.get("name") for p in model.get("parameters", [])} | {f.get("name") for f in fields_}
-        fields_.append({"name": unique_name(name or "f", taken), "description": "",
-                        "values": [{"selection": M.ALL, "value": 0.0}]})
-        return ("fields", len(fields_) - 1)
+    if action in ("add_parameter", "add_local_parameter"):
+        target = model if action == "add_parameter" else md
+        params = target.setdefault("parameters", [])
+        params.append({"name": unique_name(name or "p", _names_in(model, md)), "value": 1.0, "description": ""})
+        return (("models", path[1]) if md is not None else ()) + ("parameters", len(params) - 1)
+    if action in ("add_field", "add_local_field"):
+        target = model if action == "add_field" else md
+        fields_ = target.setdefault("fields", [])
+        f = {"name": unique_name(name or "f", _names_in(model, md)), "description": "",
+             "values": [{"selection": M.ALL, "value": 0.0}]}
+        if action == "add_field" and model.get("geometries"):
+            f = {"name": f["name"], "geometry": model["geometries"][0]["name"], **{k: v for k, v in f.items()
+                                                                                 if k != "name"}}
+        fields_.append(f)
+        return (("models", path[1]) if md is not None else ()) + ("fields", len(fields_) - 1)
     if action == "add_field_value":
-        model["fields"][path[1]].setdefault("values", []).append({"selection": M.ALL, "value": 0.0})
+        fpath = path if path[-2] == "fields" else path
+        get_at(model, fpath).setdefault("values", []).append({"selection": M.ALL, "value": 0.0})
+        return path
+    if action == "add_material":
+        mats = model.setdefault("materials", [])
+        mats.append({"name": unique_name(name or "material", [m.get("name") for m in mats]),
+                     "description": "", "properties": {}})
+        return ("materials", len(mats) - 1)
+    if action == "add_property":
+        if not name or not M._IDENT.match(name):
+            raise ValueError("a property name (letters, digits, _) is required")
+        props = model["materials"][path[1]].setdefault("properties", {})
+        if name in props:
+            raise ValueError(f"the property {name!r} already exists")
+        props[name] = 1.0
         return path
     if action == "add_geometry":
         geoms = model.setdefault("geometries", [])
-        gname = unique_name(name or "geometry", [g.get("name") for g in geoms])
+        gname = unique_name(name or "geometry", [g.get("name") for g, _ in M.all_geometries(model)])
         geoms.append({"name": gname, "source": _default_source("box", dim), "selections": {}})
         return ("geometries", len(geoms) - 1)
     if action == "add_selection":
@@ -970,49 +1368,125 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return path + ("of", len(shape["of"]) - 1)
     if action == "add_mesh":
         meshes = model.setdefault("meshes", [])
-        geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else \
-            (physics_geometry(model) or model["geometries"][0])
+        geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else model["geometries"][0]
         stype = geom.get("source", {}).get("type")
         mesher = next(x for x, srcs in M.MESHERS.items() if stype in srcs)
         gdim = M.geometry_dim(model, geom) or 2
-        mesh = {"name": unique_name(name or "mesh", [m.get("name") for m in meshes]),
+        mesh = {"name": unique_name(name or "mesh", [m.get("name") for m, _ in M.all_meshes(model)]),
                 "geometry": geom["name"], "mesher": mesher}
         mesh.update(_default_mesh_params(mesher, gdim))
         meshes.append(mesh)
         return ("meshes", len(meshes) - 1)
-    if action == "use_mesh":
-        phys["mesh"] = model["meshes"][path[1]]["name"]
-        return path
-    if action == "add_material":
-        mats = model.setdefault("materials", [])
-        mats.append({"name": unique_name(name or "material", [m.get("name") for m in mats]),
-                     "selection": M.ALL, "properties": dict(spec.get("property_defaults", {}))})
-        return ("materials", len(mats) - 1)
-    if action == "add_property":
-        if not name or not M._IDENT.match(name):
-            raise ValueError("a property name (letters, digits, _) is required")
-        props = model["materials"][path[1]].setdefault("properties", {})
-        if name in props:
-            raise ValueError(f"the property {name!r} already exists")
-        props[name] = 1.0
-        return path
-    if action == "add_bc":
-        bcs = phys.setdefault("boundary_conditions", [])
-        boundaries = selections_of_kind(model, M.BOUNDARY)
-        used = {bc.get("selection") for bc in bcs}
-        sel = next((s for s in boundaries if s != M.BOUNDARY and s not in used),
-                   boundaries[0] if boundaries else M.BOUNDARY)
-        bcs.append(_default_bc(next(iter(spec["boundary_conditions"])), spec, sel, dim))
-        return ("physics", "boundary_conditions", len(bcs) - 1)
+    if action.startswith("add_model:"):
+        mtype = action.split(":", 1)[1] or None
+        models = model.setdefault("models", [])
+        base = {"heat_conduction": "heat", "linear_elasticity": "mechanics"}.get(mtype, "model")
+        mname = unique_name(name or base, [m.get("name") for m in models])
+        mesh = (model.get("meshes") or [{}])[0].get("name", "mesh")
+        new = M.new_model(mname, mesh, mtype, dim)
+        if mtype is None:                       # one variable to start with
+            new["variables"].append(M.new_variable(unique_name("u", _names_in(model, None)), mesh))
+        taken = _names_in(model, None)
+        for v in new["variables"]:          # names already used in the file: the next ones
+            if v["name"] in M.global_names(model):
+                old = v["name"]
+                v["name"] = unique_name(old, taken)
+                for mod in new["modules"]:
+                    for role in M.MODULE_SPECS[mod["type"]]["variables"]:
+                        if mod.get(role) == old:
+                            mod[role] = v["name"]
+        models.append(new)
+        return ("models", len(models) - 1)
+    if action == "add_solver":
+        solvers = model.setdefault("solvers", [])
+        solvers.append({"name": unique_name(name or "solver", [s.get("name") for s in solvers]),
+                        "type": "sequence", "steps": M.solve_order(model)})
+        return ("solvers", len(solvers) - 1)
+    base = ("models", path[1]) if md is not None else ()
+    mesh_name = (M.model_mesh(model, md) or (model.get("meshes") or [{}])[0]).get("name", "mesh") \
+        if md is not None else None
+    if action == "add_variable":
+        vars_ = md.setdefault("variables", [])
+        vars_.append(M.new_variable(unique_name(name or "v", _names_in(model, md)), mesh_name, M.SCALAR, 1))
+        return base + ("variables", len(vars_) - 1)
+    if action == "add_import":
+        others = [m for m in model.get("models", []) if m is not md and m.get("variables")]
+        if not others:
+            raise ValueError("no other model to import from")
+        src = others[0]
+        var = src["variables"][0]["name"]
+        imps = md.setdefault("imports", [])
+        imps.append({"name": unique_name(var, _names_in(model, md)), "model": src["name"], "variable": var})
+        return base + ("imports", len(imps) - 1)
+    if action == "add_module":
+        return base + ("modules",)
+    if action.startswith("add_module:"):
+        mtype = action.split(":", 1)[1]
+        spec = M.MODULE_SPECS[mtype]
+        names = {}
+        existing = {v["name"]: M.variable_kind(v) for v in md.get("variables", [])}
+        imports = [im["name"] for im in md.get("imports", [])]
+        for role, v in spec["variables"].items():
+            same = [n for n, k in existing.items() if k == v["kind"]] + (imports if v.get("import") else [])
+            if v["name"] in same or (v["name"] in imports and v.get("import")):
+                names[role] = v["name"]
+            elif same and role != "variable":
+                names[role] = same[0]
+            else:                            # a new variable
+                vname = unique_name(v["name"], _names_in(model, md))
+                md.setdefault("variables", []).append(M.new_variable(vname, mesh_name, v["kind"], v["degree"]))
+                names[role] = vname
+                existing[vname] = v["kind"]
+        mods = md.setdefault("modules", [])
+        mods.append(M.new_module(mtype, dim, names))
+        if "requires" in spec:
+            other, role = spec["requires"]
+            if not any(m.get("type") == other and m.get("variable") == names[role] for m in mods):
+                mods.insert(len(mods) - 1, M.new_module(other, dim, {"variable": names[role]}))
+        return base + ("modules", len(mods) - 1)
+    if action.startswith("add_piece:"):
+        p = action.split(":", 1)[1]
+        pieces = get_at(model, path).setdefault("properties", {}).setdefault(p, [])
+        default = M.MODULE_SPECS[get_at(model, path + ("type",))]["property_defaults"].get(p, 1.0)
+        pieces.append({"selection": M.ALL, "value": default})
+        return path + ("properties", p, len(pieces) - 1)
     if action == "add_source":
-        srcs = phys.setdefault("sources", [])
+        mpath = path[:4]
+        mod = get_at(model, mpath)
+        spec = M.MODULE_SPECS[mod["type"]]
+        srcs = mod.setdefault("sources", [])
         srcs.append({"selection": M.ALL, "value": _zero(spec.get("source", M.SCALAR), dim)})
-        return ("physics", "sources", len(srcs) - 1)
+        return mpath + ("sources", len(srcs) - 1)
+    if action == "add_bc":
+        mpath = path[:4]
+        mod = get_at(model, mpath)
+        spec = M.MODULE_SPECS[mod["type"]]
+        bcs = mod.setdefault("conditions", [])
+        btype = next(iter(spec["conditions"]))
+        sel = _first_boundary(model, md, {bc.get("selection") for bc in bcs})
+        bcs.append(_default_condition(btype, spec["conditions"][btype], sel, dim))
+        return mpath + ("conditions", len(bcs) - 1)
+    if action == "add_term":
+        terms = md.setdefault("terms", [])
+        var = (md.get("variables") or [{"name": "u"}])[0]["name"]
+        terms.append({"name": unique_name(name or "term", [t.get("name") for t in terms]),
+                      "expr": f"Grad_{var}.Grad_Test_{var}", "selection": M.ALL})
+        return base + ("terms", len(terms) - 1)
+    if action == "add_condition":
+        conds = md.setdefault("conditions", [])
+        var = (md.get("variables") or [{"name": "u"}])[0]
+        kind = M.variable_kind(var)
+        conds.append({"type": "dirichlet", "variable": var["name"],
+                      "selection": _first_boundary(model, md, {c.get("selection") for c in conds}),
+                      "value": _zero(kind, dim), "method": "simplification"})
+        return base + ("conditions", len(conds) - 1)
     if action == "add_quantity":
-        qs = model.setdefault("outputs", {}).setdefault("quantities", [])
+        qs = md.setdefault("outputs", [])
         qs.append({"name": unique_name(name or "quantity", [q.get("name") for q in qs]),
                    "expr": "1", "selection": M.ALL})
-        return ("outputs", "quantities", len(qs) - 1)
+        return base + ("outputs", len(qs) - 1)
+    if action == "unfold":
+        return unfold_module(model, path)
     raise ValueError(f"unknown action {action!r}")
 
 
@@ -1025,26 +1499,76 @@ def remove_at(model: dict, path: Path) -> None:
         parent.pop(path[-1], None)
 
 
-def needs_name(action: str) -> bool:
-    """Actions for which the interface asks for a name first."""
-    return action == "add_property"
+# ------------------------------------------------------------------ unfolding a module
+
+def _can_unfold(mod: dict) -> bool:
+    return isinstance(mod, dict) and mod.get("type") == "heat_conduction"
+
+
+def unfold_module(model: dict, path: Path) -> Path:
+    """Replace a heat conduction module by its GWFL terms and generic
+    conditions (the conductivity becomes a local field). The other modules
+    are not unfoldable yet (their macros: sigma, von_mises...)."""
+    md = owner(model, path)
+    mod = get_at(model, path)
+    if not _can_unfold(mod):
+        raise ValueError("only the heat conduction module can be unfolded for now")
+    u = mod["variable"]
+    pieces = mod.get("properties", {}).get("k", [])
+    values = []
+    for pc in pieces:
+        v = pc.get("value")
+        if "material" in pc:
+            v = (M.material(model, pc["material"]) or {}).get("properties", {}).get("k", 1.0)
+        values.append({"selection": pc.get("selection", M.ALL), "value": v})
+    md.setdefault("fields", []).append({"name": "k", "description": "thermal conductivity",
+                                        "values": values})
+    terms = md.setdefault("terms", [])
+    taken = [t.get("name") for t in terms]
+    terms.append({"name": unique_name("conduction", taken), "expr": f"k*Grad_{u}.Grad_Test_{u}",
+                  "selection": M.ALL})
+    for j, s in enumerate(mod.get("sources", [])):
+        terms.append({"name": unique_name("source", [t["name"] for t in terms]),
+                      "expr": f"-({format_value(s['value'])})*Test_{u}", "selection": s.get("selection", M.ALL)})
+    conds = md.setdefault("conditions", [])
+    for bc in mod.get("conditions", []):
+        sel = bc.get("selection")
+        if bc["type"] == "temperature":
+            conds.append({"type": "dirichlet", "variable": u, "selection": sel, "value": bc["value"],
+                          "method": "simplification"})
+        elif bc["type"] == "heat_flux":
+            conds.append({"type": "neumann", "variable": u, "selection": sel, "value": bc["value"]})
+        elif bc["type"] == "convection":
+            conds.append({"type": "robin", "variable": u, "selection": sel, "h": bc["h"], "value": bc["T_ext"]})
+    md["modules"].remove(mod)
+    for q in md.get("outputs", []):          # the macro q of the module
+        q["expr"] = re.sub(_WORD.format("q"), f"(-k*Grad_{u})", str(q.get("expr", "")))
+    return path[:2] + ("terms",)
+
+
+# ------------------------------------------------------------------ what the view shows
+
+def geometry_mesh(model: dict, geom: dict) -> dict | None:
+    """The mesh shown for a geometry: one used by a model, else the first one."""
+    meshes = [m for m in model.get("meshes", []) if m.get("geometry") == geom.get("name")]
+    for md in model.get("models", []):
+        mesh = M.model_mesh(model, md)
+        if mesh in meshes:
+            return mesh
+    return meshes[0] if meshes else None
 
 
 def highlighted_selection(model: dict, path: Path) -> tuple[str | None, str | None]:
     """(mesh name, selection name) to highlight when a node is selected:
-    the selection itself, the domain of a material or a source, the boundary
-    of a condition, the support of an output quantity."""
-    mesh = M.physics_mesh(model) or {}
+    the selection itself, the domain of a property or a source, the boundary
+    of a condition, the support of a term or an output."""
     if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
-        geom = model["geometries"][path[1]]
-        meshes = [m for m in model.get("meshes", []) if m.get("geometry") == geom.get("name")]
-        target = mesh if mesh in meshes else (meshes[0] if meshes else {})
-        return target.get("name"), path[3]
-    if path[:1] == ("geometries",):
-        return None, None
+        mesh = geometry_mesh(model, model["geometries"][path[1]]) or {}
+        return mesh.get("name"), path[3]
+    md = owner(model, path)
     item = get_at(model, path)
-    if isinstance(item, dict) and "selection" in item:
-        return mesh.get("name"), item.get("selection", M.ALL)
+    if md is not None and isinstance(item, dict) and "selection" in item and len(path) > 2:
+        return (M.model_mesh(model, md) or {}).get("name"), item.get("selection", M.ALL)
     return None, None
 
 
@@ -1053,27 +1577,27 @@ def mesh_to_show(model: dict, path: Path) -> str | None:
     if path[:1] == ("meshes",) and len(path) == 2:
         return get_at(model, path + ("name",))
     if path[:1] == ("geometries",) and len(path) >= 2:
-        geom = model["geometries"][path[1]]
-        mesh = M.physics_mesh(model) or {}
-        if mesh.get("geometry") == geom.get("name"):
-            return mesh.get("name")
-        other = [m for m in model.get("meshes", []) if m.get("geometry") == geom.get("name")]
-        return other[0]["name"] if other else None
-    m, _ = highlighted_selection(model, path)
-    return m or (M.physics_mesh(model) or {}).get("name")
+        return (geometry_mesh(model, model["geometries"][path[1]]) or {}).get("name")
+    md = owner(model, path) or main_model(model)
+    return (M.model_mesh(model, md) or {}).get("name") if md else None
 
 
-# ------------------------------------------------------------------ picking edges for an item
+def preview_geometry(model: dict, path: Path) -> int | None:
+    """Index of the (top level) geometry previewed for a node."""
+    if path[:1] == ("geometries",) and len(path) >= 2:
+        return path[1]
+    md = owner(model, path) or (main_model(model) if path[:1] not in (("meshes",),) else None)
+    geom = M.model_geometry(model, md) if md else None
+    geoms = model.get("geometries", [])
+    return next((i for i, g in enumerate(geoms) if g is geom), None)
 
-def selection_uses(model: dict, name: str) -> int:
-    """How many items (materials, sources, conditions, outputs, unions) use a
-    selection of the geometry of the physics."""
-    phys = model.get("physics", {})
-    items = model.get("materials", []) + phys.get("sources", []) + phys.get("boundary_conditions", []) \
-        + model.get("outputs", {}).get("quantities", []) \
-        + [v for f in model.get("fields", []) for v in f.get("values", [])]
-    n = sum(1 for it in items if it.get("selection", M.ALL) == name)
-    geom = physics_geometry(model) or {}
+
+# ------------------------------------------------------------------ picking edges and regions for an item
+
+def selection_uses(model: dict, geom: dict, name: str) -> int:
+    """How many items (properties, sources, conditions, terms, outputs,
+    fields, unions) use a selection of a geometry."""
+    n = sum(1 for it in _items_with_selection(model, geom) if it.get("selection", M.ALL) == name)
     for sel in geom.get("selections", {}).values():
         crit = sel.get("criteria", {})
         if crit.get("type") == "union" and name in crit.get("of", []):
@@ -1081,18 +1605,42 @@ def selection_uses(model: dict, name: str) -> int:
     return n
 
 
-def can_pick_edges(model: dict, path: Path) -> bool:
-    """Whether clicks on edges edit the support of the item at path (a boundary
-    condition or an output integrated on a boundary)."""
+def _item_base_name(model: dict, path: Path, item: dict) -> str:
+    rest = path[2:]
+    if rest[:1] == ("modules",) and len(rest) == 5 and rest[2] == "properties":
+        return item.get("material") or f"{rest[3]}_{rest[4] + 1}"
+    if rest[:1] == ("modules",) and len(rest) == 4:
+        return f"{item.get('type', 'source')}_{rest[3] + 1}" if rest[2] == "conditions" \
+            else f"source_{rest[3] + 1}"
+    if rest[:1] == ("conditions",):
+        return f"{item.get('type', 'condition')}_{rest[1] + 1}"
+    if rest[:1] == ("terms",):
+        return f"{item.get('name', 'term')}_support"
+    return f"{item.get('name', 'output')}_support"
+
+
+def _pickable(model: dict, path: Path, kind: str) -> tuple[int, dict] | None:
+    """(geometry index, item) when the item at path has a selection of that
+    kind on a 2D box or csg geometry of the top level."""
     from . import geometry2d as G
-    if not (path[:2] in (("physics", "boundary_conditions"), ("outputs", "quantities")) and len(path) == 3):
-        return False
-    geom = physics_geometry(model)
-    if geom is None or G.shape_of(P.resolved(model)["geometries"][model["geometries"].index(geom)]
-                                  .get("source", {})) is None:
-        return False
-    sel = get_at(model, path + ("selection",), M.ALL)
-    return M.selection_table(model, geom).get(sel, {}).get("kind") == M.BOUNDARY
+    md = owner(model, path)
+    item = get_at(model, path)
+    if md is None or len(path) < 4 or not isinstance(item, dict) or "selection" not in item:
+        return None
+    geom = M.model_geometry(model, md)
+    geoms = model.get("geometries", [])
+    gi = next((i for i, g in enumerate(geoms) if g is geom), None)
+    if gi is None or G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is None:
+        return None
+    if M.selection_table(model, geom).get(item.get("selection", M.ALL), {}).get("kind") != kind:
+        return None
+    return gi, item
+
+
+def can_pick_edges(model: dict, path: Path) -> bool:
+    """Whether clicks on edges edit the support of the item at path (a
+    condition, a term or an output on a boundary)."""
+    return _pickable(model, path, M.BOUNDARY) is not None
 
 
 def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
@@ -1100,19 +1648,17 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
     path. Its selection is edited in place when it is an 'edges' selection
     used by this item only; otherwise a new selection is created, starting
     from the current support (empty if it is the whole boundary), named
-    after the item. Returns (selection name,
-    created)."""
+    after the item. Returns (selection name, created)."""
     from . import geometry2d as G
-    item = get_at(model, path)
-    geom = physics_geometry(model)
-    gi = model["geometries"].index(geom)
+    gi, item = _pickable(model, path, M.BOUNDARY)
+    geom = model["geometries"][gi]
     resolved = P.resolved(model)
     rgeom = resolved["geometries"][gi]
     table = M.selection_table(resolved, rgeom)
     name = item.get("selection", M.ALL)
     sel = geom.get("selections", {}).get(name)
     if sel is not None and sel.get("criteria", {}).get("type") == "edges" \
-            and selection_uses(model, name) == 1:
+            and selection_uses(model, geom, name) == 1:
         sel["criteria"] = G.toggle_edge(sel["criteria"], ref)
         return name, False
     shape = G.shape_of(rgeom["source"])
@@ -1123,40 +1669,22 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
         if p.side.ref not in start:
             start.append(p.side.ref)
     criteria = G.toggle_edge({"type": "edges", "edges": start}, ref)
-    if path[0] == "physics":
-        base = f"{item.get('type', 'condition')}_{path[2] + 1}"
-    else:
-        base = f"{item.get('name', 'output')}_support"
-    new = unique_name(base, table)
+    new = unique_name(_item_base_name(model, path, item), table)
     geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
     item["selection"] = new
     return new, True
 
 
-# ------------------------------------------------------------------ picking regions for an item
-
 def can_pick_regions(model: dict, path: Path) -> bool:
     """Whether clicks in the domain edit the support of the item at path (a
-    material, a source or an output on a domain), or the selection at path
-    (a domain selection of a 2D box or csg geometry)."""
+    property, a source, a term or an output on a domain), or the selection at
+    path (a domain selection of a 2D box or csg geometry)."""
     from . import geometry2d as G
     if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
-        geom = model["geometries"][path[1]]
-        sel = geom.get("selections", {}).get(path[3], {})
-        gi = path[1]
-    elif (path[:1] == ("materials",) and len(path) == 2) or \
-            (path[:2] in (("physics", "sources"), ("outputs", "quantities")) and len(path) == 3):
-        geom = physics_geometry(model)
-        if geom is None:
-            return False
-        gi = model["geometries"].index(geom)
-        name = get_at(model, path + ("selection",), M.ALL)
-        sel = M.selection_table(model, geom).get(name, {})
-    else:
-        return False
-    if G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is None:
-        return False
-    return sel.get("kind") == M.DOMAIN
+        sel = model["geometries"][path[1]].get("selections", {}).get(path[3], {})
+        return sel.get("kind") == M.DOMAIN and \
+            G.shape_of(P.resolved(model)["geometries"][path[1]].get("source", {})) is not None
+    return _pickable(model, path, M.DOMAIN) is not None
 
 
 def pick_region_for_item(model: dict, path: Path, region: list) -> tuple[str, bool]:
@@ -1171,24 +1699,18 @@ def pick_region_for_item(model: dict, path: Path, region: list) -> tuple[str, bo
         sel = model["geometries"][path[1]]["selections"][path[3]]
         sel["criteria"] = G.toggle_region(sel.get("criteria", {}), region)
         return path[3], False
-    item = get_at(model, path)
-    geom = physics_geometry(model)
+    gi, item = _pickable(model, path, M.DOMAIN)
+    geom = model["geometries"][gi]
     name = item.get("selection", M.ALL)
     sel = geom.get("selections", {}).get(name)
     if sel is not None and sel.get("criteria", {}).get("type") == "regions" \
-            and selection_uses(model, name) == 1:
+            and selection_uses(model, geom, name) == 1:
         sel["criteria"] = G.toggle_region(sel["criteria"], region)
         return name, False
     start = copy.deepcopy(sel["criteria"]) if sel is not None and \
         sel.get("criteria", {}).get("type") == "regions" else {"type": "regions", "regions": []}
     criteria = G.toggle_region(start, region)
-    if path[0] == "materials":
-        base = item.get("name", "material")
-    elif path[0] == "physics":
-        base = f"source_{path[2] + 1}"
-    else:
-        base = f"{item.get('name', 'output')}_support"
-    new = unique_name(base, M.selection_table(model, geom))
+    new = unique_name(_item_base_name(model, path, item), M.selection_table(model, geom))
     geom.setdefault("selections", {})[new] = {"kind": M.DOMAIN, "criteria": criteria}
     item["selection"] = new
     return new, True

@@ -187,7 +187,7 @@ def test_drawing_on_a_box_and_solving():
     from getfem_gui import runner
     m = load("plate.json")
     m["geometries"][0]["selections"]["west"] = edges(((), "xmin"))
-    uses = {bc["selection"] for bc in m["physics"]["boundary_conditions"]}
+    uses = {bc["selection"] for bc in m["models"][0]["modules"][0]["conditions"]}
     path, notes = E.add_shape_2d(m, 0, ball(0.1, 0.05, 0.02), "difference")
     geom = m["geometries"][0]
     assert geom["source"]["type"] == "csg" and len(notes) == 2
@@ -244,9 +244,8 @@ def test_a_hole_drawn_in_a_difference_is_meshed():
         before = mesher.ensure_mesh(m, "coarse", tmp).info["nb_elements"]
         E.add_shape_2d(m, 0, ball(0.06, 0.025, 0.01), "difference")
         assert len(m["geometries"][0]["source"]["shape"]["of"]) == 3
-        E.do_action(m, ("physics",), "add_bc")
-        bc = ("physics", "boundary_conditions", len(m["physics"]["boundary_conditions"]) - 1)
-        E.apply(m, E.Field(bc + ("type",), "", "choice", op="bc_type"), "fixed")
+        bc = E.do_action(m, ("models", 0, "modules", 0), "add_bc")
+        E.apply(m, E.Field(bc + ("type",), "", "choice", op="mcond_type"), "fixed")
         assert E.get_at(m, bc + ("selection",)) == "boundary"      # the default
         name, _ = E.pick_edge_for_item(m, bc, {"shape": [2], "side": "circle"})
         assert m["geometries"][0]["selections"][name]["criteria"]["edges"] == [
@@ -260,13 +259,13 @@ def test_a_hole_drawn_in_a_difference_is_meshed():
 
 def test_picking_from_a_condition_edits_its_support():
     m = load("plate_hole_tension.json")
-    bc = ("physics", "boundary_conditions", 2)
-    assert E.can_pick_edges(m, bc) and not E.can_pick_edges(m, ("materials", 0))
-    assert E.selection_uses(m, "loaded_edge") == 2          # the condition and an output
+    bc = ("models", 0, "modules", 0, "conditions", 2)
+    assert E.can_pick_edges(m, bc) and not E.can_pick_edges(m, ("models", 0, "modules", 0, "properties", "E", 0))
+    assert E.selection_uses(m, m["geometries"][0], "loaded_edge") == 2     # the condition and an output
     name, created = E.pick_edge_for_item(m, bc, {"shape": [0], "side": "ymax"})
     assert (name, created) == ("traction_3", True)
     assert m["geometries"][0]["selections"]["loaded_edge"]["criteria"]["type"] == "plane"   # kept
-    assert m["outputs"]["quantities"][0]["selection"] == "loaded_edge"
+    assert m["models"][0]["outputs"][0]["selection"] == "loaded_edge"
     assert E.pick_edge_for_item(m, bc, {"shape": [1], "side": "circle"}) == ("traction_3", False)
     assert E.pick_edge_for_item(m, bc, {"shape": [1], "side": "circle"}) == ("traction_3", False)
     assert M.validate(m) == []
@@ -274,15 +273,15 @@ def test_picking_from_a_condition_edits_its_support():
         n = mesher.ensure_mesh(m, "coarse", tmp).info["sizes"]
         assert n["traction_3"] > n["loaded_edge"]          # the loaded edge and the top edge
     # an output integrated on a boundary: same mechanism
-    q = ("outputs", "quantities", 1)                           # reaction on symmetry_x
+    q = ("models", 0, "outputs", 1)                            # reaction on symmetry_x
     name, created = E.pick_edge_for_item(m, q, {"shape": [1], "side": "circle"})
-    assert created and m["outputs"]["quantities"][1]["selection"] == name
+    assert created and m["models"][0]["outputs"][1]["selection"] == name
     assert m["geometries"][0]["selections"][name]["criteria"]["edges"] == [
         {"shape": [0], "side": "xmin"}, {"shape": [1], "side": "circle"}]
     # a built-in selection (box): starts from its side
     m = load("plate.json")
-    bc = ("physics", "boundary_conditions", 0)
-    side = m["physics"]["boundary_conditions"][0]["selection"]
+    bc = ("models", 0, "modules", 0, "conditions", 0)
+    side = m["models"][0]["modules"][0]["conditions"][0]["selection"]
     name, created = E.pick_edge_for_item(m, bc, {"shape": [], "side": "ymin"})
     assert created and m["geometries"][0]["selections"][name]["criteria"]["edges"] == [
         {"shape": [], "side": side}, {"shape": [], "side": "ymin"}]

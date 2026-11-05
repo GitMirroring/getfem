@@ -36,7 +36,7 @@ def solve(model):
     with tempfile.TemporaryDirectory() as tmp:
         res = runner.run(model, tmp)
         assert res.ok, f"{res.error}\n{res.stderr[-1500:]}"
-        return res.results
+        return res.results["models"][model["models"][0]["name"]]   # the first model
 
 
 def test_evaluation():
@@ -62,17 +62,22 @@ def test_parameters_in_order_and_validation():
     errors = M.validate(m)
     assert any("parameters[5].value: unknown parameter 'c'" in e for e in errors)
     assert any("parameters[7].name: 'x' is reserved for the coordinates" in e for e in errors)
-    assert any("parameters[8].name: 'sqrt' is a reserved name" in e for e in errors)
-    assert any("parameters[9].name: 'u' is the name of the unknown" in e for e in errors)
-    assert any("parameters[10].name: name 'L' used more than once" in e for e in errors)
+    assert any("parameters[8].name: 'sqrt' is a reserved GWFL name" in e for e in errors)
+    assert any("parameters[10].name: 'L' is already a parameter" in e for e in errors)
+    m = load("plate_hole_tension.json")
+    m["parameters"].append({"name": "u", "value": 1})
+    assert any("variables[0].name: 'u' is already a parameter" in e for e in M.validate(m))
     # an expression in a geometry field is checked when resolving
     m = load("plate_hole_tension.json")
     m["geometries"][0]["source"]["shape"]["of"][1]["radius"] = "a*2 +"
     assert any(e.startswith("geometries[0].source.shape.of[1].radius: syntax error")
                for e in M.validate(m))
     m = load("plate_hole_tension.json")
-    m["materials"][0]["properties"]["S"] = 1.0
+    m["fields"] = [{"name": "S", "values": [{"selection": "all", "value": 1.0}]}]
     assert any("'S' is already a parameter" in e for e in M.validate(m))
+    m = load("plate_hole_tension.json")
+    m["models"][0]["parameters"] = [{"name": "a", "value": 1.0}]       # no shadowing
+    assert any("models[0].parameters[0].name: 'a' is already a parameter" in e for e in M.validate(m))
 
 
 def test_divisions_from_a_parameter():
@@ -86,7 +91,7 @@ def test_divisions_from_a_parameter():
 
 def test_a_parameter_remeshes_only_when_used_by_the_mesh():
     m = load("plate_hole_tension.json")
-    name = M.physics_mesh(m)["name"]
+    name = m["models"][0]["variables"][0]["mesh"]
     with tempfile.TemporaryDirectory() as tmp:
         assert mesher.ensure_mesh(m, name, tmp).ok
         m["parameters"][4]["value"] = 2e8                  # S: physics only
@@ -112,13 +117,16 @@ def test_user_field_used_by_a_property():
     m = load("plate.json")
     m["fields"] = [{"name": "kfac", "values": [{"selection": "all", "value": 3.0},
                                               {"selection": "all", "value": "1 + 0*x"}]}]
-    m["materials"][0]["properties"]["k"] = f"{base['materials'][0]['properties']['k']}*2*kfac"
+    m["materials"] = []
+    m["models"][0]["modules"][0]["properties"]["k"] = [{"selection": "all", "value": "?"}]
+    m["models"][0]["modules"][0]["properties"]["k"][0]["value"] = \
+        f"{base['materials'][0]['properties']['k']}*2*kfac"
     assert M.validate(m) == []
     assert abs(solve(m)["max_T"] - solve(direct)["max_T"]) < 1e-9   # the last value wins
     m["fields"][0]["name"] = "k"
-    assert any("'k' is already a field" in e for e in M.validate(m))
+    assert any("its property 'k' is already a field" in e for e in M.validate(m))
     m["fields"][0]["name"] = "pi"
-    assert any("reserved name" in e for e in M.validate(m))
+    assert any("reserved GWFL name" in e for e in M.validate(m))
 
 
 def test_user_field_is_exported():
@@ -127,7 +135,8 @@ def test_user_field_is_exported():
     with tempfile.TemporaryDirectory() as tmp:
         res = runner.run(m, tmp)
         assert res.ok, res.error
-        assert 'Name="dist"' in (Path(tmp) / res.results["vtu"]).read_text(errors="replace")
+        vtu = res.results["models"]["heat"]["vtu"]
+        assert 'Name="dist"' in (Path(tmp) / vtu).read_text(errors="replace")
 
 
 def test_rename_a_parameter_updates_its_uses():
@@ -137,7 +146,7 @@ def test_rename_a_parameter_updates_its_uses():
     shape = m["geometries"][0]["source"]["shape"]
     assert shape["of"][1]["radius"] == "radius" and m["parameters"][i]["name"] == "radius"
     assert m["meshes"][0]["h"] == "h"                                  # whole words only
-    assert m["outputs"]["quantities"][0]["expr"] == "(sigma*Normal)(1)"
+    assert m["models"][0]["outputs"][0]["expr"] == "(sigma*Normal)(1)"
     assert M.validate(m) == []
 
 
@@ -154,7 +163,7 @@ def test_standalone_script():
         proc = subprocess.run([sys.executable, script.name], cwd=tmp, capture_output=True, text=True)
         assert proc.returncode == 0, proc.stderr[-2000:]
         import json
-        r = json.loads((Path(tmp) / "results.json").read_text())
+        r = json.loads((Path(tmp) / "results.json").read_text())["models"]["mechanics"]
         for k, v in reference["quantities"].items():
             assert abs(r["quantities"][k] - v) <= 1e-9 * max(1.0, abs(v)), k
         assert (Path(tmp) / r["vtu"]).exists()

@@ -117,10 +117,10 @@ def test_tree_shows_the_model():
     win = window()
     assert not (EXAMPLES / "plate_work").exists()       # opening creates nothing
     labels = [it.text(0) for it in win._iter_items()]
-    assert any("Boundary conditions" in label for label in labels)
+    assert any("Conditions" in label for label in labels) and any(l.startswith("heat") for l in labels)
     assert any("xmin (built-in)" in label for label in labels)
-    assert win.select(("physics", "boundary_conditions", 0))
-    assert win.props.editor(("physics", "boundary_conditions", 0, "value")) is not None
+    assert win.select(("models", 0, "modules", 0, "conditions", 0))
+    assert win.props.editor(("models", 0, "modules", 0, "conditions", 0, "value")) is not None
     close(win)
 
 
@@ -323,7 +323,7 @@ def test_parameters_and_fields_in_the_window():
 
 def test_change_of_type_rebuilds_the_form():
     win = window()
-    path = ("physics", "boundary_conditions", 0)
+    path = ("models", 0, "modules", 0, "conditions", 0)
     win.select(path)
     choose(win.props.editor(path + ("type",)), "convection")
     assert win.props.editor(path + ("h",)) is not None
@@ -334,13 +334,13 @@ def test_change_of_type_rebuilds_the_form():
 
 def test_add_and_remove_with_buttons():
     win = window()
-    n = len(win.model["physics"]["boundary_conditions"])
-    win.select(("physics", "boundary_conditions"))
+    n = len(win.model["models"][0]["modules"][0]["conditions"])
+    win.select(("models", 0, "modules", 0, "conditions"))
     button(win, "add_bc").click()
-    assert len(win.model["physics"]["boundary_conditions"]) == n + 1
-    assert win.current_path() == ("physics", "boundary_conditions", n)
+    assert len(win.model["models"][0]["modules"][0]["conditions"]) == n + 1
+    assert win.current_path() == ("models", 0, "modules", 0, "conditions", n)
     button(win, "remove").click()
-    assert len(win.model["physics"]["boundary_conditions"]) == n
+    assert len(win.model["models"][0]["modules"][0]["conditions"]) == n
     close(win)
 
 
@@ -351,7 +351,7 @@ def test_rename_a_selection_from_the_form():
     win.select(path)
     edit(win.props.editor(path), "circle")
     assert win.current_path() == ("geometries", gi, "selections", "circle")
-    assert any(bc["selection"] == "circle" for bc in win.model["physics"]["boundary_conditions"])
+    assert any(bc["selection"] == "circle" for bc in win.model["models"][0]["modules"][0]["conditions"])
     assert win.errors == []
     close(win)
 
@@ -364,7 +364,7 @@ def test_compute_shows_results_and_reloads_them():
         assert wait(lambda: win.results is not None and not win.jobs.running), win.log.toPlainText()
         assert win.results["status"] == "ok"
         assert win.current_path()[0] == E.RESULTS
-        assert "T" in win.result_fields
+        assert "T" in win.result_fields["heat"]
         win.select((E.RESULTS,))
         assert win.props.findChild(object, "results_table").rowCount() > 3
         assert "Solved" in win.log.toPlainText()
@@ -388,19 +388,19 @@ def test_elasticity_results_and_display_settings():
         win = window("plate_hole_tension.json", tmp)
         win.compute()
         assert wait(lambda: win.results is not None and not win.jobs.running), win.log.toPlainText()
-        assert win.current_path() == (E.RESULTS, "von_mises")
-        assert {"displacement", "von_mises"} <= set(win.result_fields)
+        assert win.current_path() == (E.RESULTS, "mechanics", "von_mises")
+        assert {"u", "von_mises"} <= set(win.result_fields["mechanics"])
         from PySide6.QtWidgets import QCheckBox, QDoubleSpinBox
         win.props.findChild(QCheckBox, "warp").setChecked(False)
-        assert win.view_settings["von_mises"]["warp"] is False
-        win.select((E.RESULTS, "displacement"))
+        assert win.view_settings[("mechanics", "von_mises")]["warp"] is False
+        win.select((E.RESULTS, "mechanics", "u"))
         combo = win.props.findChild(QComboBox, "component")
         choose(combo, 1)
-        assert win.view_settings["displacement"]["component"] == 1
+        assert win.view_settings[("mechanics", "u")]["component"] == 1
         spin = win.props.findChild(QDoubleSpinBox, "scale")
         spin.setValue(5.0)
         spin.editingFinished.emit()
-        assert win.view_settings["displacement"]["scale"] == 5.0
+        assert win.view_settings[("mechanics", "u")]["scale"] == 5.0
         close(win)
 
 
@@ -457,7 +457,7 @@ def test_save_as_and_new():
         assert win.save()
         assert M.load(win.path)["name"] == win.model["name"]
         win.new_model()
-        assert win.path is None and win.model["physics"]["type"] == "heat_stationary"
+        assert win.path is None and win.model["models"][0]["modules"][0]["type"] == "heat_conduction"
         close(win)
 
 

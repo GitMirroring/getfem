@@ -43,6 +43,8 @@ class JobRunner(QObject):
         self._stdout: list[str] = []
         self._stderr: list[str] = []
         self._then_solve = False
+        self._meshes: dict = {}
+        self._pending: list[str] = []
         self._model: dict | None = None
         self._workdir: Path | None = None
         self._stopped = False
@@ -62,9 +64,11 @@ class JobRunner(QObject):
         self._start_mesh(model, mesh_name, workdir, force, then_solve=False)
 
     def solve(self, model: dict, workdir: str | Path) -> None:
-        """Mesh (if needed) then solve. The model must be valid."""
-        mesh = M.physics_mesh(model)
-        self._start_mesh(model, mesh["name"], workdir, False, then_solve=True)
+        """Mesh (if needed) the meshes used by the models, then solve. The
+        model file must be valid."""
+        names = runner.meshes_needed(model)
+        self._meshes, self._pending = {}, list(names[1:])
+        self._start_mesh(model, names[0], workdir, False, then_solve=True)
 
     def stop(self) -> None:
         if self._proc is not None:
@@ -95,8 +99,14 @@ class JobRunner(QObject):
         self.meshFinished.emit(mres)
         if not (self._then_solve and mres.ok):
             return
+        self._meshes[mres.info.get("mesh")] = mres
+        if self._pending:                      # the next mesh
+            name = self._pending.pop(0)
+            model, self._proc = self._model, None
+            self._start_mesh(model, name, self._workdir, False, then_solve=True)
+            return
         try:
-            job = runner.prepare_solve(self._model, self._workdir, mres, self.python)
+            job = runner.prepare_solve(self._model, self._workdir, self._meshes, self.python)
         except (ValueError, KeyError, OSError) as exc:
             self.solveFinished.emit(runner.RunResult(False, self._workdir, None,
                                                      stderr=f"RuntimeError: {exc}", mesh=mres))

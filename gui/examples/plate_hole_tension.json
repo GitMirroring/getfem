@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "name": "Plate with a hole in tension (quarter, symmetry)",
   "parameters": [
     {
@@ -26,6 +26,15 @@
       "name": "S",
       "value": 100000000.0,
       "description": "applied stress"
+    }
+  ],
+  "materials": [
+    {
+      "name": "steel",
+      "properties": {
+        "E": 210000000000.0,
+        "nu": 0.3
+      }
     }
   ],
   "geometries": [
@@ -121,65 +130,81 @@
       "order": 2
     }
   ],
-  "discretization": {
-    "degree": 2
-  },
-  "materials": [
+  "models": [
     {
-      "name": "steel",
-      "selection": "all",
-      "properties": {
-        "E": 210000000000.0,
-        "nu": 0.3
-      }
+      "name": "mechanics",
+      "variables": [
+        {
+          "name": "u",
+          "mesh": "coarse",
+          "fem": "lagrange",
+          "degree": 2,
+          "components": "dim"
+        }
+      ],
+      "modules": [
+        {
+          "type": "linear_elasticity",
+          "variable": "u",
+          "plane": "stress",
+          "properties": {
+            "E": [
+              {
+                "selection": "all",
+                "material": "steel"
+              }
+            ],
+            "nu": [
+              {
+                "selection": "all",
+                "material": "steel"
+              }
+            ]
+          },
+          "sources": [],
+          "conditions": [
+            {
+              "type": "roller",
+              "selection": "symmetry_x"
+            },
+            {
+              "type": "roller",
+              "selection": "symmetry_y"
+            },
+            {
+              "type": "traction",
+              "selection": "loaded_edge",
+              "value": [
+                "S",
+                0.0
+              ]
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "applied_force",
+          "expr": "(sigma*Normal)(1)",
+          "selection": "loaded_edge"
+        },
+        {
+          "name": "reaction_symmetry_x",
+          "expr": "(sigma*Normal)(1)",
+          "selection": "symmetry_x"
+        },
+        {
+          "name": "area",
+          "expr": "1",
+          "selection": "all"
+        }
+      ],
+      "vtu": "plate_hole_tension.vtu"
     }
-  ],
-  "physics": {
-    "type": "linear_elasticity",
-    "mesh": "coarse",
-    "variable": "u",
-    "plane": "stress",
-    "sources": [],
-    "boundary_conditions": [
-      {
-        "type": "roller",
-        "selection": "symmetry_x"
-      },
-      {
-        "type": "roller",
-        "selection": "symmetry_y"
-      },
-      {
-        "type": "traction",
-        "selection": "loaded_edge",
-        "value": [
-          "S",
-          0.0
-        ]
-      }
-    ]
-  },
-  "study": {
-    "type": "stationary"
-  },
-  "outputs": {
-    "vtu": "plate_hole_tension.vtu",
-    "quantities": [
-      {
-        "name": "applied_force",
-        "expr": "(sigma*Normal)(1)",
-        "selection": "loaded_edge"
-      },
-      {
-        "name": "reaction_symmetry_x",
-        "expr": "(sigma*Normal)(1)",
-        "selection": "symmetry_x"
-      },
-      {
-        "name": "area",
-        "expr": "1",
-        "selection": "all"
-      }
-    ]
-  }
+  ]
 }
