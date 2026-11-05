@@ -139,6 +139,10 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   Outputs, then Solvers and Results). A right click on a node lists its
   actions; the **+** button above the tree lists what can be added to the
   selected node (a model from a module, a module, a term, a condition...).
+  The parameters (of the file or of a model) are edited together, in a
+  table: name, value or expression, its number, description; rows are added,
+  removed and moved (a parameter may only use the ones above it), and a
+  renamed parameter is renamed in all its uses.
 - **Results**: one entry per model, then its fields; with a result field selected, its form sets the component
   (or magnitude), the deformed shape, the colormap, the color range (empty
   bounds: the range of the values), isolines (evenly spaced in the range),

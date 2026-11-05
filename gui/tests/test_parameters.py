@@ -183,7 +183,14 @@ def test_editing_nodes_and_actions():
     E.remove_at(m, removable[1].remove)
     assert len(m["fields"][0]["values"]) == 1
     assert E.parse_number("L/2") == "L/2" and E.parse_number("3") == 3.0
-    assert p == ("parameters", 0)
+    assert p == ("parameters",) and m["parameters"][0]["name"] == "p"
+    assert E.do_action(m, p, "add_parameter") == p and len(m["parameters"]) == 2
+    E.do_action(m, p, "move_down:0")
+    assert [x["name"] for x in m["parameters"]] == ["p2", "p"]
+    E.do_action(m, p, "remove_row:1")
+    assert [x["name"] for x in m["parameters"]] == ["p2"]
+    rows = E.parameter_rows(m, p)
+    assert rows[0]["number"] == 1.0 and rows[0]["fields"][0].op == "rename_parameter"
 
 
 if __name__ == "__main__":

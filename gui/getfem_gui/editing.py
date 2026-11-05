@@ -65,7 +65,7 @@ class Field:
     key: Path                     # where the value lives in the model
     label: str
     kind: str                     # text, ident, value, vector, numbers, ints, int, number,
-                                  # choice, names, file, info
+                                  # choice, names, file, info, parameter_table (a whole list)
     choices: tuple = ()           # ((value, label), ...) for choice and names
     size: int | None = None       # number of components (vector, numbers, ints)
     op: str | None = None         # special operation instead of a plain assignment
@@ -253,15 +253,8 @@ def _cond_label(c: dict) -> str:
 
 
 def _params_node(path: Path, params: list, vals: dict) -> Node:
-    node = Node(path, "Parameters", "parameters")
-    for i, p in enumerate(params):
-        name = p.get("name", "?")
-        v = p.get("value")
-        label = f"{name} = {format_value(v)}"
-        if isinstance(v, str) and name in vals:
-            label += f"  ({format_number(vals[name])})"
-        node.children.append(Node(path + (i,), label, "parameter"))
-    return node
+    """The parameters are edited together, in a table (no node each)."""
+    return Node(path, f"Parameters ({len(params)})" if params else "Parameters", "parameters")
 
 
 def _fields_node(path: Path, fields_: list) -> Node:
@@ -534,6 +527,24 @@ def _param_fields(model, path) -> list[Field]:
     return out
 
 
+def parameter_rows(model: dict, path: Path) -> list[dict]:
+    """The rows of a table of parameters (path: ("parameters",) or
+    ("models", k, "parameters")): name, value as written, its number (None
+    if it cannot be evaluated), description, and the keys of the cells."""
+    md = owner(model, path)
+    vals, _ = M.parameter_values(model, md)
+    rows = []
+    for i, p in enumerate(get_at(model, path, [])):
+        base = path + (i,)
+        name = p.get("name")
+        rows.append({"name": name, "value": p.get("value"), "number": vals.get(name),
+                     "description": p.get("description", ""),
+                     "fields": (Field(base + ("name",), "Name", "ident", op="rename_parameter"),
+                                Field(base + ("value",), "Value", "value"),
+                                Field(base + ("description",), "Description", "text"))})
+    return rows
+
+
 def _field_fields(model, path) -> list[Field]:
     out = [Field(path + ("name",), "Name", "ident", op="rename_field"),
            Field(path + ("description",), "Description", "text")]
@@ -576,7 +587,9 @@ def _model_fields(model, path) -> list[Field]:
     head = rest[0]
     if head == "parameters":
         if n == 1:
-            return [Field(path, "", "info", help="Parameters of this model only.")]
+            return [Field(path, "", "info", help="Parameters of this model only (a parameter may "
+                          "use the global ones and the ones listed before it)."),
+                    Field(path, "", "parameter_table")]
         return _param_fields(model, path)
     if head == "fields":
         if n == 1:
@@ -764,7 +777,8 @@ def fields(model: dict, path: Path) -> list[Field]:
 
     if path == ("parameters",):
         return [Field(path, "", "info", help="Named constants, usable in every numerical field "
-                      "(\"L/2\") and expression. A parameter may use the ones listed before it.")]
+                      "(\"L/2\") and expression. A parameter may use the ones listed before it."),
+                Field(path, "", "parameter_table")]
     if path[0] == "parameters" and n == 2:
         return _param_fields(model, path)
     if path == ("materials",):
@@ -1347,6 +1361,16 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
     md = owner(model, path)
     dim = item_dim(model, path) if md is not None else \
         ((M.geometry_dim(model, model["geometries"][0]) if model.get("geometries") else None) or 2)
+    if action.split(":")[0] in ("remove_row", "move_up", "move_down"):
+        verb, i = action.split(":")
+        items, i = get_at(model, path), int(i)
+        if verb == "remove_row":
+            del items[i]
+        elif verb == "move_up" and i > 0:
+            items[i - 1], items[i] = items[i], items[i - 1]
+        elif verb == "move_down" and i + 1 < len(items):
+            items[i + 1], items[i] = items[i], items[i + 1]
+        return path
     if action == "remove":
         parent = get_at(model, path[:-1])
         if isinstance(parent, list):
@@ -1360,7 +1384,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         target = model if action == "add_parameter" else md
         params = target.setdefault("parameters", [])
         params.append({"name": unique_name(name or "p", _names_in(model, md)), "value": 1.0, "description": ""})
-        return (("models", path[1]) if md is not None else ()) + ("parameters", len(params) - 1)
+        return (("models", path[1]) if md is not None else ()) + ("parameters",)
     if action in ("add_field", "add_local_field"):
         target = model if action == "add_field" else md
         fields_ = target.setdefault("fields", [])

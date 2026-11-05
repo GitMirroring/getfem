@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -117,6 +117,9 @@ class PropertiesPanel(QScrollArea):
                 lab.setStyleSheet("color: #555;")
                 form.addRow(lab)
                 continue
+            if f.kind == "parameter_table":
+                form.addRow(self._parameter_table(model, f, errors))
+                continue
             widget = self._editor(model, f)
             msgs = E.errors_at(errors, f.key) if f.op != "rename_selection" else []
             if msgs:
@@ -145,6 +148,81 @@ class PropertiesPanel(QScrollArea):
         self.layout_.addWidget(holder)
         self._messages([e.partition(": ")[2] or e for e in node_errors])
         self._buttons(actions)
+
+    def _parameter_table(self, model, f: E.Field, errors) -> QWidget:
+        """All the parameters of a list in one table: name, value (number or
+        expression), its number, description; rows added, removed, moved."""
+        rows = E.parameter_rows(model, f.key)
+        table = QTableWidget(len(rows), 4)
+        table.setObjectName("parameters_table")
+        table.setHorizontalHeaderLabels(["Name", "Value", "=", "Description"])
+        table.verticalHeader().hide()
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        for i, r in enumerate(rows):
+            texts = (r["name"] or "", E.format_value(r["value"]),
+                     "" if r["number"] is None else E.format_number(float(r["number"])), r["description"] or "")
+            for j, t in enumerate(texts):
+                item = QTableWidgetItem(t)
+                if j == 1:
+                    item.setFont(_mono())
+                if j == 2:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setForeground(Qt.GlobalColor.darkGray)
+                    item.setToolTip("value of the expression")
+                if j != 2:
+                    fld = r["fields"][0 if j == 0 else 1 if j == 1 else 2]
+                    msgs = E.errors_at(errors, fld.key)
+                    if msgs:
+                        item.setBackground(Qt.GlobalColor.yellow)
+                        item.setToolTip("\n".join(msgs))
+                table.setItem(i, j, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column()
+            if j == 2 or i >= len(rows):
+                return
+            fld = rows[i]["fields"][0 if j == 0 else 1 if j == 1 else 2]
+            text = item.text().strip()
+            value = E.parse_value(text) if j == 1 else text
+            if value == (rows[i]["name"], rows[i]["value"], None, rows[i]["description"])[j]:
+                return
+            self._last_cell = (f.key, i, j)
+            self._commit(fld, value)
+        table.itemChanged.connect(edited)
+        # the cell edited last keeps the focus when the form is rebuilt
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        for ident, text, tip in (("remove_row", "Remove", "Remove the selected parameter"),
+                                 ("move_up", "Up", "Move up (a parameter may only use the ones above it)"),
+                                 ("move_down", "Down", "Move down")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"table:{ident}")
+            b.clicked.connect(lambda _=False, v=ident: table.currentRow() >= 0
+                              and self._row_action(f.key, v, table.currentRow()))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(table)
+        col.addLayout(bar)
+        table.setMinimumHeight(min(80 + 30 * len(rows), 420))
+        self._fields[f.key] = table
+        return holder
+
+    def _row_action(self, key, verb, row):
+        target = {"move_up": row - 1, "move_down": row + 1}.get(verb, row)
+        self._last_cell = (key, max(target, 0), 0)
+        self.action.emit(f"{verb}:{row}")
 
     def editor(self, key) -> QWidget | None:
         """Editing widget of a field (for tests)."""

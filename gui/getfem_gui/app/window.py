@@ -929,7 +929,8 @@ class MainWindow(QMainWindow):
         new_fields = [(x.key, x.kind, x.choices, x.size) for x in E.fields(self.model, path)]
         # Rebuilding the form would lose the keyboard focus: only do it when the
         # form itself changes, otherwise just update the error marks.
-        same = new_fields == old_fields and new_path is None and not self._focus_outside_panel()
+        same = new_fields == old_fields and new_path is None and not self._focus_outside_panel() \
+            and not any(x.kind == "parameter_table" for x in self._panel_fields)   # its values change
         self._changed(select=path, rebuild_panel=not same)
         if same:
             self._update_marks()
@@ -994,7 +995,7 @@ class MainWindow(QMainWindow):
         from .properties import ERROR_STYLE
         for f in self._panel_fields:
             w = self.props.editor(f.key)
-            if w is None or f.kind == "info":
+            if w is None or f.kind in ("info", "parameter_table"):
                 continue
             msgs = E.errors_at(self.errors, f.key) if f.op != "rename_selection" else []
             w.setStyleSheet(ERROR_STYLE if msgs else "")

@@ -303,11 +303,30 @@ def test_parameters_and_fields_in_the_window():
     assert E.get_at(win.model, ball + ("radius",)) == "a/2" and win.errors == []
     # a parameter making the geometry invalid: the error shows on the geometry
     i = next(k for k, p in enumerate(win.model["parameters"]) if p["name"] == "a")
-    win.select(("parameters", i))
-    edit(win.props.editor(("parameters", i, "value")), "-0.01")
+    win.select(("parameters",))
+    table = win.props.editor(("parameters",))
+    assert table.rowCount() == len(win.model["parameters"]) and table.item(i, 0).text() == "a"
+    assert table.item(2, 2).text() == "0.01"                        # the value of the expression
+    table.item(i, 1).setText("-0.01")
+    assert win.model["parameters"][i]["value"] == -0.01
     assert any(e.startswith("geometries[0].source.shape.of[1].radius") for e in win.errors)
     win.undo()
     assert win.errors == []
+    # renamed in the table: its uses follow; moved, removed
+    table = win.props.editor(("parameters",))
+    table.item(i, 0).setText("radius")
+    assert E.get_at(win.model, ball + ("radius",)) == "radius/2"
+    table = win.props.editor(("parameters",))
+    assert table.currentRow() == i                                  # the edited cell keeps the focus
+    n = len(win.model["parameters"])
+    win._panel_action("add_parameter")
+    assert win.current_path() == ("parameters",) and len(win.model["parameters"]) == n + 1
+    win._panel_action(f"move_up:{n}")
+    assert win.model["parameters"][n - 1]["name"] == "p"
+    win._panel_action(f"remove_row:{n - 1}")
+    assert len(win.model["parameters"]) == n and win.errors == []
+    labels = [it.text(0) for it in win._iter_items()]
+    assert f"Parameters ({n})" in labels and not any(l.startswith("L = ") for l in labels)
     # a field with two values, then one removed with its button
     win.select(("fields",))
     button(win, "add_field").click()

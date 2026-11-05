@@ -48,7 +48,7 @@ def test_tree_and_fields_of_every_node():
         for node in root.walk():
             for f in E.fields(model, node.path):
                 assert f.kind in ("text", "ident", "value", "vector", "numbers", "ints", "int",
-                                  "number", "choice", "names", "file", "info"), (node.path, f)
+                                  "number", "choice", "names", "file", "info", "parameter_table"), (node.path, f)
                 if f.kind == "choice":
                     value = E.field_value(model, f)
                     assert value is None or value in [c[0] for c in f.choices], (node.path, f, value)
