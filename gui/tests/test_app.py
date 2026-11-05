@@ -152,10 +152,14 @@ def test_main_with_splash_screen():
             seen["version"] = win.versions.version
             original = QMessageBox.about
             QMessageBox.about = lambda parent, title, text: seen.setdefault("about", text)
+            shown = QMessageBox.exec
+            QMessageBox.exec = lambda box: seen.setdefault("license", box.text())
             try:
                 win.about()
+                win.license_info()
             finally:
                 QMessageBox.about = original
+                QMessageBox.exec = shown
             win.setWindowModified(False)
         finally:
             app.quit()
@@ -174,6 +178,9 @@ def test_main_with_splash_screen():
     assert seen["version"] == getfem.util_version()
     assert f"GetFEM GUI 0.1 on GetFEM {seen['version']}" in seen["about"]
     assert "rapid prototyping of complex multiphysics" in seen["about"]
+    assert "Help ▸ License" in seen["about"]
+    assert "GNU Lesser General Public License" in seen["license"] and "GCC" in seen["license"]
+    assert "https://www.gnu.org/licenses/" in seen["license"]
     for w in QApplication.instance().topLevelWidgets():
         w.close()
 

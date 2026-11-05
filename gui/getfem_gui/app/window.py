@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         m.addAction(self.a_folder)
         m = bar.addMenu("&Help")
         m.addAction(self._action("&About", self.about))
+        m.addAction(self._action("&License", self.license_info))
 
         tb = self.addToolBar("Main")
         tb.setObjectName("main_toolbar")
@@ -1077,7 +1078,22 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, APP_NAME,
                           f"<b>{title(version)}</b><p>A graphical interface for "
                           f"<a href='https://getfem.org'>GetFEM</a>, {DESCRIPTION}."
-                          "<p>Distributed under the GNU LGPL, like GetFEM.")
+                          "<p>Distributed under the GNU LGPL, like GetFEM "
+                          "(<i>Help ▸ License</i>).")
+
+    def license_info(self) -> str:
+        """The license notice, in a dialog; returns its text."""
+        from .. import LICENSE
+        import html
+        text = html.escape(LICENSE).replace("\n\n", "<p>").replace("\n", " ")
+        text = text.replace("https://www.gnu.org/licenses/",
+                            "<a href='https://www.gnu.org/licenses/'>https://www.gnu.org/licenses/</a>")
+        box = QMessageBox(QMessageBox.Icon.NoIcon, f"{APP_NAME}: license", text, QMessageBox.StandardButton.Close,
+                          self)
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setObjectName("license")
+        box.exec()
+        return LICENSE
 
 
 def _results_key(model: dict) -> dict:
