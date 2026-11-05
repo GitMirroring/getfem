@@ -511,7 +511,10 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
     c = base + ("criteria",)
     from . import geometry2d as G
     planar = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
-    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds and (t not in ("edges", "regions") or planar)]
+    from . import geometry3d as G3
+    solid = G3.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
+    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds
+                and (t not in ("edges", "regions") or planar) and (t != "faces" or solid)]
     out = [Field(c + ("type",), "Criterion", "choice", tuple((t, t) for t in possible),
                  op="criteria_type")]
     if ct == "plane":
@@ -534,6 +537,17 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
         out.append(Field(c + ("edges",), "", "info",
                          help=("Edges: " + ", ".join(labels) if labels else "No edge yet.")
                          + "\nClick edges in the view to add or remove them."))
+    elif ct == "faces":
+        shape = G3.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+        labels = []
+        for r in crit.get("faces", []):
+            try:
+                labels.append(G3.face_label(shape, r))
+            except (KeyError, TypeError, ValueError, AttributeError):
+                labels.append("?")
+        out.append(Field(c + ("faces",), "", "info",
+                         help=("Faces: " + ", ".join(labels) if labels else "No face yet.")
+                         + "\nClick faces in the view to add or remove them."))
     elif ct == "regions":
         shape = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
         labels = [G.region_label(shape, r) for r in crit.get("regions", [])] if shape else []
@@ -1075,6 +1089,7 @@ def _default_criteria(t: str, dim: int, kind: str) -> dict:
         "physical": {"type": "physical", "tag": 1},
         "union": {"type": "union", "of": []},
         "edges": {"type": "edges", "edges": []},
+        "faces": {"type": "faces", "faces": []},
         "regions": {"type": "regions", "regions": []},
     }[t]
 
@@ -1958,10 +1973,11 @@ def _item_base_name(model: dict, path: Path, item: dict) -> str:
     return f"{item.get('name', 'output')}_support"
 
 
-def _pickable(model: dict, path: Path, kind: str) -> tuple[int, dict] | None:
+def _pickable(model: dict, path: Path, kind: str, dim: int = 2) -> tuple[int, dict] | None:
     """(geometry index, item) when the item at path has a selection of that
-    kind on a 2D box or csg geometry of the top level."""
-    from . import geometry2d as G
+    kind on a box or csg geometry of the top level, of dimension dim (2 or 3)."""
+    from . import geometry2d as G2, geometry3d as G3
+    G = G2 if dim == 2 else G3
     md = owner(model, path)
     item = get_at(model, path)
     if md is None or len(path) < 4 or not isinstance(item, dict) or "selection" not in item:
@@ -2008,6 +2024,45 @@ def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
         if p.side.ref not in start:
             start.append(p.side.ref)
     criteria = G.toggle_edge({"type": "edges", "edges": start}, ref)
+    new = unique_name(_item_base_name(model, path, item), table)
+    geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
+    item["selection"] = new
+    return new, True
+
+
+def can_pick_faces(model: dict, path: Path) -> bool:
+    """Whether clicks on faces of a 3D preview edit the support of the item at
+    path (a condition, a term or an output on a boundary)."""
+    return _pickable(model, path, M.BOUNDARY, dim=3) is not None
+
+
+def can_pick_faces_of_selection(model: dict, path: Path) -> bool:
+    """Whether the node at path is a user boundary selection of a 3D box or
+    csg geometry (clicks on faces then edit it)."""
+    from . import geometry3d as G3
+    if not (path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections"):
+        return False
+    sel = model["geometries"][path[1]].get("selections", {}).get(path[3])
+    return sel is not None and sel.get("kind") == M.BOUNDARY and \
+        G3.shape_of(P.resolved(model)["geometries"][path[1]].get("source", {})) is not None
+
+
+def pick_face_for_item(model: dict, path: Path, ref: dict, start=()) -> tuple[str, bool]:
+    """Add or remove a face (geometry3d reference) in the support of the item
+    at path, as pick_edge_for_item does for edges. start: the faces of the
+    current support (computed on the preview), for a new selection."""
+    from . import geometry3d as G3
+    gi, item = _pickable(model, path, M.BOUNDARY, dim=3)
+    geom = model["geometries"][gi]
+    table = M.selection_table(model, geom)
+    name = item.get("selection", M.ALL)
+    sel = geom.get("selections", {}).get(name)
+    if sel is not None and sel.get("criteria", {}).get("type") == "faces" \
+            and selection_uses(model, geom, name) == 1:
+        sel["criteria"] = G3.toggle_face(sel["criteria"], ref)
+        return name, False
+    begin = [] if name == M.BOUNDARY else [dict(r) for r in start]
+    criteria = G3.toggle_face({"type": "faces", "faces": begin}, ref)
     new = unique_name(_item_base_name(model, path, item), table)
     geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
     item["selection"] = new

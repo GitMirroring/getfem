@@ -108,7 +108,16 @@ User selections: {"kind": "domain" | "boundary", "criteria": {...}} with
                                                          2D box or csg: sides of primitives (the
                                                          parts on the boundary); "shape" is the path
                                                          of the primitive in the CSG tree (indices in
-                                                         "of"), "side" xmin, xmax, ymin, ymax or circle
+                                                         "of"), "side" xmin, xmax, ymin, ymax, circle,
+                                                         ellipse, side1, side2... (polygon)
+- {"type": "faces", "faces": [{"shape": [0], "face": "xmax"}, ...]}
+                                                         3D box or csg: faces of primitives (the parts
+                                                         on the boundary): xmin... zmax (box), sphere
+                                                         (ball), side, start, end (cylinder), bottom, top
+                                                         (extrusion), and the side swept by a side of the
+                                                         profile of an extrusion or a revolution:
+                                                         {"shape": [1], "face": "side",
+                                                          "profile": {"shape": [0], "side": "circle"}}
 - {"type": "regions", "regions": [[[0], [1]], [[0]]]}
                                                          2D box or csg: elements in regions of the
                                                          domain; a region is given by the paths of the
@@ -179,6 +188,7 @@ CRITERIA = {
     "physical": (BOUNDARY, DOMAIN),
     "union": (BOUNDARY, DOMAIN),
     "edges": (BOUNDARY,),
+    "faces": (BOUNDARY,),
     "regions": (DOMAIN,),
 }
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
@@ -809,6 +819,8 @@ def _validate_geometry(model, geom, where, errors):
                 errors.append(f"{w}.criteria.tag: integer expected")
         elif ct == "edges":
             _check_edges(src, crit, w, errors)
+        elif ct == "faces":
+            _check_faces(src, crit, w, errors)
         elif ct == "regions":
             _check_regions(src, crit, w, errors)
         elif ct == "union":
@@ -846,6 +858,26 @@ def _check_edges(src, crit, where, errors):
             errors.append(f"{w}: a {prim['type']} has no side {ref.get('side')!r}")
         elif not G.pieces_of(shape, ref, all_pieces):
             errors.append(f"{w}: the {G.side_label(shape, ref)} is not on the boundary")
+
+
+def _check_faces(src, crit, where, errors):
+    from . import geometry3d as G3
+    shape = G3.shape_of(src)
+    if shape is None:
+        errors.append(f"{where}: criterion 'faces' requires a 3D box or csg geometry")
+        return
+    faces = crit.get("faces")
+    if not isinstance(faces, list) or not faces:
+        errors.append(f"{where}.criteria.faces: no face: click faces of the geometry in the view")
+        return
+    for j, ref in enumerate(faces):
+        w = f"{where}.criteria.faces[{j}]"
+        try:
+            ok = isinstance(ref, dict) and G3.face_exists(shape, ref)
+        except (KeyError, TypeError, ValueError):
+            return                       # invalid shape: reported elsewhere
+        if not ok:
+            errors.append(f"{w}: no such face {ref!r}")
 
 
 def _check_regions(src, crit, where, errors):

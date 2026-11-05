@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
         self.viewer.regionClicked.connect(self._region_clicked)
+        self.viewer.faceClicked.connect(self._face_clicked)
         self.viewer.cutDrawn.connect(lambda ab: self._set_cut(ab))
         self.viewer.cutCleared.connect(lambda: self._set_cut(None))
         self.viewer.shapeDrawn.connect(self._shape_drawn)
@@ -774,12 +775,15 @@ class MainWindow(QMainWindow):
                     surf = scene.geometry_surface_3d(shape)
                     C = np.asarray(surf.cell_centers().points) if surf.n_cells else np.zeros((0, 3))
                     N = np.asarray(surf.cell_data["outward"]) if surf.n_cells else np.zeros((0, 3))
-                    found = G3.faces_matching(shape, C, N, sel, table)
+                    found = G3.faces_matching(shape, C, N, sel, table, scene.cell_faces(surf))
                     highlighted = found
                     title += f" — boundary {sel!r}" + ("" if found is not None else " (shown on the mesh only)")
+        pickable = E.can_pick_faces(self.model, path) or E.can_pick_faces_of_selection(self.model, path)
+        if pickable:
+            title += ": click faces to add or remove them"
         try:
             self.viewer.show_geometry_3d(shape, highlighted, part, status=title + " (preview, no mesh)",
-                                         key=geom.get("name"))
+                                         key=geom.get("name"), pickable=pickable)
         except Exception as exc:  # noqa: BLE001
             self.viewer.show_message(f"Cannot display the geometry: {exc}")
         return True
@@ -870,6 +874,56 @@ class MainWindow(QMainWindow):
             (tuple(r["shape"]), r["side"]) == (piece.side.shape, piece.side.side)
             for r in sel["criteria"]["edges"]) else "removed")
             + (" (the previous criterion was replaced by picked edges)" if replaced else ""))
+
+    def _current_faces(self, gi: int, selection: str) -> list[dict]:
+        """The faces of the 3D preview entirely in a boundary selection."""
+        from .. import geometry3d as G3
+        from . import scene
+        model = P.resolved(self.model)
+        geom = model["geometries"][gi]
+        shape = G3.shape_of(geom["source"])
+        surf = scene.geometry_surface_3d(shape)
+        refs = scene.face_refs(surf)
+        if refs is None or not surf.n_cells:
+            return []
+        C, N = np.asarray(surf.cell_centers().points), np.asarray(surf.cell_data["outward"])
+        found = G3.faces_matching(shape, C, N, selection, M.selection_table(model, geom), scene.cell_faces(surf))
+        if found is None:
+            return []
+        ids = np.asarray(surf.cell_data["face_id"])
+        return [refs[i] for i in np.unique(ids) if np.all(found[ids == i])]
+
+    def _face_clicked(self, ref):
+        """A click on a face of the 3D preview: toggles it in the selected
+        boundary selection, or in the support of the selected item."""
+        from .. import geometry3d as G3
+        path = self.current_path()
+        gi = E.preview_geometry(self.model, path)
+        if gi is None:
+            return
+        before = copy.deepcopy(self.model)
+        created, replaced = False, False
+        if E.can_pick_faces(self.model, path):
+            item = E.get_at(self.model, path)
+            start = self._current_faces(gi, item.get("selection", M.ALL))
+            name, created = E.pick_face_for_item(self.model, path, ref, start)
+        elif E.can_pick_faces_of_selection(self.model, path):
+            name = path[3]
+            sel = self.model["geometries"][gi]["selections"][name]
+            replaced = sel.get("criteria", {}).get("type") != "faces"
+            sel["criteria"] = G3.toggle_face(sel.get("criteria", {}), ref)
+        else:
+            return
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=path)
+        shape = G3.shape_of(P.resolved(self.model)["geometries"][gi]["source"])
+        faces = self.model["geometries"][gi]["selections"][name]["criteria"]["faces"]
+        on = any(G3.face_key(r) == G3.face_key(ref) for r in faces)
+        self.state.setText(f"{G3.face_label(shape, ref)} {'added to' if on else 'removed from'} {name!r}"
+                           + (" (new selection for this item)" if created else "")
+                           + (" (the previous criterion was replaced by picked faces)" if replaced else ""))
 
     def _region_clicked(self, region):
         """A click in a region of the preview: toggles it in the selected

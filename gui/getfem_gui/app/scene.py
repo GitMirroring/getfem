@@ -23,6 +23,7 @@ tested) off screen as well as in the Qt window.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -373,9 +374,27 @@ def geometry_surface_3d(shape: dict, n: int = 90) -> pv.PolyData:
     return _surfaces[key]
 
 
+def _tagged(surf: pv.PolyData, face: int) -> pv.PolyData:
+    surf.cell_data["face"] = np.full(surf.n_cells, face, dtype=np.int32)
+    return surf
+
+
+def _rebuilt(surf: pv.PolyData, tri: np.ndarray, keep=None) -> pv.PolyData:
+    """A triangulated surface with new triangles (n x 4), its face tags kept."""
+    face = np.asarray(surf.cell_data["face"]) if "face" in surf.cell_data else None
+    if keep is not None:
+        tri = tri[keep]
+        face = face[keep] if face is not None else None
+    out = pv.PolyData(np.asarray(surf.points), tri.ravel())
+    if face is not None:
+        out.cell_data["face"] = face
+    return out
+
+
 def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
     """Triangulated surface of a primitive, outward normals, triangles of
-    size about h (fine enough to clip it along the other shapes)."""
+    size about h (fine enough to clip it along the other shapes); the cell
+    data "face" is the index of the face in geometry3d.primitive_faces."""
     t = prim["type"]
     if t == "rectangle":
         lo, hi = np.asarray(prim["min"], float), np.asarray(prim["max"], float)
@@ -390,12 +409,13 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
                 X = [None, None, None]
                 X[i], X[j], X[axis] = U, V, np.full_like(U, value)
                 grid = pv.StructuredGrid(X[0][:, :, None], X[1][:, :, None], X[2][:, :, None])
-                faces.append(grid.extract_surface())
+                faces.append(_tagged(grid.extract_surface(), len(faces)))     # xmin, xmax, ymin...
         surf = faces[0].merge(faces[1:])
     elif t == "ball":
         r = float(prim["radius"])
         nt = max(48, int(np.ceil(2 * np.pi * r / h)))
-        surf = pv.Sphere(radius=r, center=prim["center"], theta_resolution=nt, phi_resolution=max(24, nt // 2))
+        surf = _tagged(pv.Sphere(radius=r, center=prim["center"], theta_resolution=nt,
+                                 phi_resolution=max(24, nt // 2)), 0)
     elif t == "cylinder":
         o = np.asarray(prim["origin"], float)
         a = np.asarray(prim["axis"], float)
@@ -405,9 +425,9 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
         side = pv.CylinderStructured(radius=r, height=L, center=o + L / 2 * a, direction=a,
                                      theta_resolution=nt, z_resolution=max(2, int(np.ceil(L / h)))).extract_surface()
         nr = max(2, int(np.ceil(r / h)))
-        caps = [pv.Disc(center=o, inner=0.0, outer=r, normal=-a, r_res=nr, c_res=nt),
-                pv.Disc(center=o + L * a, inner=0.0, outer=r, normal=a, r_res=nr, c_res=nt)]
-        surf = side.merge(caps)
+        caps = [_tagged(pv.Disc(center=o, inner=0.0, outer=r, normal=-a, r_res=nr, c_res=nt), 1),
+                _tagged(pv.Disc(center=o + L * a, inner=0.0, outer=r, normal=a, r_res=nr, c_res=nt), 2)]
+        surf = _tagged(side, 0).merge(caps)
     elif t in ("extrusion", "revolution"):
         surf = _swept_surface(prim, h)
     else:
@@ -424,7 +444,8 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
     if wrong.any():
         tri = np.array(surf.faces).reshape(-1, 4)
         tri[wrong] = tri[wrong][:, [0, 1, 3, 2]]
-        surf = pv.PolyData(np.asarray(surf.points), tri.ravel())
+        surf = _rebuilt(surf, tri)
+    surf.cell_data.pop("Normals", None)
     return surf
 
 
@@ -456,39 +477,44 @@ def _swept_surface(prim: dict, h: float) -> pv.PolyData:
     """Surface of an extrusion (along z: sides and two caps) or of a
     revolution (about z: the boundary of the profile turned around)."""
     from .. import geometry3d as G3
-    curves = G3.profile_curves(prim, h)
-    if not curves:
+    tagged = G3.profile_curves(prim, h, refs=True)
+    if not tagged:
         raise ValueError("empty profile")
+    curves = [c for c, _ in tagged]
+    index = {G3.face_key(dict(f, shape=[])): i for i, f in enumerate(G3.primitive_faces(prim))}
+    tags = [index[G3.face_key({"shape": [], "face": "side", "profile": ref})] for _, ref in tagged]
     parts = []
     if prim["type"] == "extrusion":
         z0, z1 = sorted(float(v) for v in prim["z"])
         z = np.linspace(z0, z1, max(1, int(np.ceil((z1 - z0) / h))) + 1)
-        for c in curves:
+        for c, tag in zip(curves, tags):
             X = np.repeat(c[:, 0:1], len(z), axis=1)
             Y = np.repeat(c[:, 1:2], len(z), axis=1)
             Z = np.repeat(z[None, :], len(c), axis=0)
-            parts.append(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface())
+            parts.append(_tagged(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface(),
+                                 tag))
         face = _profile_face(G3.effective_profile(prim), curves, h)
-        for value in (z0, z1):
+        for tag, value in enumerate((z0, z1)):                 # bottom, top
             cap = face.copy()
             cap.points[:, 2] = value
-            parts.append(cap)
+            parts.append(_tagged(cap, tag))
     else:
         R = max(float(np.max(c[:, 0])) for c in curves)
         nt = max(48, int(np.ceil(2 * np.pi * R / h)))
         th = np.linspace(0.0, 2 * np.pi, nt + 1)
-        for c in curves:
+        for c, tag in zip(curves, tags):
             r = np.maximum(c[:, 0], 0.0)[:, None]
             X, Y = r * np.cos(th)[None, :], r * np.sin(th)[None, :]
             Z = np.repeat(c[:, 1:2], len(th), axis=1)
-            parts.append(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface())
+            parts.append(_tagged(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface(),
+                                 tag))
     surf = parts[0].merge(parts[1:]) if len(parts) > 1 else parts[0]
     surf = surf.triangulate().clean()
     # degenerate triangles (on the axis of a revolution) removed
     if surf.n_cells:
         tri = np.array(surf.faces).reshape(-1, 4)
         good = (tri[:, 1] != tri[:, 2]) & (tri[:, 2] != tri[:, 3]) & (tri[:, 1] != tri[:, 3])
-        surf = pv.PolyData(np.asarray(surf.points), tri[good].ravel())
+        surf = _rebuilt(surf, tri, good)
     return surf
 
 
@@ -499,12 +525,15 @@ def _surface_3d(shape: dict, n: int) -> pv.PolyData:
     lo, hi = G3.bounds(shape)
     size = float(np.linalg.norm(hi - lo)) or 1.0
     h = size / n
-    pieces = []
+    pieces, refs = [], []
     for path, prim in G3.primitives(shape):
         try:
             surf = _primitive_surface(prim, h)
         except (KeyError, TypeError, ValueError):
             return _surface_3d_grid(shape, n)
+        # the faces of all the primitives numbered together (cell data "face_id")
+        surf.cell_data["face_id"] = np.asarray(surf.cell_data["face"]) + len(refs)
+        refs += [dict(f, shape=list(path)) for f in G3.primitive_faces(prim)]
         surf.point_data["c"] = G3.boundary_level(shape, path, np.asarray(surf.points), 10 * size)
         part = surf.clip_scalar(scalars="c", value=0.0, invert=True)
         if part.n_cells == 0:
@@ -512,7 +541,10 @@ def _surface_3d(shape: dict, n: int) -> pv.PolyData:
         part = part.extract_surface().triangulate()
         if G3.orientation(shape, path) < 0:          # a hole: its normals point inwards
             tri = np.array(part.faces).reshape(-1, 4)[:, [0, 1, 3, 2]]
+            ids = np.asarray(part.cell_data["face_id"])
             part = pv.PolyData(np.asarray(part.points), tri.ravel())
+            part.cell_data["face_id"] = ids
+        part.cell_data.pop("face", None)
         pieces.append(part)
     if not pieces:
         return pv.PolyData()
@@ -526,7 +558,26 @@ def _surface_3d(shape: dict, n: int) -> pv.PolyData:
     # the edges: between faces at an angle, and the seams between the pieces
     # (intersections of the primitives: the boundaries of the clipped parts)
     surf.field_data["edges_kind"] = ["exact"]
+    surf.field_data["face_refs"] = [json.dumps(refs)]
     return surf
+
+
+def face_refs(surf) -> list[dict] | None:
+    """The faces (geometry3d references) of the preview surface of a 3D
+    shape, indexed by its cell data "face_id" (None for a grid surface)."""
+    if "face_refs" not in surf.field_data or "face_id" not in surf.cell_data:
+        return None
+    return json.loads(str(surf.field_data["face_refs"][0]))
+
+
+def cell_faces(surf) -> list | None:
+    """The face (geometry3d.face_key) of each cell of a preview surface."""
+    from .. import geometry3d as G3
+    refs = face_refs(surf)
+    if refs is None:
+        return None
+    keys = [G3.face_key(r) for r in refs]
+    return [keys[i] for i in np.asarray(surf.cell_data["face_id"])]
 
 
 def _surface_3d_grid(shape: dict, n: int) -> pv.PolyData:
@@ -598,6 +649,18 @@ def show_geometry_3d(plotter, shape: dict, highlighted=None, part: dict | None =
         plotter.camera.elevation = 10
         set_style(plotter, False)
         plotter.reset_camera()
+
+
+def show_face_hover(plotter, surf, face_id) -> None:
+    """Highlight a face of a 3D preview surface (None: remove)."""
+    plotter.remove_actor("hover")
+    if surf is None or face_id is None:
+        return
+    cells = np.flatnonzero(np.asarray(surf.cell_data["face_id"]) == face_id)
+    if len(cells):
+        # opaque, as the selected faces: a translucent face over the surface may be hidden by it
+        plotter.add_mesh(surf.extract_cells(cells), color=HOVER, smooth_shading=True,
+                         name="hover", pickable=False)
 
 
 def show_region_hover(plotter, shape: dict, region) -> None:

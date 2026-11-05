@@ -155,6 +155,15 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   other primitives), so that the faces stay flat and the edges sharp; the
   boundary selections (plane, normal, box, ball criteria) and the shape
   selected in the tree are shown on it. See `examples/block_with_hole_3d.json`.
+- **Picking 3D faces**: with a boundary selection of a 3D box or CSG
+  geometry, or an item on a boundary (condition, term, output), selected,
+  the face under the mouse is highlighted and a click adds or removes it
+  (a `faces` selection, created for the item as for 2D edges). A face is a
+  face of a primitive (`xmin`… `zmax` of a box, the `side` and the ends of
+  a cylinder, `bottom` and `top` of an extrusion, the side swept by a side
+  of a profile), stored by reference, so that it follows the parameters; on
+  the mesh, the boundary faces whose vertices lie on it (and whose normal
+  agrees) are taken.
 - **Ellipses** (2D): center, semi-axes, angle of the first semi-axis in
   degrees; their boundary is the side `ellipse`. A disk changed into an
   ellipse keeps its center and radius (and its `edges` references). They
@@ -240,6 +249,7 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
+| `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |
 | `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
@@ -288,7 +298,8 @@ elements whose center is in it (a staircase); fragmenting the shapes
 Beware: `normal` picks *all* boundary faces oriented in the given direction,
 including those of a hole (the right edge of a hole has a −x outward normal,
 like the left edge of the part). For "the left face", use `plane`; this is
-what the predefined faces `xmin…zmax` do.
+what the predefined faces `xmin…zmax` do. In 3D, the `faces` criterion
+(picked faces) designates the faces of the primitives themselves.
 
 GetFEM region numbers are assigned by the application, never by the user.
 When two values of a property (or of a field) cover the same area, the last

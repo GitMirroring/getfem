@@ -1,6 +1,6 @@
 {
   "format_version": 3,
-  "name": "Grooved pulley: solid of revolution (3D)",
+  "name": "Grooved pulley heated from its bore: solid of revolution (3D)",
   "parameters": [
     {"name": "Ri", "value": 0.01, "description": "bore radius (m)"},
     {"name": "Re", "value": 0.05, "description": "outer radius (m)"},
@@ -33,9 +33,12 @@
         }
       },
       "selections": {
-        "bottom": {
+        "bore": {
           "kind": "boundary",
-          "criteria": {"type": "plane", "point": [0, 0, 0], "normal": [0, 0, 1]}
+          "criteria": {
+            "type": "faces",
+            "faces": [{"shape": [], "face": "side", "profile": {"shape": [0], "side": "xmin"}}]
+          }
         }
       }
     }
@@ -52,12 +55,12 @@
           "properties": {"k": [{"selection": "all", "material": "structural_steel"}]},
           "sources": [],
           "conditions": [
-            {"type": "temperature", "selection": "bottom", "value": 80},
+            {"type": "temperature", "selection": "bore", "value": 80},
             {"type": "convection", "selection": "boundary", "h": 20, "T_ext": 20}
           ]
         }
       ],
-      "outputs": [{"name": "power", "expr": "k*Grad_T.Normal", "selection": "bottom"}],
+      "outputs": [{"name": "power", "expr": "k*Grad_T.Normal", "selection": "bore"}],
       "vtu": "heat.vtu"
     }
   ]

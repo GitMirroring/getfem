@@ -187,6 +187,7 @@ class ClickFilter(QObject):
 class Viewer(QWidget):
     edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
     regionClicked = Signal(object)        # region (geometry2d.region_at) clicked in the preview
+    faceClicked = Signal(object)          # face (geometry3d reference) clicked in a 3D preview
     shapeDrawn = Signal(object, str)      # primitive (model format), operation
     handleMoved = Signal(str, object)     # handle name, new position (snapped)
     cutDrawn = Signal(object)             # cut line [a, b] drawn on a field
@@ -222,6 +223,7 @@ class Viewer(QWidget):
         self._shown_key = None
         self.error = ""            # why the 3D view is unavailable (with the traceback)
         self._pieces, self._hover = [], None     # picking state (edges)
+        self._faces = None                       # picking state (3D faces): (surface, refs)
         self._regions_of = None                  # shape whose regions are picked
         try:
             self.plotter, self.view_widget = _load_plotter(self)
@@ -268,6 +270,7 @@ class Viewer(QWidget):
         self.status.setText(text)
         self._last = ("message", text)
         self._pieces = []
+        self._faces = None
         self._shown_key = None
         if self.plotter is not None:
             from . import scene
@@ -282,6 +285,7 @@ class Viewer(QWidget):
         self.status.setText(status)
         self._last = ("mesh", mesh_file, selection_file, status)
         self._pieces = []
+        self._faces = None
         if self.plotter is None:
             self._placeholder(status or str(mesh_file))
             return
@@ -303,6 +307,7 @@ class Viewer(QWidget):
         self.status.setText(status)
         self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable, key)
         self._pieces = pieces if pickable in (True, "edges") else []
+        self._faces = None
         self._regions_of = shape if pickable == "regions" else None
         self._hover = None
         if self.plotter is None:
@@ -322,12 +327,13 @@ class Viewer(QWidget):
         self.plotter.render()
 
     def show_geometry_3d(self, shape: dict, highlighted=None, part=None, status: str = "",
-                         key: str | None = None) -> None:
-        """Preview of a 3D geometry (its implicit surface), without meshing."""
+                         key: str | None = None, pickable: bool = False) -> None:
+        """Preview of a 3D geometry (its implicit surface), without meshing;
+        pickable: clicks on its faces are reported by faceClicked."""
         self._leave_field()
         self.status.setText(status)
-        self._last = ("geometry3d", shape, highlighted, part, status, key)
-        self._pieces, self._regions_of, self._hover = [], None, None
+        self._last = ("geometry3d", shape, highlighted, part, status, key, pickable)
+        self._pieces, self._regions_of, self._hover, self._faces = [], None, None, None
         if self.plotter is None:
             self._placeholder(status)
             return
@@ -335,7 +341,48 @@ class Viewer(QWidget):
         key = ("geometry3d", key if key is not None else repr(shape))
         scene.show_geometry_3d(self.plotter, shape, highlighted, part, reset=key != self._shown_key)
         self._shown_key = key
+        if pickable:
+            surf = scene.geometry_surface_3d(shape)
+            refs = scene.face_refs(surf)
+            if refs is not None:
+                self._faces = (surf, refs)
         self.plotter.render()
+
+    def face_at_display(self, x: float, y: float):
+        """(face id, reference) of the face of the 3D preview at the display
+        point (VTK display coordinates), or None."""
+        if self._faces is None or self.plotter is None:
+            return None
+        import vtk
+        actor = self.plotter.actors.get("surface")
+        if actor is None:
+            return None
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.0005)
+        picker.PickFromListOn()
+        picker.AddPickList(actor)
+        if not picker.Pick(x, y, 0, self.plotter.renderer):
+            return None
+        cell = picker.GetCellId()
+        surf, refs = self._faces
+        if cell < 0 or cell >= surf.n_cells:
+            return None
+        fid = int(surf.cell_data["face_id"][cell])
+        return fid, refs[fid]
+
+    def pick_face_display(self, x: float, y: float) -> None:
+        found = self.face_at_display(x, y)
+        if found is not None:
+            self.faceClicked.emit(found[1])
+
+    def hover_face_display(self, x: float, y: float) -> None:
+        from . import scene
+        found = self.face_at_display(x, y)
+        fid = None if found is None else found[0]
+        if fid != self._hover:
+            self._hover = fid
+            scene.show_face_hover(self.plotter, self._faces[0] if self._faces else None, fid)
+            self.plotter.render()
 
     # -------------------------------------------------------------- picking
 
@@ -356,6 +403,10 @@ class Viewer(QWidget):
         """A click on the view (Qt logical coordinates), converted to VTK display
         coordinates as the render window interactor does (origin at the bottom)."""
         field = self._last is not None and self._last[0] == "field"
+        if self._faces is not None:
+            scale = widget.devicePixelRatioF()
+            self.pick_face_display(round(x * scale), round((widget.height() - y - 1) * scale))
+            return
         if not self._pieces and self._regions_of is None and not field:
             return
         from . import scene
@@ -368,6 +419,10 @@ class Viewer(QWidget):
             self.pick_world(world)
 
     def _on_move(self, *args):
+        if self._faces is not None:
+            x, y = self.plotter.iren.interactor.GetEventPosition()
+            self.hover_face_display(x, y)
+            return
         if self._pieces or self._regions_of is not None:
             self.hover_world(self._event_world()[1])
 
@@ -659,6 +714,7 @@ class Viewer(QWidget):
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status, view)
         self._pieces, self._regions_of = [], None
+        self._faces = None
         self.probe_label.setText("")
         if self.plotter is None:
             self._placeholder(status or name)

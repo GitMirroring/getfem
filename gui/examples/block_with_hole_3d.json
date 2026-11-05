@@ -18,7 +18,7 @@
         {"type": "rectangle", "min": [0, 0, 0], "max": ["Lx", "Ly", "Lz"]},
         {"type": "cylinder", "origin": ["Lx/2", "Ly/2", "-Lz"], "axis": [0, 0, 1], "length": "3*Lz", "radius": "R"}]}},
       "selections": {
-        "hole": {"kind": "boundary", "criteria": {"type": "in_ball", "center": ["Lx/2", "Ly/2", "Lz/2"], "radius": "1.001*sqrt(sqr(R) + sqr(Lz/2))"}}
+        "hole": {"kind": "boundary", "criteria": {"type": "faces", "faces": [{"shape": [1], "face": "side"}]}}
       }
     }
   ],
