@@ -456,16 +456,19 @@ def test_3d_geometry_preview():
     assert d[0] < 0 and d[1] > 0 and d[2] > 0 and d[3] > 0
     assert abs(G3.sdf(shape["of"][1], np.array([[1.25, 0.5, 0.3]]))[0]) < 1e-12
     surf = scene.geometry_surface_3d(shape)
-    C, N = np.asarray(surf.cell_centers().points), np.asarray(surf.cell_data["Normals"])
+    C, N = np.asarray(surf.cell_centers().points), np.asarray(surf.cell_data["outward"])
     top = C[:, 2] > 0.49
     assert np.mean(N[top, 2]) > 0.9                                  # outward normals
     table = {"top": {"kind": "boundary", "criteria": {"type": "plane", "point": [0, 0, 0.5], "normal": [0, 0, 1]}},
-             "hole": {"kind": "boundary", "criteria": {"type": "in_ball", "center": [1, 0.5, 0.25], "radius": 0.3}}}
+             "hole": {"kind": "boundary", "criteria": {"type": "in_ball", "center": [1, 0.5, 0.25],
+                                                       "radius": 1.001 * np.hypot(0.25, 0.25)}}}
     m_top = G3.faces_matching(shape, C, N, "top", table)
     area = np.asarray(surf.compute_cell_sizes().cell_data["Area"])
-    assert abs(area[m_top].sum() / (2 * 1 - np.pi * 0.25 ** 2) - 1) < 0.1    # a grid surface: approximate
+    assert abs(area[m_top].sum() / (2 * 1 - np.pi * 0.25 ** 2) - 1) < 2e-3    # exact faces
     m_hole = G3.faces_matching(shape, C, N, "hole", table)
-    assert abs(area[m_hole & ~m_top].sum() / (2 * np.pi * 0.25 * 0.5) - 1) < 0.2   # the hole, roughly
+    assert abs(area[m_hole & ~m_top].sum() / (2 * np.pi * 0.25 * 0.5) - 1) < 5e-3   # the hole wall
+    box = 2 * (2 * 1 + 2 * 0.5 + 1 * 0.5)
+    assert abs(area.sum() - (box - 2 * np.pi * 0.25 ** 2 + 2 * np.pi * 0.25 * 0.5)) < 5e-3 * area.sum()
     # in the window
     os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
     from getfem_gui.app.window import MainWindow

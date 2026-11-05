@@ -773,7 +773,7 @@ class MainWindow(QMainWindow):
                     from . import scene
                     surf = scene.geometry_surface_3d(shape)
                     C = np.asarray(surf.cell_centers().points) if surf.n_cells else np.zeros((0, 3))
-                    N = np.asarray(surf.cell_data["Normals"]) if surf.n_cells else np.zeros((0, 3))
+                    N = np.asarray(surf.cell_data["outward"]) if surf.n_cells else np.zeros((0, 3))
                     found = G3.faces_matching(shape, C, N, sel, table)
                     highlighted = found
                     title += f" — boundary {sel!r}" + ("" if found is not None else " (shown on the mesh only)")

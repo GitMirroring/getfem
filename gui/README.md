@@ -144,10 +144,11 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   removed and moved (a parameter may only use the ones above it), and a
   renamed parameter is renamed in all its uses.
 - **3D geometries** (box, CSG) are previewed without meshing too: the
-  surface is the zero level set of the distance function of the shapes on a
-  grid (marching cubes, so slightly rounded edges), with the boundary
-  selections (plane, normal, box, ball criteria, approximately) and the
-  shape selected in the tree. See `examples/block_with_hole_3d.json`.
+  surface of each primitive is clipped to its part on the boundary of the
+  whole shape (along a smooth combination of the distance functions of the
+  other primitives), so that the faces stay flat and the edges sharp; the
+  boundary selections (plane, normal, box, ball criteria) and the shape
+  selected in the tree are shown on it. See `examples/block_with_hole_3d.json`.
 - **Materials**: *Add from a library* (a menu by category) copies a material of the built-in
   library (`getfem_gui/data/materials.json`, 27 common materials, typical
   values near 20 °C in SI units, read only) or of your own library

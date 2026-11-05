@@ -18,9 +18,11 @@
 """3D geometries (box and CSG) without meshing, for the preview.
 
 The shapes are described implicitly, by a signed distance like function
-(negative inside), as the GetFEM mesher does; the preview is its zero level
-set on a regular grid (marching cubes), and boundary selections are
-evaluated on that surface. Only numpy is needed.
+(negative inside), as the GetFEM mesher does. The preview (app/scene.py) is
+made of the surfaces of the primitives, each one clipped to the part that
+is on the boundary of the whole shape (boundary_level): the faces stay flat
+and the edges sharp. Boundary selections are evaluated on that surface.
+Only numpy is needed here.
 """
 
 from __future__ import annotations
@@ -103,6 +105,48 @@ def primitives(shape: dict, path: tuple = ()):
         yield path, shape
 
 
+def _sdf_with(shape: dict, P: np.ndarray, path: tuple, value: float, here: tuple = ()) -> np.ndarray:
+    """sdf where the primitive at `path` is replaced by a constant value."""
+    if here == path:
+        return np.full(len(P), value)
+    t = shape["type"]
+    if t not in BOOLEANS:
+        return sdf(shape, P)
+    parts = [_sdf_with(s, P, path, value, here + (i,)) for i, s in enumerate(shape["of"])]
+    if t == "union":
+        return np.min(parts, axis=0)
+    if t == "intersection":
+        return np.max(parts, axis=0)
+    return np.maximum(parts[0], -np.min(parts[1:], axis=0))
+
+
+def orientation(shape: dict, path: tuple) -> int:
+    """+1 if the result grows with the primitive at path (its outward normal
+    is outward of the result), -1 if it is subtracted (an odd number of
+    times)."""
+    sign, node = 1, shape
+    for i in path:
+        if node["type"] == "difference" and i > 0:
+            sign = -sign
+        node = node["of"][i]
+    return sign
+
+
+def boundary_level(shape: dict, path: tuple, P: np.ndarray, big: float) -> np.ndarray:
+    """On the surface of the primitive at path: negative where it is on the
+    boundary of the whole shape, positive elsewhere. The primitive is
+    replaced by "everywhere inside" (-big) then "everywhere outside" (+big):
+    the point is on the boundary if the rest of the shape then gives inside,
+    then outside. With a large `big`, the result is a combination of the
+    distances to the other primitives: smooth, so that clipping the surface
+    of the primitive along it (linear interpolation) is accurate."""
+    eps = big
+    lo, hi = _sdf_with(shape, P, path, -eps), _sdf_with(shape, P, path, eps)
+    if orientation(shape, path) > 0:
+        return np.maximum(lo, -hi)
+    return np.maximum(hi, -lo)
+
+
 def faces_matching(shape: dict, centers: np.ndarray, normals: np.ndarray, selection: str,
                    table: dict) -> np.ndarray | None:
     """Which faces of the preview surface (centers, outward normals) are in a
@@ -119,16 +163,16 @@ def faces_matching(shape: dict, centers: np.ndarray, normals: np.ndarray, select
 
 def _match(crit, C, N, table, size):
     t = crit.get("type")
-    tol = 0.012 * size             # the surface is the one of a grid: about one grid step
+    tol = 1e-4 * size             # the preview surface is exact, but for the curves
     if t == "plane":
         n = np.asarray(crit["normal"], float)
         n = n / (np.linalg.norm(n) or 1.0)
         on = np.abs((C - np.asarray(crit["point"], float)) @ n) < tol
-        return on & (np.abs(N @ n) > 0.9)
+        return on & (np.abs(N @ n) > 0.99)
     if t == "normal":
         d = np.asarray(crit["direction"], float)
         d = d / (np.linalg.norm(d) or 1.0)
-        return N @ d >= np.cos(np.radians(max(float(crit.get("angle", 1.0)), 8.0)))
+        return N @ d >= np.cos(np.radians(max(float(crit.get("angle", 1.0)), 1.0)))
     if t == "in_box":
         lo, hi = np.asarray(crit["min"], float), np.asarray(crit["max"], float)
         return np.all((C >= lo - tol) & (C <= hi + tol), axis=1)

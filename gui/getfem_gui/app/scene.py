@@ -364,7 +364,7 @@ _surfaces: dict[str, pv.PolyData] = {}
 def geometry_surface_3d(shape: dict, n: int = 90) -> pv.PolyData:
     """The boundary of a 3D CSG shape: the zero level set of its distance
     function on a grid of about n points along the longest side, with
-    outward normals (cell data "Normals"). The last ones are cached."""
+    outward normals (cell data "outward"). The last ones are cached."""
     key = repr((shape, n))
     if key not in _surfaces:
         if len(_surfaces) > 8:
@@ -373,7 +373,98 @@ def geometry_surface_3d(shape: dict, n: int = 90) -> pv.PolyData:
     return _surfaces[key]
 
 
+def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
+    """Triangulated surface of a primitive, outward normals, triangles of
+    size about h (fine enough to clip it along the other shapes)."""
+    t = prim["type"]
+    if t == "rectangle":
+        lo, hi = np.asarray(prim["min"], float), np.asarray(prim["max"], float)
+        L = hi - lo
+        faces = []
+        for axis in range(3):
+            i, j = [a for a in range(3) if a != axis]
+            u = np.linspace(lo[i], hi[i], max(1, int(np.ceil(L[i] / h))) + 1)
+            v = np.linspace(lo[j], hi[j], max(1, int(np.ceil(L[j] / h))) + 1)
+            U, V = np.meshgrid(u, v, indexing="ij")
+            for value in (lo[axis], hi[axis]):
+                X = [None, None, None]
+                X[i], X[j], X[axis] = U, V, np.full_like(U, value)
+                grid = pv.StructuredGrid(X[0][:, :, None], X[1][:, :, None], X[2][:, :, None])
+                faces.append(grid.extract_surface())
+        surf = faces[0].merge(faces[1:])
+    elif t == "ball":
+        r = float(prim["radius"])
+        nt = max(48, int(np.ceil(2 * np.pi * r / h)))
+        surf = pv.Sphere(radius=r, center=prim["center"], theta_resolution=nt, phi_resolution=max(24, nt // 2))
+    elif t == "cylinder":
+        o = np.asarray(prim["origin"], float)
+        a = np.asarray(prim["axis"], float)
+        a = a / (np.linalg.norm(a) or 1.0)
+        L, r = float(prim["length"]), float(prim["radius"])
+        nt = max(48, int(np.ceil(2 * np.pi * r / h)))
+        side = pv.CylinderStructured(radius=r, height=L, center=o + L / 2 * a, direction=a,
+                                     theta_resolution=nt, z_resolution=max(2, int(np.ceil(L / h)))).extract_surface()
+        nr = max(2, int(np.ceil(r / h)))
+        caps = [pv.Disc(center=o, inner=0.0, outer=r, normal=-a, r_res=nr, c_res=nt),
+                pv.Disc(center=o + L * a, inner=0.0, outer=r, normal=a, r_res=nr, c_res=nt)]
+        surf = side.merge(caps)
+    else:
+        raise ValueError(f"no 3D surface for {t!r}")
+    surf = surf.triangulate().clean()
+    # outward normals, whatever the orientation pyvista gives
+    from .. import geometry3d as G3
+    surf = surf.compute_normals(cell_normals=True, point_normals=False, auto_orient_normals=False,
+                                consistent_normals=True, split_vertices=False)
+    C = np.asarray(surf.cell_centers().points)
+    N = np.asarray(surf.cell_data["Normals"])
+    eps = 1e-3 * h
+    wrong = G3.sdf(prim, C + eps * N) < G3.sdf(prim, C - eps * N)
+    if wrong.any():
+        tri = np.array(surf.faces).reshape(-1, 4)
+        tri[wrong] = tri[wrong][:, [0, 1, 3, 2]]
+        surf = pv.PolyData(np.asarray(surf.points), tri.ravel())
+    return surf
+
+
 def _surface_3d(shape: dict, n: int) -> pv.PolyData:
+    """The surfaces of the primitives, each clipped to its part on the
+    boundary of the shape; outward normals."""
+    from .. import geometry3d as G3
+    lo, hi = G3.bounds(shape)
+    size = float(np.linalg.norm(hi - lo)) or 1.0
+    h = size / n
+    pieces = []
+    for path, prim in G3.primitives(shape):
+        try:
+            surf = _primitive_surface(prim, h)
+        except (KeyError, TypeError, ValueError):
+            return _surface_3d_grid(shape, n)
+        surf.point_data["c"] = G3.boundary_level(shape, path, np.asarray(surf.points), 10 * size)
+        part = surf.clip_scalar(scalars="c", value=0.0, invert=True)
+        if part.n_cells == 0:
+            continue
+        part = part.extract_surface().triangulate()
+        if G3.orientation(shape, path) < 0:          # a hole: its normals point inwards
+            tri = np.array(part.faces).reshape(-1, 4)[:, [0, 1, 3, 2]]
+            part = pv.PolyData(np.asarray(part.points), tri.ravel())
+        pieces.append(part)
+    if not pieces:
+        return pv.PolyData()
+    surf = pieces[0].merge(pieces[1:]) if len(pieces) > 1 else pieces[0]
+    surf = surf.clean(tolerance=1e-9 * size, absolute=False)
+    surf = surf.compute_normals(cell_normals=True, point_normals=False, auto_orient_normals=False,
+                                consistent_normals=False, split_vertices=False)
+    # outward normals kept under another name: a "Normals" array of the cells
+    # makes VTK shade every face alike
+    surf.cell_data["outward"] = surf.cell_data.pop("Normals")
+    # the edges: between faces at an angle, and the seams between the pieces
+    # (intersections of the primitives: the boundaries of the clipped parts)
+    surf.field_data["edges_kind"] = ["exact"]
+    return surf
+
+
+def _surface_3d_grid(shape: dict, n: int) -> pv.PolyData:
+    """Fallback: the zero level set on a grid (marching cubes)."""
     from .. import geometry3d as G3
     lo, hi = G3.bounds(shape)
     margin = 0.03 * (hi - lo).max()
@@ -392,8 +483,10 @@ def _surface_3d(shape: dict, n: int) -> pv.PolyData:
     N = np.asarray(surf.cell_data["Normals"])
     eps = 0.5 * h
     if np.mean(G3.sdf(shape, C + eps * N) - G3.sdf(shape, C - eps * N)) < 0:
-        surf.cell_data["Normals"] = -N
+        N = -N
         surf.point_data["Normals"] = -np.asarray(surf.point_data["Normals"])
+    surf.cell_data.pop("Normals")
+    surf.cell_data["outward"] = N
     return surf
 
 
@@ -403,15 +496,20 @@ def show_geometry_3d(plotter, shape: dict, highlighted=None, part: dict | None =
     (a boundary selection) or True (the whole domain); part: a primitive
     drawn as a translucent overlay (the shape selected in the tree)."""
     clear(plotter)
+    try:                                    # lights from several directions: faces shaded apart
+        plotter.remove_all_lights()
+        plotter.enable_lightkit()
+    except (AttributeError, TypeError):
+        pass
     surf = geometry_surface_3d(shape)
     if surf.n_cells == 0:
         message(plotter, "empty geometry")
         return
-    plotter.add_mesh(surf, color=HIGHLIGHT if highlighted is True else SURFACE, smooth_shading=True,
+    exact = "edges_kind" in surf.field_data
+    plotter.add_mesh(surf, color=HIGHLIGHT if highlighted is True else SURFACE, smooth_shading=not exact,
                      opacity=0.55 if highlighted is True else 1.0, ambient=0.3, diffuse=0.7,
                      specular=0.1, name="surface")
-    # the edges of the grid surface are slightly chamfered: a moderate angle
-    edges = surf.extract_feature_edges(feature_angle=30, boundary_edges=False, manifold_edges=False,
+    edges = surf.extract_feature_edges(feature_angle=30, boundary_edges=exact, manifold_edges=False,
                                        non_manifold_edges=False)
     if edges.n_points:
         plotter.add_mesh(edges, color=OUTLINE, line_width=2, lighting=False, name="feature_edges")
@@ -430,6 +528,8 @@ def show_geometry_3d(plotter, shape: dict, highlighted=None, part: dict | None =
     if reset:
         plotter.disable_parallel_projection()
         plotter.view_isometric()
+        plotter.camera.azimuth = 20         # not exactly isometric: the faces are shaded differently
+        plotter.camera.elevation = 10
         set_style(plotter, False)
         plotter.reset_camera()
 
