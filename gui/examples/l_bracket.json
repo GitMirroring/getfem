@@ -1,0 +1,77 @@
+{
+  "format_version": 3,
+  "name": "L-shaped bracket: polygon with a fillet hole, loaded at its end",
+  "parameters": [
+    {"name": "W", "value": 0.1, "description": "width of the arms (m)"},
+    {"name": "A", "value": 0.3, "description": "length of the vertical arm (m)"},
+    {"name": "B", "value": 0.25, "description": "length of the horizontal arm (m)"},
+    {"name": "R", "value": 0.02, "description": "radius of the hole (m)"},
+    {"name": "F", "value": -2000000.0, "description": "vertical traction at the end (Pa)"}
+  ],
+  "materials": [
+    {
+      "name": "aluminium_alloy_6061_t6",
+      "description": "Aluminium alloy 6061-T6",
+      "from": "library:Aluminium alloy 6061-T6",
+      "properties": {"k": 167, "E": 68900000000.0, "nu": 0.33, "alpha": 2.36e-05, "rho": 2700, "cp": 896}
+    }
+  ],
+  "geometries": [
+    {
+      "name": "bracket",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "difference",
+          "of": [
+            {
+              "type": "polygon",
+              "points": [[0, 0], ["B", 0], ["B", "W"], ["W", "W"], ["W", "A"], [0, "A"]]
+            },
+            {"type": "ball", "center": ["W/2", "W/2"], "radius": "R"}
+          ]
+        }
+      },
+      "selections": {
+        "top": {
+          "kind": "boundary",
+          "criteria": {"type": "edges", "edges": [{"shape": [0], "side": "side5"}]}
+        },
+        "end": {
+          "kind": "boundary",
+          "criteria": {"type": "edges", "edges": [{"shape": [0], "side": "side2"}]}
+        }
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "bracket", "mesher": "getfem", "h": 0.01, "order": 2}],
+  "models": [
+    {
+      "name": "mechanics",
+      "variables": [{"name": "u", "mesh": "mesh", "fem": "lagrange", "degree": 2, "components": "dim"}],
+      "modules": [
+        {
+          "type": "linear_elasticity",
+          "variable": "u",
+          "plane": "stress",
+          "properties": {
+            "E": [{"selection": "all", "material": "aluminium_alloy_6061_t6"}],
+            "nu": [{"selection": "all", "material": "aluminium_alloy_6061_t6"}]
+          },
+          "sources": [],
+          "conditions": [
+            {"type": "fixed", "selection": "top"},
+            {"type": "traction", "selection": "end", "value": [0.0, "F"]}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "applied_force", "expr": "(sigma*Normal)(2)", "selection": "end"},
+        {"name": "reaction", "expr": "(sigma*Normal)(2)", "selection": "top"},
+        {"name": "area", "expr": "1", "selection": "all"}
+      ],
+      "vtu": "bracket.vtu"
+    }
+  ]
+}

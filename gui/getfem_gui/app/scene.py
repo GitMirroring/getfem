@@ -643,6 +643,12 @@ def show_rubber(plotter, shape: dict | None) -> None:
     elif shape["type"] == "rectangle":
         (x0, y0), (x1, y1) = shape["min"], shape["max"]
         pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
+    elif shape["type"] in ("polygon", "polyline"):
+        pts = np.array([p[:2] for p in shape["points"]], float)
+        if shape["type"] == "polygon":
+            pts = np.vstack([pts, pts[:1]])
+        if len(pts) == 1:
+            pts = np.vstack([pts, pts])
     else:
         c, r = np.asarray(shape["center"]), shape["radius"]
         th = np.linspace(0, 2 * np.pi, 97)
@@ -671,15 +677,22 @@ def show_grid(plotter, lo, hi, step: float) -> None:
                      pickable=False)
 
 
-def show_handles(plotter, positions, active: int | None = None) -> None:
-    """Handles of the selected primitive (empty: remove)."""
+def show_handles(plotter, positions, active: int | None = None, minor=None) -> None:
+    """Handles of the selected primitive (empty: remove); minor: True for the
+    secondary handles (middles of the sides of a polygon), drawn smaller."""
     plotter.remove_actor("handles")
+    plotter.remove_actor("handles_minor")
     plotter.remove_actor("handle_active")
     if not len(positions):
         return
     pts = np.column_stack([np.asarray(positions, float), np.zeros(len(positions))])
-    plotter.add_mesh(pv.PolyData(pts), color="#1f6f78", point_size=12, style="points",
-                     lighting=False, name="handles")
+    small = np.zeros(len(pts), bool) if minor is None else np.asarray(minor, bool)
+    if (~small).any():
+        plotter.add_mesh(pv.PolyData(pts[~small]), color="#1f6f78", point_size=12, style="points",
+                         lighting=False, name="handles")
+    if small.any():
+        plotter.add_mesh(pv.PolyData(pts[small]), color="#6fa8ad", point_size=8, style="points",
+                         lighting=False, name="handles_minor")
     if active is not None:
         plotter.add_mesh(pv.PolyData(pts[active:active + 1]), color=HOVER, point_size=16,
                          style="points", lighting=False, name="handle_active")

@@ -318,7 +318,7 @@ class Viewer(QWidget):
             self._show_grid(True)
         if self._handles:
             from . import scene as _s
-            _s.show_handles(self.plotter, [p for _, p in self._handles])
+            _s.show_handles(self.plotter, [p for _, p in self._handles], minor=self._minor_handles())
         self.plotter.render()
 
     def show_geometry_3d(self, shape: dict, highlighted=None, part=None, status: str = "",
@@ -415,7 +415,10 @@ class Viewer(QWidget):
         row.addWidget(QLabel("Draw:"))
         self.draw_buttons = {}
         for kind, text, tip in (("rectangle", "Rectangle", "Drag from a corner to the opposite one"),
-                                ("ball", "Disk", "Drag from the center to the circle")):
+                                ("ball", "Disk", "Drag from the center to the circle"),
+                                ("polygon", "Polygon", "Click the vertices; click the first one again, "
+                                                       "double-click or press Enter to close; Backspace "
+                                                       "removes the last one")):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(tip + " (Escape: stop drawing)")
@@ -440,7 +443,12 @@ class Viewer(QWidget):
         self._draw_start = None
         self._draw_step = None
         self._handles, self._handle_preview, self._grabbed = [], None, None
+        self._poly = []                   # vertices of the polygon being drawn
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.stop_drawing)
+        for key, slot in ((Qt.Key.Key_Return, self.polygon_close), (Qt.Key.Key_Enter, self.polygon_close),
+                          (Qt.Key.Key_Backspace, self.polygon_back)):
+            sc = QShortcut(QKeySequence(key), self, slot)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)   # not in the forms
 
     # -------------------------------------------------------------- handles
 
@@ -454,8 +462,11 @@ class Viewer(QWidget):
         if self.plotter is None:
             return
         from . import scene
-        scene.show_handles(self.plotter, [p for _, p in self._handles], active)
+        scene.show_handles(self.plotter, [p for _, p in self._handles], active, minor=self._minor_handles())
         self.plotter.render()
+
+    def _minor_handles(self) -> list[bool]:
+        return [n[:1] == "m" and n[1:].isdigit() for n, _ in self._handles]
 
     def handle_press(self, world) -> bool:
         """Grab the handle under the mouse, if any (world coordinates)."""
@@ -512,6 +523,7 @@ class Viewer(QWidget):
             self._tool = kind
         elif self._tool == kind:
             self._tool = None
+        self._poly = []
         self.draw_cancel()
         self._show_grid(self._tool is not None)
 
@@ -543,7 +555,56 @@ class Viewer(QWidget):
         if self._tool is not None:
             self._draw_start = self._snapped(world)
 
+    # polygon: a vertex per click (release); closed on the first vertex
+    def _polygon_rubber(self, current=None) -> None:
+        from . import scene
+        pts = self._poly + ([current] if current is not None else [])
+        scene.show_rubber(self.plotter, {"type": "polyline", "points": pts} if pts else None)
+        self.plotter.render()
+
+    def _polygon_click(self, world) -> None:
+        from . import scene
+        self.plotter.remove_actor("draw_status")
+        p = self._snapped(world)
+        tol = 8 * scene.pixel_size(self.plotter)
+        if len(self._poly) >= 3 and np.hypot(p[0] - self._poly[0][0], p[1] - self._poly[0][1]) < tol:
+            self.polygon_close()
+            return
+        if self._poly and np.hypot(p[0] - self._poly[-1][0], p[1] - self._poly[-1][1]) < tol:
+            if len(self._poly) >= 3:       # a double click on the last vertex closes
+                self.polygon_close()
+            return
+        self._poly.append(p)
+        self._polygon_rubber()
+
+    def polygon_close(self) -> None:
+        """Finish the polygon being drawn (at least three vertices)."""
+        if self._tool != "polygon" or len(self._poly) < 3:
+            return
+        from .. import geometry2d as G
+        pts, self._poly = self._poly, []
+        self.draw_cancel()
+        problem = G.polygon_problem(pts)
+        if problem:
+            self.status_message(f"Polygon not added: {problem}")
+            return
+        self.shapeDrawn.emit({"type": "polygon", "points": pts}, self.draw_op.currentData())
+
+    def polygon_back(self) -> None:
+        if self._tool == "polygon" and self._poly:
+            self._poly.pop()
+            self._polygon_rubber()
+
+    def status_message(self, text: str) -> None:
+        if self.plotter is not None:
+            self.plotter.add_text(text, position="lower_left", font_size=9, color="#aa3300", name="draw_status")
+            self.plotter.render()
+
     def draw_move(self, world) -> None:
+        if self._tool == "polygon" and self.plotter is not None:
+            if self._poly:
+                self._polygon_rubber(self._snapped(world))
+            return
         if self._tool is None or self._draw_start is None or self.plotter is None:
             return
         from .. import geometry2d as G
@@ -557,6 +618,10 @@ class Viewer(QWidget):
         self.plotter.render()
 
     def draw_end(self, world) -> None:
+        if self._tool == "polygon" and self.plotter is not None:
+            self._draw_start = None
+            self._polygon_click(world)
+            return
         if self._tool is None or self._draw_start is None:
             return
         from .. import geometry2d as G
@@ -574,6 +639,8 @@ class Viewer(QWidget):
 
     def draw_cancel(self) -> None:
         self._draw_start = None
+        if self._tool != "polygon":
+            self._poly = []
         if self.plotter is not None:
             from . import scene
             scene.show_rubber(self.plotter, None)

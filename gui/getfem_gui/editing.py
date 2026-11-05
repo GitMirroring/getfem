@@ -41,12 +41,13 @@ from . import model as M, parameters as P
 
 Path = tuple
 
+PRIMITIVES_2D = ("rectangle", "ball", "polygon")
 PRIMITIVES = ("rectangle", "ball", "cylinder") + M.SHAPES_SWEPT
 
 
 def primitives_of_dim(dim: int) -> tuple:
     """The primitives of a shape of dimension dim (2: a 2D geometry or a profile)."""
-    return ("rectangle", "ball") if dim == 2 else PRIMITIVES
+    return PRIMITIVES_2D if dim == 2 else PRIMITIVES
 RESULTS = "_results"          # first element of the path of the result nodes
 
 _TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]")
@@ -70,7 +71,8 @@ class Field:
     key: Path                     # where the value lives in the model
     label: str
     kind: str                     # text, ident, value, vector, numbers, ints, int, number,
-                                  # choice, names, file, info, parameter_table (a whole list)
+                                  # choice, names, file, info, parameter_table (a whole list),
+                                  # material_table, vertex_table (the points of a polygon)
     choices: tuple = ()           # ((value, label), ...) for choice and names
     size: int | None = None       # number of components (vector, numbers, ints)
     op: str | None = None         # special operation instead of a plain assignment
@@ -475,6 +477,10 @@ def _shape_fields(model, path, dim) -> list[Field]:
     elif t == "ball":
         out += [_vec_field(path + ("center",), "Center", "numbers", dim),
                 Field(path + ("radius",), "Radius", "number")]
+    elif t == "polygon":
+        out.append(Field(path + ("points",), "Vertices", "vertex_table",
+                         help="Vertices in order (either direction); values or expressions. In the "
+                              "view, drag a vertex, the middle of a side (adds a vertex) or the center."))
     elif t == "cylinder":
         out += [_vec_field(path + ("origin",), "Origin", "numbers", dim),
                 _vec_field(path + ("axis",), "Axis", "numbers", dim),
@@ -895,6 +901,8 @@ def _default_shape(t: str, dim: int) -> dict:
         return {"type": "rectangle", "min": [0.0] * dim, "max": [1.0] * dim}
     if t == "ball":
         return {"type": "ball", "center": [0.0] * dim, "radius": 0.5}
+    if t == "polygon":
+        return {"type": "polygon", "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 0.6], [0.5, 1.0], [0.0, 0.6]]}
     if t == "cylinder":
         return {"type": "cylinder", "origin": [0.0] * dim, "axis": [0.0] * (dim - 1) + [1.0],
                 "length": 1.0, "radius": 0.5}
@@ -930,7 +938,95 @@ def _scaled_shape(t: str, lo, hi, dim: int) -> dict:
         return {"type": "rectangle", "min": [r(x - e / 8) for x in c], "max": [r(x + e / 8) for x in c]}
     if t == "ball":
         return {"type": "ball", "center": [r(x) for x in c], "radius": r(e / 8)}
+    if t == "polygon":
+        house = _default_shape("polygon", 2)["points"]
+        return {"type": "polygon", "points": [[r(c[0] + (x - 0.5) * e / 4), r(c[1] + (y - 0.5) * e / 4)]
+                                              for x, y in house]}
     return _default_shape(t, dim)
+
+
+def _polygon_from(model: dict, path: Path, shape: dict) -> dict:
+    """A polygon replacing a 2D primitive: the corners of a rectangle, an
+    octagon in a disk (the default polygon otherwise)."""
+    try:
+        s = get_at(P.resolved(model), path)
+        if s.get("type") == "rectangle":
+            (x0, y0), (x1, y1) = (float(v) for v in s["min"]), (float(v) for v in s["max"])
+            return {"type": "polygon", "points": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]}
+        if s.get("type") == "ball":
+            (cx, cy), rad = (float(v) for v in s["center"]), float(s["radius"])
+            return {"type": "polygon", "points": [
+                [float(f"{cx + rad * math.cos(a):.6g}"), float(f"{cy + rad * math.sin(a):.6g}")]
+                for a in (k * math.pi / 4 for k in range(8))]}
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        pass
+    return _default_shape("polygon", 2)
+
+
+def _map_side_refs(model: dict, path: Path, mapping) -> None:
+    """The sides of the 2D primitive at path were renamed or split: update
+    the edge references of the selections (mapping(old side) -> new sides)."""
+    if path[:4] != ("geometries", path[1], "source", "shape") or "profile" in path[4:] \
+            or any(not isinstance(k, int) for k in path[5::2]):
+        return
+    prim = list(path[5::2])
+    for sel in model["geometries"][path[1]].get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") != "edges":
+            continue
+        out = []
+        for ref in crit.get("edges", []):
+            if list(ref.get("shape", [])) != prim:
+                out.append(ref)
+                continue
+            for new in mapping(ref.get("side")):
+                if not any(list(r.get("shape", [])) == prim and r.get("side") == new for r in out):
+                    out.append({"shape": prim, "side": new})
+        crit["edges"] = out
+
+
+def _side_number(name) -> int | None:
+    return int(name[4:]) if isinstance(name, str) and name.startswith("side") and name[4:].isdigit() else None
+
+
+def _vertex_inserted(model: dict, path: Path, i: int) -> None:
+    """A vertex inserted after the vertex i (0-based): the side i + 1 is split."""
+    def mapping(name):
+        k = _side_number(name)
+        if k is None:
+            return [name]
+        return [f"side{k}", f"side{k + 1}"] if k == i + 1 else [f"side{k + 1 if k > i + 1 else k}"]
+    _map_side_refs(model, path, mapping)
+
+
+def _vertex_removed(model: dict, path: Path, i: int, n: int) -> None:
+    """The vertex i (0-based) of a polygon of n vertices removed: its two
+    sides become one."""
+    def mapping(name):
+        k = _side_number(name)
+        if k is None:
+            return [name]
+        if i == 0:                     # sides n and 1 -> n - 1; k -> k - 1
+            return [f"side{n - 1}"] if k in (1, n) else [f"side{k - 1}"]
+        if k in (i, i + 1):
+            return [f"side{i}"]
+        return [f"side{k - 1 if k > i + 1 else k}"]
+    _map_side_refs(model, path, mapping)
+
+
+def vertex_rows(model: dict, path: Path) -> list[tuple]:
+    """Rows of the vertex table of a polygon at path (the points list):
+    (x, y) as given (numbers or expressions) and their values."""
+    pts = get_at(model, path, []) or []
+    try:
+        vals = get_at(P.resolved(model), path, []) or []
+    except P.ParameterError:
+        vals = []
+    out = []
+    for i, p in enumerate(pts):
+        v = vals[i] if i < len(vals) and isinstance(vals[i], list) else [None, None]
+        out.append((p[0] if len(p) > 0 else 0.0, p[1] if len(p) > 1 else 0.0, v[0], v[1]))
+    return out
 
 
 def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
@@ -1182,6 +1278,16 @@ def apply(model: dict, f: Field, value) -> Path | None:
             shape["type"] = value
         elif value in M.SHAPES_BOOLEAN:
             set_at(model, path, {"type": value, "of": [shape, _default_shape("ball", dim)]})
+        elif value == "polygon" and old in ("rectangle", "ball"):
+            poly = _polygon_from(model, path, shape)
+            set_at(model, path, poly)
+            n = len(poly["points"])
+            if old == "rectangle" and n == 4:
+                names = {"ymin": "side1", "xmax": "side2", "ymax": "side3", "xmin": "side4"}
+                _map_side_refs(model, path, lambda name: [names.get(name, name)])
+            else:
+                _map_side_refs(model, path, lambda name: [f"side{k + 1}" for k in range(n)]
+                               if name == "circle" else [name])
         else:
             set_at(model, path, _default_shape(value, dim))
     elif f.op == "selection_kind":
@@ -1433,6 +1539,20 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
     md = owner(model, path)
     dim = item_dim(model, path) if md is not None else \
         ((M.geometry_dim(model, model["geometries"][0]) if model.get("geometries") else None) or 2)
+    if action.split(":")[0] in ("insert_vertex", "remove_vertex"):
+        verb, i = action.split(":")
+        pts, i = get_at(model, path + ("points",)), int(i)
+        if verb == "remove_vertex":
+            if len(pts) <= 3:
+                raise ValueError("a polygon keeps at least three vertices")
+            del pts[i]
+            _vertex_removed(model, path, i, len(pts) + 1)
+        else:                              # a new vertex in the middle of the side i
+            r = get_at(P.resolved(model), path + ("points",))
+            a, b = r[i], r[(i + 1) % len(r)]
+            pts.insert(i + 1, [float(f"{(a[k] + b[k]) / 2:.6g}") for k in range(2)])
+            _vertex_inserted(model, path, i)
+        return path
     if action.split(":")[0] in ("remove_row", "move_up", "move_down"):
         verb, i = action.split(":")
         items, i = get_at(model, path), int(i)
@@ -2006,7 +2126,7 @@ def primitive_node(model: dict, path: Path) -> dict | None:
     if can_draw(model, path) is None or len(path) < 4 or path[2:4] != ("source", "shape"):
         return None
     shape = get_at(model, path)
-    return shape if isinstance(shape, dict) and shape.get("type") in ("rectangle", "ball") else None
+    return shape if isinstance(shape, dict) and shape.get("type") in PRIMITIVES_2D else None
 
 
 def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
@@ -2017,8 +2137,16 @@ def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
     r = P.resolved(model)
     s = get_at(r, path)
     if s is None or any(isinstance(v, str) for k in ("min", "max", "center") for v in s.get(k, [])) \
-            or isinstance(s.get("radius"), str):
+            or isinstance(s.get("radius"), str) \
+            or any(not isinstance(v, (int, float)) for p in s.get("points", []) for v in p):
         return []                          # invalid expressions: validation reports them
+    if s["type"] == "polygon":
+        V = [[float(x), float(y)] for x, y in s["points"]]
+        n = len(V)
+        mids = [[(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2] for i in range(n)]
+        center = [sum(v[0] for v in V) / n, sum(v[1] for v in V) / n]
+        return [(f"v{i}", v) for i, v in enumerate(V)] + [(f"m{i}", m) for i, m in enumerate(mids)] \
+            + [("center", center)]
     if s["type"] == "rectangle":
         (x0, y0), (x1, y1) = s["min"], s["max"]
         return [("min", [x0, y0]), ("xmax_ymin", [x1, y0]), ("max", [x1, y1]), ("xmin_ymax", [x0, y1]),
@@ -2049,13 +2177,42 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
     when a value to change is an expression."""
     shape = primitive_node(model, path)
     if shape is None:
-        raise ValueError("not a rectangle or a disk")
+        raise ValueError("not a rectangle, a disk or a polygon")
     before = copy.deepcopy(model)
     notes: list[str] = []
     x, y = float(point[0]), float(point[1])
     r = get_at(P.resolved(model), path)
     try:
-        if shape["type"] == "rectangle":
+        if shape["type"] == "polygon":
+            V = [list(map(float, v)) for v in r["points"]]
+            if handle == "center":
+                cx, cy = sum(v[0] for v in V) / len(V), sum(v[1] for v in V) / len(V)
+                new = [[v[0] + x - cx, v[1] + y - cy] for v in V]
+                for i, (v, old) in enumerate(zip(new, V)):
+                    for k in range(2):
+                        if abs(v[k] - old[k]) > 1e-15 * max(1.0, abs(old[k])):
+                            _set_number(model, path + ("points", i, k), v[k], notes)
+                return notes
+            if handle.startswith("m"):
+                i = int(handle[1:])
+                V.insert(i + 1, [x, y])
+                from . import geometry2d as G
+                problem = G.polygon_problem(V)
+                if problem:
+                    raise ValueError(f"not a simple polygon ({problem})")
+                shape["points"].insert(i + 1, [x, y])
+                _vertex_inserted(model, path, i)
+                return notes
+            i = int(handle[1:])
+            V[i] = [x, y]
+            from . import geometry2d as G
+            problem = G.polygon_problem(V)
+            if problem:
+                raise ValueError(f"not a simple polygon ({problem})")
+            for k, v in enumerate((x, y)):
+                if abs(v - r["points"][i][k]) > 1e-15 * max(1.0, abs(v)):
+                    _set_number(model, path + ("points", i, k), v, notes)
+        elif shape["type"] == "rectangle":
             (x0, y0), (x1, y1) = r["min"], r["max"]
             if handle == "center":
                 dx, dy = x - (x0 + x1) / 2, y - (y0 + y1) / 2

@@ -18,7 +18,8 @@
 """Exact description of 2D geometries (box and CSG), without meshing.
 
 The boundary of a CSG geometry is made of parts of the sides of its
-primitives (the four sides of a rectangle, the circle of a disk). Each side
+primitives (the four sides of a rectangle, the circle of a disk, the sides
+of a polygon). Each side
 is cut where it actually borders the domain: a side shared by two united
 rectangles is not on the boundary, a circle in an intersection only partly.
 This gives
@@ -83,6 +84,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
         return np.max(np.maximum(lo - P, P - hi), axis=1)
     if t == "ball":
         return np.linalg.norm(P - np.asarray(shape["center"], float), axis=1) - float(shape["radius"])
+    if t == "polygon":
+        return polygon_sdf(np.asarray(shape["points"], float), P)
     parts = [sdf(s, P) for s in shape["of"]]
     if t == "union":
         return np.min(parts, axis=0)
@@ -100,12 +103,74 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
     if t == "ball":
         c, r = np.asarray(shape["center"], float), float(shape["radius"])
         return c - r, c + r
+    if t == "polygon":
+        V = np.asarray(shape["points"], float)
+        return V.min(axis=0), V.max(axis=0)
     b = [bounds(s) for s in shape["of"]]
     if t == "union":
         return np.min([x[0] for x in b], axis=0), np.max([x[1] for x in b], axis=0)
     if t == "intersection":
         return np.max([x[0] for x in b], axis=0), np.min([x[1] for x in b], axis=0)
     return b[0]
+
+
+def polygon_sdf(V: np.ndarray, P: np.ndarray) -> np.ndarray:
+    """Signed euclidean distance to the polygon of vertices V (n x 2) at the
+    points P (m x 2), negative inside."""
+    A, B = V, np.roll(V, -1, axis=0)
+    D = B - A
+    L2 = np.maximum(np.einsum("ij,ij->i", D, D), 1e-300)
+    W = P[:, None, :] - A[None, :, :]                       # m x n x 2
+    t = np.clip(np.einsum("mnk,nk->mn", W, D) / L2, 0.0, 1.0)
+    dist = np.min(np.linalg.norm(W - t[:, :, None] * D[None], axis=2), axis=1)
+    # crossing number
+    y, x = P[:, 1:2], P[:, 0:1]
+    ya, yb = A[None, :, 1], B[None, :, 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        xc = A[None, :, 0] + (y - ya) * (B[None, :, 0] - A[None, :, 0]) / (yb - ya)
+    cross = ((ya > y) != (yb > y)) & (x < xc)
+    inside = np.sum(cross, axis=1) % 2 == 1
+    return np.where(inside, -dist, dist)
+
+
+def polygon_area(points) -> float:
+    """Signed area (positive counterclockwise)."""
+    V = np.asarray(points, float)
+    x, y = V[:, 0], V[:, 1]
+    return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def polygon_problem(points) -> str | None:
+    """Why a list of vertices is not a simple polygon (None if it is)."""
+    V = np.asarray(points, float)
+    n = len(V)
+    if n < 3:
+        return "at least three vertices expected"
+    scale = float(np.ptp(V, axis=0).max()) or 1.0
+    for i in range(n):
+        if np.linalg.norm(V[(i + 1) % n] - V[i]) <= 1e-12 * scale:
+            return f"vertices {i + 1} and {(i + 1) % n + 1} coincide"
+
+    def orient(a, b, c):
+        v = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+        return 0 if abs(v) <= 1e-12 * scale * scale else (1 if v > 0 else -1)
+
+    def on(a, b, c):        # c on the segment [a, b], knowing they are aligned
+        return min(a[0], b[0]) <= c[0] <= max(a[0], b[0]) and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+
+    for i in range(n):
+        a, b = V[i], V[(i + 1) % n]
+        for j in range(i + 1, n):
+            if (j + 1) % n == i or j == (i + 1) % n:
+                continue                 # adjacent sides
+            c, d = V[j], V[(j + 1) % n]
+            o1, o2, o3, o4 = orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
+            if (o1 != o2 and o3 != o4) or (o1 == 0 and on(a, b, c)) or (o2 == 0 and on(a, b, d)) \
+                    or (o3 == 0 and on(c, d, a)) or (o4 == 0 and on(c, d, b)):
+                return f"sides {i + 1} and {j + 1} cross"
+    if abs(polygon_area(V)) <= 1e-12 * scale * scale:
+        return "the polygon has no area"
+    return None
 
 
 def size(shape: dict) -> float:
@@ -147,6 +212,16 @@ class Side:
         return np.column_stack([np.cos(th), np.sin(th)])
 
 
+def side_names(prim: dict) -> tuple:
+    """Names of the sides of a primitive."""
+    t = prim.get("type")
+    if t == "rectangle":
+        return RECTANGLE_SIDES
+    if t == "polygon":
+        return tuple(f"side{i + 1}" for i in range(len(prim.get("points", []))))
+    return ("circle",)
+
+
 def sides(shape: dict) -> list[Side]:
     out = []
     for path, p in primitives(shape):
@@ -158,6 +233,9 @@ def sides(shape: dict) -> list[Side]:
                     Side(path, "ymax", "segment", (x0, y1), (x1, y1))]
         elif p["type"] == "ball":
             out.append(Side(path, "circle", "arc", tuple(p["center"]), (float(p["radius"]), 0.0)))
+        elif p["type"] == "polygon":
+            V = [tuple(float(x) for x in v) for v in p["points"]]
+            out += [Side(path, f"side{i + 1}", "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
     return out
 
 
@@ -384,14 +462,18 @@ def nearest(all_pieces: list[Piece], point, tolerance: float) -> Piece | None:
 
 
 def side_label(shape: dict, ref: dict) -> str:
-    """Readable name of a side reference: 'circle of ball 2', 'xmin of rectangle 1'."""
+    """Readable name of a side reference: 'circle of ball 2', 'xmin of rectangle 1',
+    'side 3 of polygon 2'."""
     prim = primitive_at(shape, ref.get("shape", []))
     names = [p for p, _ in primitives(shape)]
     try:
         index = names.index(tuple(ref.get("shape", []))) + 1
     except ValueError:
         return f"{ref.get('side')} of a missing shape"
-    return f"{ref.get('side')} of {prim['type'] if prim else '?'} {index}"
+    side = str(ref.get("side"))
+    if side.startswith("side") and side[4:].isdigit():
+        side = f"side {side[4:]}"
+    return f"{side} of {prim['type'] if prim else '?'} {index}"
 
 
 # ------------------------------------------------------------------ selections on the pieces

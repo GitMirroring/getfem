@@ -147,6 +147,10 @@ class PropertiesPanel(QScrollArea):
             if f.kind == "material_table":
                 form.addRow(self._material_table(model, f, errors))
                 continue
+            if f.kind == "vertex_table":
+                form.addRow(QLabel(f.label))
+                form.addRow(self._vertex_table(model, f, errors))
+                continue
             widget = self._editor(model, f)
             msgs = E.errors_at(errors, f.key) if f.op != "rename_selection" else []
             if msgs:
@@ -243,6 +247,68 @@ class PropertiesPanel(QScrollArea):
         col.addWidget(table)
         col.addLayout(bar)
         table.setMinimumHeight(min(80 + 30 * len(rows), 420))
+        self._fields[f.key] = table
+        return holder
+
+    def _vertex_table(self, model, f: E.Field, errors) -> QWidget:
+        """The vertices of a polygon: x, y (values or expressions); a vertex
+        is inserted in the middle of the side after the selected one, or removed."""
+        rows = E.vertex_rows(model, f.key)
+        table = QTableWidget(len(rows), 2)
+        table.setObjectName("vertices_table")
+        table.setHorizontalHeaderLabels(["x", "y"])
+        table.setVerticalHeaderLabels([str(i + 1) for i in range(len(rows))])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        for i, r in enumerate(rows):
+            for j in range(2):
+                item = QTableWidgetItem(E.format_value(r[j]))
+                item.setFont(_mono())
+                msgs = E.errors_at(errors, f.key + (i, j)) or E.errors_at(errors, f.key + (i,))
+                if msgs:
+                    item.setBackground(Qt.GlobalColor.yellow)
+                    item.setToolTip("\n".join(msgs))
+                elif isinstance(r[j], str) and r[j + 2] is not None:
+                    item.setToolTip(f"= {E.format_number(float(r[j + 2]))}")
+                table.setItem(i, j, item)
+        if E.errors_at(errors, f.key):
+            table.setToolTip("\n".join(E.errors_at(errors, f.key)))
+            table.setStyleSheet(ERROR_STYLE)
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column()
+            if i >= len(rows):
+                return
+            value = E.parse_value(item.text().strip())
+            if value == rows[i][j]:
+                return
+            self._last_cell = (f.key, i, j)
+            self._commit(E.Field(f.key + (i, j), f"vertex {i + 1}", "value"), value)
+        table.itemChanged.connect(edited)
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        for ident, text, tip in (("insert_vertex", "Insert", "Insert a vertex in the middle of the side "
+                                                            "after the selected vertex"),
+                                 ("remove_vertex", "Remove", "Remove the selected vertex")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"table:{ident}")
+            b.clicked.connect(lambda _=False, v=ident: table.currentRow() >= 0
+                              and self._row_action(f.key, v, table.currentRow()))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(table)
+        col.addLayout(bar)
+        table.setMinimumHeight(min(60 + 30 * len(rows), 360))
         self._fields[f.key] = table
         return holder
 

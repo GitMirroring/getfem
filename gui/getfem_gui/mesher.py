@@ -43,7 +43,7 @@ import numpy as np
 from . import geometry2d as G, geometry3d as G3, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 9
+SCRIPT_VERSION = 10
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -73,6 +73,10 @@ def _floats(v):
     return [float(x) for x in v]
 
 
+def _points(shape):
+    return [_floats(p) for p in shape["points"]]
+
+
 # ------------------------------------------------------------------ construction
 
 def _build_structured(model, geom, mesh, w):
@@ -92,6 +96,8 @@ def _gf_shape(shape, w) -> str:
         w(f"{v} = gf.MesherObject('rectangle', {_floats(shape['min'])}, {_floats(shape['max'])})")
     elif t == "ball":
         w(f"{v} = gf.MesherObject('ball', {_floats(shape['center'])}, {float(shape['radius'])!r})")
+    elif t == "polygon":
+        w(f"{v} = gf.MesherObject('polygon', np.array({_points(shape)}).T)")
     elif t == "cylinder":
         w(f"{v} = gf.MesherObject('cylinder', {_floats(shape['origin'])}, {_floats(shape['axis'])}, "
           f"{float(shape['length'])!r}, {float(shape['radius'])!r})")
@@ -154,6 +160,10 @@ def _occ_shape(shape, dim, w) -> str:
             w(f"{v} = [(2, {occ}.addDisk({c[0]!r}, {c[1]!r}, 0.0, {r!r}, {r!r}))]")
         else:
             w(f"{v} = [(3, {occ}.addSphere({c[0]!r}, {c[1]!r}, {c[2]!r}, {r!r}))]")
+    elif t == "polygon":
+        w(f"_p = [{occ}.addPoint(x, y, 0.0) for x, y in {_points(shape)}]")
+        w(f"_l = [{occ}.addLine(_p[i], _p[(i + 1) % len(_p)]) for i in range(len(_p))]")
+        w(f"{v} = [(2, {occ}.addPlaneSurface([{occ}.addCurveLoop(_l)]))]")
     elif t == "cylinder":
         o, a = _floats(shape["origin"]), _floats(shape["axis"])
         n = sum(x * x for x in a) ** 0.5
@@ -270,6 +280,8 @@ def _selection_code(name, sel, w, shape=None):
         for path, p in prims:
             if p["type"] == "rectangle":
                 w(f"    ('rectangle', {_floats(p['min'])}, {_floats(p['max'])}),")
+            elif p["type"] == "polygon":
+                w(f"    ('polygon', {_points(p)}, None),")
             else:
                 w(f"    ('ball', {_floats(p['center'])}, {float(p['radius'])!r}),")
         w("]")
@@ -361,6 +373,14 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    for kind, a, b in primitives:")
     w("        if kind == 'rectangle':")
     w("            inside.append(np.all((C > np.c_[a]) & (C < np.c_[b]), axis=0))")
+    w("        elif kind == 'polygon':                 # crossing number")
+    w("            V = np.array(a)")
+    w("            W = np.roll(V, -1, axis=0)")
+    w("            x, y = C[0][:, None], C[1][:, None]")
+    w("            with np.errstate(divide='ignore', invalid='ignore'):")
+    w("                xc = V[:, 0] + (y - V[:, 1]) * (W[:, 0] - V[:, 0]) / (W[:, 1] - V[:, 1])")
+    w("            cross = ((V[:, 1] > y) != (W[:, 1] > y)) & (x < xc)")
+    w("            inside.append(np.sum(cross, axis=1) % 2 == 1)")
     w("        else:")
     w("            inside.append(np.linalg.norm(C - np.c_[a], axis=0) < b)")
     w("    inside = np.array(inside).reshape(len(primitives), -1)")

@@ -176,6 +176,12 @@ def _resolve_shape(shape, where, vals, errors):
     if not isinstance(shape, dict):
         return
     _resolve(shape, SHAPE_KEYS, where, vals, errors)
+    if isinstance(shape.get("points"), list):
+        for j, v in enumerate(shape["points"]):
+            if isinstance(v, list):
+                holder = {"v": v}
+                _resolve(holder, ("v",), f"{where}.points[{j}]", vals, errors)
+                shape["points"][j] = holder["v"]
     for j, s in enumerate(shape.get("of", [])):
         _resolve_shape(s, f"{where}.of[{j}]", vals, errors)
     _resolve_shape(shape.get("profile"), f"{where}.profile", vals, errors)

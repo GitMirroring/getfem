@@ -74,6 +74,7 @@ Geometry sources
 - csg       : {"type": "csg", "dim": 2, "shape": <shape>}            primitives + booleans
               shape = {"type": "rectangle", "min": [...], "max": [...]}
                     | {"type": "ball", "center": [...], "radius": r}
+                    | {"type": "polygon", "points": [[x, y], ...]}   (2D, simple, any orientation)
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
                     | {"type": "extrusion", "profile": <2D shape>, "z": [z0, z1]}  (3D, along z)
                     | {"type": "revolution", "profile": <2D shape>}  (3D, about the z axis; the
@@ -685,6 +686,17 @@ def _check_shape(shape, dim, where, errors):
     elif t == "ball":
         _check_vec(shape.get("center"), dim, f"{where}.center", errors)
         _check_positive(shape.get("radius"), f"{where}.radius", errors)
+    elif t == "polygon":
+        if dim != 2:
+            errors.append(f"{where}: polygon only exists in 2D (extrude or turn it in 3D)")
+        pts = shape.get("points")
+        if not isinstance(pts, list) or len(pts) < 3:
+            errors.append(f"{where}.points: at least three vertices expected")
+        elif all(_check_vec(v, 2, f"{where}.points[{i}]", errors) for i, v in enumerate(pts)):
+            from . import geometry2d as G
+            problem = G.polygon_problem(pts)
+            if problem:
+                errors.append(f"{where}.points: not a simple polygon ({problem})")
     elif t == "cylinder":
         if dim != 3:
             errors.append(f"{where}: cylinder only exists in 3D")
@@ -711,7 +723,7 @@ def _check_shape(shape, dim, where, errors):
             _check_shape(s, dim, f"{where}.of[{i}]", errors)
     else:
         errors.append(f"{where}.type: unknown shape {t!r} "
-                      "(rectangle, ball, cylinder, extrusion, revolution, union, intersection, "
+                      "(rectangle, ball, polygon, cylinder, extrusion, revolution, union, intersection, "
                       "difference)")
 
 
@@ -820,7 +832,7 @@ def _check_edges(src, crit, where, errors):
         prim = G.primitive_at(shape, ref.get("shape", []) if isinstance(ref, dict) else None)
         if not isinstance(ref, dict) or prim is None or prim.get("type") in G.BOOLEANS:
             errors.append(f"{w}: no such primitive shape {ref.get('shape') if isinstance(ref, dict) else ref!r}")
-        elif ref.get("side") not in (G.RECTANGLE_SIDES if prim["type"] == "rectangle" else ("circle",)):
+        elif ref.get("side") not in G.side_names(prim):
             errors.append(f"{w}: a {prim['type']} has no side {ref.get('side')!r}")
         elif not G.pieces_of(shape, ref, all_pieces):
             errors.append(f"{w}: the {G.side_label(shape, ref)} is not on the boundary")

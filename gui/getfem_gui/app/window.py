@@ -811,7 +811,7 @@ class MainWindow(QMainWindow):
         self.state.setText("Shape modified" + (f" ({'; '.join(notes)})" if notes else ""))
 
     def _shape_drawn(self, shape: dict, op: str):
-        """A rectangle or a disk drawn in the view: combined with the geometry."""
+        """A rectangle, a disk or a polygon drawn in the view: combined with the geometry."""
         path = self.current_path()
         gi = E.can_draw(self.model, path)
         if gi is None:
@@ -827,7 +827,7 @@ class MainWindow(QMainWindow):
         self._redo.clear()
         self._update_undo()
         self._changed(select=("geometries", gi))
-        what = "Rectangle" if shape["type"] == "rectangle" else "Disk"
+        what = {"rectangle": "Rectangle", "ball": "Disk", "polygon": "Polygon"}.get(shape["type"], "Shape")
         verb = {"union": "added", "difference": "subtracted", "intersection": "intersected"}[op]
         self.state.setText(f"{what} {verb}" + (": " + "; ".join(notes) if notes else ""))
         for n in notes:
@@ -1056,7 +1056,7 @@ class MainWindow(QMainWindow):
         from .properties import ERROR_STYLE
         for f in self._panel_fields:
             w = self.props.editor(f.key)
-            if w is None or f.kind in ("info", "parameter_table", "material_table"):
+            if w is None or f.kind in ("info", "parameter_table", "material_table", "vertex_table"):
                 continue
             msgs = E.errors_at(self.errors, f.key) if f.op != "rename_selection" else []
             w.setStyleSheet(ERROR_STYLE if msgs else "")
