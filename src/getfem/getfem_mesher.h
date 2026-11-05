@@ -781,6 +781,25 @@ namespace getfem {
   { return std::make_shared<mesher_setminus>(a, b); }
 
 
+  // An object whose boundary is not a constraint of the mesher (used for the
+  // lids of the pockets of a polygon).
+  class mesher_unconstrained : public mesher_signed_distance {
+    pmesher_signed_distance d;
+  public:
+    mesher_unconstrained(const pmesher_signed_distance &d_) : d(d_) {}
+    bool bounding_box(base_node &bmin, base_node &bmax) const
+    { return d->bounding_box(bmin, bmax); }
+    virtual scalar_type operator()(const base_node &P) const
+    { return (*d)(P); }
+    virtual scalar_type operator()(const base_node &P, dal::bit_vector &)
+      const { return (*d)(P); }
+    scalar_type grad(const base_node &P, base_small_vector &G) const
+    { return d->grad(P, G); }
+    void hess(const base_node &P, base_matrix &H) const { d->hess(P, H); }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>&) const {}
+  };
+
   // A simple polygon in 2D (not necessarily convex), given by its vertices
   // in either order. It is built from half planes, as the other objects:
   // its convex hull (intersection of half planes) minus its pockets (the
@@ -796,7 +815,7 @@ namespace getfem {
     { return (A[0]-O[0])*(B[1]-O[1]) - (A[1]-O[1])*(B[0]-O[0]); }
 
     // lid: for a pocket, the side shared with the hull of the enclosing
-    // polygon, whose half plane is not repeated
+    // polygon, whose half plane is not repeated (the hull has it)
     static pmesher_signed_distance build(std::vector<base_node> P,
 					 const base_node *lid = 0) {
       size_type n = P.size();
@@ -833,9 +852,9 @@ namespace getfem {
 	bool is_lid = lid
 	  && ((gmm::vect_dist2(A, lid[0]) == 0 && gmm::vect_dist2(B, lid[1]) == 0)
 	   || (gmm::vect_dist2(A, lid[1]) == 0 && gmm::vect_dist2(B, lid[0]) == 0));
-	if (!is_lid)
-	  sides.push_back(new_mesher_half_space
-			  (A, base_small_vector(A[1]-B[1], B[0]-A[0])));
+	if (is_lid) continue;
+	pmesher_signed_distance side = new_mesher_half_space
+	  (A, base_small_vector(A[1]-B[1], B[0]-A[0]));
 	if ((a + 1) % n != b) { // a pocket: the chain from a to b
 	  std::vector<base_node> Q;
 	  for (size_type i = a; ; i = (i + 1) % n)
@@ -844,9 +863,14 @@ namespace getfem {
 	  for (size_type i = 0; i < Q.size(); ++i)
 	    qa += cross(Q[0], Q[i], Q[(i+1) % Q.size()]);
 	  base_node AB[2] = {A, B};
-	  if (Q.size() >= 3 && gmm::abs(qa) > eps)
+	  if (Q.size() >= 3 && gmm::abs(qa) > eps) {
 	    pockets.push_back(build(Q, AB));
+	    // the lid is not a side of the polygon: not a constraint either
+	    // (an extra constraint at the vertices a and b disturbs the mesher)
+	    side = std::make_shared<mesher_unconstrained>(side);
+	  }
 	}
+	sides.push_back(side);
       }
       pmesher_signed_distance hull = (sides.size() == 1) ? sides[0]
 	: new_mesher_intersection(sides);
