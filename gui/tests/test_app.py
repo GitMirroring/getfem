@@ -474,3 +474,20 @@ if __name__ == "__main__":
                 traceback.print_exc()
                 print(f"FAILED   {name}: {exc!r}")
     sys.exit(1 if failed else 0)
+
+
+def test_changing_the_mesher_from_its_combo_box():
+    """The form is rebuilt from the signal of its own combo box: it must not
+    be deleted while the signal runs (this crashed now and then), and the
+    element size is kept."""
+    win = window("plate_with_hole.json")
+    i = next(k for k, m in enumerate(win.model["meshes"]) if m["mesher"] == "getfem")
+    win.select(("meshes", i))
+    h = win.model["meshes"][i]["h"]
+    for mesher in ("gmsh", "getfem") * 5:
+        combo = win.props.editor(("meshes", i, "mesher"))
+        choose(combo, mesher)
+        QApplication.processEvents()
+        assert win.model["meshes"][i]["mesher"] == mesher
+    assert win.model["meshes"][i]["h"] == h
+    close(win)

@@ -131,9 +131,19 @@ def test_type_changes_reset_fields():
     E.apply(model, E.Field(p + ("type",), "", "choice", op="cond_type"), "robin")
     assert set(E.get_at(model, p)) == {"type", "variable", "selection", "h", "value"}
     assert M.validate(model) == []
-    # mesher change: parameters of the new mesher only
-    E.apply(model, E.Field(("meshes", 0, "mesher"), "", "choice", op="mesher"), "getfem")
-    assert "divisions" not in model["meshes"][0] and model["meshes"][0]["h"] > 0
+    # mesher change: parameters of the new mesher only, the fineness is kept
+    f = E.Field(("meshes", 0, "mesher"), "", "choice", op="mesher")
+    E.apply(model, f, "getfem")                              # plate 0.2 x 0.1, 40 x 20 divisions
+    assert "divisions" not in model["meshes"][0] and model["meshes"][0]["h"] == 0.005
+    model["meshes"][0].update(h="2*0.004", order=2)
+    E.apply(model, f, "gmsh")
+    assert model["meshes"][0] == {"name": "mesh", "geometry": "plate", "mesher": "gmsh",
+                                  "size": "2*0.004", "order": 2}
+    E.apply(model, f, "getfem")
+    assert model["meshes"][0]["h"] == "2*0.004" and model["meshes"][0]["order"] == 2
+    model["meshes"][0]["h"] = 0.01
+    E.apply(model, f, "structured")
+    assert model["meshes"][0]["divisions"] == [20, 10]
     assert M.validate(model) == []
 
 

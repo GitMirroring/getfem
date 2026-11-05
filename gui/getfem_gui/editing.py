@@ -1103,12 +1103,7 @@ def apply(model: dict, f: Field, value) -> Path | None:
     elif f.op == "mesher":
         mesh = get_at(model, key[:-1])
         if mesh.get("mesher") != value:
-            geom = M.geometry_of(model, mesh) or {}
-            dim = (M.geometry_dim(model, geom) if geom else None) or 2
-            for k in ("divisions", "element", "h", "size", "order"):
-                mesh.pop(k, None)
-            mesh["mesher"] = value
-            mesh.update(_default_mesh_params(value, dim))
+            _change_mesher(model, mesh, value)
     elif f.op == "mcond_type":
         bc = get_at(model, key[:-1])
         if bc.get("type") != value:
@@ -1131,6 +1126,40 @@ def apply(model: dict, f: Field, value) -> Path | None:
     else:
         raise ValueError(f"unknown operation {f.op!r}")
     return None
+
+
+def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
+    """Change the mesher of a mesh, keeping its fineness: the element size is
+    kept between the GetFEM mesher and Gmsh (an expression of parameters
+    too), and converted from or to the divisions of a structured mesh; the
+    geometric order is kept."""
+    geom = M.geometry_of(model, mesh) or {}
+    dim = (M.geometry_dim(model, geom) if geom else None) or 2
+    old = mesh.get("mesher")
+    size = mesh.get("h" if old == "getfem" else "size") if old in ("getfem", "gmsh") else None
+    order = mesh.get("order", 1)
+    rmesh = M.find_mesh(P.resolved(model), mesh.get("name")) or {}
+    rgeom = M.geometry_of(P.resolved(model), rmesh) or {}
+    src = rgeom.get("source", {})
+    lengths = None
+    if src.get("type") == "box" and all(isinstance(x, (int, float)) for x in src.get("size", [])):
+        lengths = [float(x) for x in src["size"]]
+    if old == "structured" and lengths:
+        div = rmesh.get("divisions", [])
+        if len(div) == len(lengths) and all(isinstance(d, int) and d > 0 for d in div):
+            size = float(f"{min(l / d for l, d in zip(lengths, div)):.6g}")
+    for k in ("divisions", "element", "h", "size", "order"):
+        mesh.pop(k, None)
+    mesh["mesher"] = mesher
+    mesh.update(_default_mesh_params(mesher, dim))
+    if mesher in ("getfem", "gmsh"):
+        if size is not None:
+            mesh["h" if mesher == "getfem" else "size"] = size
+        mesh["order"] = order
+    elif mesher == "structured" and lengths:
+        h = rmesh.get("h" if old == "getfem" else "size")
+        if isinstance(h, (int, float)) and h > 0:
+            mesh["divisions"] = [max(1, int(math.ceil(l / h - 1e-9))) for l in lengths]
 
 
 def _fit_dimension(model: dict, gi: int, dim: int) -> None:

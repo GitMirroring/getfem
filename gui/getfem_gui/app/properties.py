@@ -57,6 +57,13 @@ class PropertiesPanel(QScrollArea):
         self._build_empty()
 
     def _build_empty(self):
+        # The old form is deleted later, not now: the change being applied may
+        # come from one of its widgets (a combo box whose signal is still
+        # running), and deleting it inside its own signal crashes Qt.
+        old = self.takeWidget()
+        if old is not None:
+            old.hide()
+            old.deleteLater()
         self.body = QWidget()
         self.layout_ = QVBoxLayout(self.body)
         self.layout_.setAlignment(Qt.AlignmentFlag.AlignTop)
