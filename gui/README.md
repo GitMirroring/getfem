@@ -103,7 +103,8 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   tools of the view draw a shape by dragging (corner to corner, center to
   circle), snapped to a grid whose step follows the zoom; it is added to,
   subtracted from or intersected with the geometry (Escape stops drawing).
-  The *Polygon* tool takes a vertex per click; clicking the first vertex
+  The *Ellipse* tool draws the ellipse inscribed in the rectangle of two
+  corners. The *Polygon* tool takes a vertex per click; clicking the first vertex
   again, double-clicking or Enter closes it, Backspace removes the last
   vertex (a polygon that crosses itself is refused).
   The shape joins the root boolean of the CSG tree when it is the same
@@ -112,9 +113,10 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   becomes a CSG geometry on the first drawing: its sides `xmin`... become
   selections of the same name (their uses stay valid), and a structured mesh
   of it switches to the GetFEM mesher with an equivalent element size.
-- **Handles**: with a rectangle, a disk or a polygon selected in the tree,
-  its handles (corners and center; center and a point of the circle;
-  vertices, middles of the sides and center) move or resize it, snapped to
+- **Handles**: with a rectangle, a disk, an ellipse or a polygon selected in
+  the tree, its handles (corners and center; center and a point of the
+  circle; center and the ends of the two semi-axes, the first one turning
+  the ellipse; vertices, middles of the sides and center) move or resize it, snapped to
   the grid; dragging the middle of a side of a polygon adds a vertex. A value that is a number is changed; a value that is
   the name of a parameter changes the parameter (dragging the circle of the
   hole of `plate_hole_tension.json` changes `a`); a value given by an
@@ -153,6 +155,11 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   other primitives), so that the faces stay flat and the edges sharp; the
   boundary selections (plane, normal, box, ball criteria) and the shape
   selected in the tree are shown on it. See `examples/block_with_hole_3d.json`.
+- **Ellipses** (2D): center, semi-axes, angle of the first semi-axis in
+  degrees; their boundary is the side `ellipse`. A disk changed into an
+  ellipse keeps its center and radius (and its `edges` references). They
+  need the `ellipse` mesher object of GetFEM (patch "mesher: a working
+  ellipse"); with Gmsh, an OpenCASCADE disk turned by the angle.
 - **Polygons** (2D, not necessarily convex, vertices in either order) are
   primitives like rectangles and disks: their vertices are edited in a
   table (values or expressions of parameters; *Insert* adds a vertex in the
@@ -233,6 +240,7 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
+| `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
 | `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution) |
@@ -242,7 +250,7 @@ widget itself needs a real display.
 The complete format description is in the docstring of `model.py`.
 
 **Geometry sources**: `box` (1D/2D/3D), `csg` (rectangle, disk/ball,
-polygon, cylinder, extrusion and revolution of a 2D profile, union, intersection,
+ellipse, polygon, cylinder, extrusion and revolution of a 2D profile, union, intersection,
 difference), `cad` (STEP, IGES, BREP read by
 Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 

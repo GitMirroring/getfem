@@ -141,7 +141,7 @@ def values(model: dict) -> tuple[dict[str, float], list[str]]:
 # ------------------------------------------------------------------ resolution
 
 # Numerical fields of geometries and meshes that may hold an expression
-SHAPE_KEYS = ("min", "max", "center", "radius", "origin", "axis", "length", "z")
+SHAPE_KEYS = ("min", "max", "center", "radius", "radii", "angle", "origin", "axis", "length", "z")
 CRITERIA_KEYS = ("point", "normal", "direction", "angle", "min", "max", "center", "radius")
 BOX_KEYS = ("origin", "size")
 MESH_KEYS = ("h", "size")

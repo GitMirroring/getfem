@@ -141,10 +141,7 @@ def profile_curves(shape: dict, h: float) -> list[np.ndarray]:
     out = []
     for p in G2.pieces(prof):
         side = p.side
-        if side.kind == "segment":
-            length = float(np.linalg.norm(np.subtract(side.b, side.a))) * (p.t1 - p.t0)
-        else:
-            length = 2 * np.pi * side.b[0] * (p.t1 - p.t0)
+        length = side.length(p.t0, p.t1)
         n = max(1, int(np.ceil(length / h)))
         pts = side.points(np.linspace(p.t0, p.t1, n + 1))
         if shape["type"] == "revolution" and np.max(np.abs(pts[:, 0])) < 1e-9 * size:

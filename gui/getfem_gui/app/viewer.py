@@ -416,6 +416,8 @@ class Viewer(QWidget):
         self.draw_buttons = {}
         for kind, text, tip in (("rectangle", "Rectangle", "Drag from a corner to the opposite one"),
                                 ("ball", "Disk", "Drag from the center to the circle"),
+                                ("ellipse", "Ellipse", "Drag from a corner to the opposite one of the "
+                                                       "rectangle around it (turn it with its handles)"),
                                 ("polygon", "Polygon", "Click the vertices; click the first one again, "
                                                        "double-click or press Enter to close; Backspace "
                                                        "removes the last one")):

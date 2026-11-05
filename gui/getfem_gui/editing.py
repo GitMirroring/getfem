@@ -41,7 +41,7 @@ from . import model as M, parameters as P
 
 Path = tuple
 
-PRIMITIVES_2D = ("rectangle", "ball", "polygon")
+PRIMITIVES_2D = ("rectangle", "ball", "ellipse", "polygon")
 PRIMITIVES = ("rectangle", "ball", "cylinder") + M.SHAPES_SWEPT
 
 
@@ -477,6 +477,11 @@ def _shape_fields(model, path, dim) -> list[Field]:
     elif t == "ball":
         out += [_vec_field(path + ("center",), "Center", "numbers", dim),
                 Field(path + ("radius",), "Radius", "number")]
+    elif t == "ellipse":
+        out += [_vec_field(path + ("center",), "Center", "numbers", 2),
+                _vec_field(path + ("radii",), "Semi-axes", "numbers", 2),
+                Field(path + ("angle",), "Angle (degrees)", "number",
+                      help="Angle of the first semi-axis with the x axis")]
     elif t == "polygon":
         out.append(Field(path + ("points",), "Vertices", "vertex_table",
                          help="Vertices in order (either direction); values or expressions. In the "
@@ -903,6 +908,8 @@ def _default_shape(t: str, dim: int) -> dict:
         return {"type": "ball", "center": [0.0] * dim, "radius": 0.5}
     if t == "polygon":
         return {"type": "polygon", "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 0.6], [0.5, 1.0], [0.0, 0.6]]}
+    if t == "ellipse":
+        return {"type": "ellipse", "center": [0.0, 0.0], "radii": [0.6, 0.3], "angle": 0.0}
     if t == "cylinder":
         return {"type": "cylinder", "origin": [0.0] * dim, "axis": [0.0] * (dim - 1) + [1.0],
                 "length": 1.0, "radius": 0.5}
@@ -938,6 +945,8 @@ def _scaled_shape(t: str, lo, hi, dim: int) -> dict:
         return {"type": "rectangle", "min": [r(x - e / 8) for x in c], "max": [r(x + e / 8) for x in c]}
     if t == "ball":
         return {"type": "ball", "center": [r(x) for x in c], "radius": r(e / 8)}
+    if t == "ellipse":
+        return {"type": "ellipse", "center": [r(x) for x in c], "radii": [r(e / 6), r(e / 12)], "angle": 0.0}
     if t == "polygon":
         house = _default_shape("polygon", 2)["points"]
         return {"type": "polygon", "points": [[r(c[0] + (x - 0.5) * e / 4), r(c[1] + (y - 0.5) * e / 4)]
@@ -947,7 +956,7 @@ def _scaled_shape(t: str, lo, hi, dim: int) -> dict:
 
 def _polygon_from(model: dict, path: Path, shape: dict) -> dict:
     """A polygon replacing a 2D primitive: the corners of a rectangle, an
-    octagon in a disk (the default polygon otherwise)."""
+    octagon in a disk, 12 points of an ellipse (the default polygon otherwise)."""
     try:
         s = get_at(P.resolved(model), path)
         if s.get("type") == "rectangle":
@@ -958,6 +967,11 @@ def _polygon_from(model: dict, path: Path, shape: dict) -> dict:
             return {"type": "polygon", "points": [
                 [float(f"{cx + rad * math.cos(a):.6g}"), float(f"{cy + rad * math.sin(a):.6g}")]
                 for a in (k * math.pi / 4 for k in range(8))]}
+        if s.get("type") == "ellipse":
+            from . import geometry2d as G
+            import numpy as np
+            pts = G.sides(s)[0].points(np.arange(12) / 12.0)
+            return {"type": "polygon", "points": [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in pts]}
     except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
         pass
     return _default_shape("polygon", 2)
@@ -1278,7 +1292,15 @@ def apply(model: dict, f: Field, value) -> Path | None:
             shape["type"] = value
         elif value in M.SHAPES_BOOLEAN:
             set_at(model, path, {"type": value, "of": [shape, _default_shape("ball", dim)]})
-        elif value == "polygon" and old in ("rectangle", "ball"):
+        elif value == "ellipse" and old == "ball":       # same center, both semi-axes the radius
+            set_at(model, path, {"type": "ellipse", "center": copy.deepcopy(shape.get("center", [0.0, 0.0])),
+                                 "radii": [copy.deepcopy(shape.get("radius", 0.5))] * 2, "angle": 0.0})
+            _map_side_refs(model, path, lambda name: ["ellipse" if name == "circle" else name])
+        elif value == "ball" and old == "ellipse":
+            set_at(model, path, {"type": "ball", "center": copy.deepcopy(shape.get("center", [0.0, 0.0])),
+                                 "radius": copy.deepcopy((shape.get("radii") or [0.5])[0])})
+            _map_side_refs(model, path, lambda name: ["circle" if name == "ellipse" else name])
+        elif value == "polygon" and old in ("rectangle", "ball", "ellipse"):
             poly = _polygon_from(model, path, shape)
             set_at(model, path, poly)
             n = len(poly["points"])
@@ -1287,7 +1309,7 @@ def apply(model: dict, f: Field, value) -> Path | None:
                 _map_side_refs(model, path, lambda name: [names.get(name, name)])
             else:
                 _map_side_refs(model, path, lambda name: [f"side{k + 1}" for k in range(n)]
-                               if name == "circle" else [name])
+                               if name in ("circle", "ellipse") else [name])
         else:
             set_at(model, path, _default_shape(value, dim))
     elif f.op == "selection_kind":
@@ -2140,6 +2162,14 @@ def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
             or isinstance(s.get("radius"), str) \
             or any(not isinstance(v, (int, float)) for p in s.get("points", []) for v in p):
         return []                          # invalid expressions: validation reports them
+    if s["type"] == "ellipse":
+        if any(isinstance(v, str) for v in s.get("radii", [])) or isinstance(s.get("angle", 0.0), str):
+            return []
+        (cx, cy), (r1, r2) = s["center"], s["radii"]
+        th = math.radians(float(s.get("angle", 0.0)))
+        return [("center", [cx, cy]),
+                ("axis1", [cx + r1 * math.cos(th), cy + r1 * math.sin(th)]),
+                ("axis2", [cx - r2 * math.sin(th), cy + r2 * math.cos(th)])]
     if s["type"] == "polygon":
         V = [[float(x), float(y)] for x, y in s["points"]]
         n = len(V)
@@ -2183,6 +2213,27 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
     x, y = float(point[0]), float(point[1])
     r = get_at(P.resolved(model), path)
     try:
+        if shape["type"] == "ellipse":
+            (cx, cy), (r1, r2) = (float(v) for v in r["center"]), (float(v) for v in r["radii"])
+            if handle == "center":
+                for i, v in enumerate((x, y)):
+                    if abs(v - r["center"][i]) > 1e-15 * max(1.0, abs(v)):
+                        _set_number(model, path + ("center", i), v, notes)
+                return notes
+            dist = math.hypot(x - cx, y - cy)
+            if dist <= 0:
+                raise ValueError("the semi-axis would be zero")
+            # the first axis turns the ellipse; the second one only sets its length
+            if handle == "axis1":
+                angle = math.degrees(math.atan2(y - cy, x - cx))
+                _set_number(model, path + ("radii", 0), dist, notes)
+            else:
+                angle = math.degrees(math.atan2(y - cy, x - cx)) - 90.0
+                _set_number(model, path + ("radii", 1), dist, notes)
+            angle = (angle + 180.0) % 360.0 - 180.0
+            if abs(angle - float(r.get("angle", 0.0))) > 1e-9:
+                _set_number(model, path + ("angle",), float(f"{angle:.10g}"), notes)
+            return notes
         if shape["type"] == "polygon":
             V = [list(map(float, v)) for v in r["points"]]
             if handle == "center":

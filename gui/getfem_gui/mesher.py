@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
@@ -43,7 +44,7 @@ import numpy as np
 from . import geometry2d as G, geometry3d as G3, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 10
+SCRIPT_VERSION = 11
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -98,6 +99,10 @@ def _gf_shape(shape, w) -> str:
         w(f"{v} = gf.MesherObject('ball', {_floats(shape['center'])}, {float(shape['radius'])!r})")
     elif t == "polygon":
         w(f"{v} = gf.MesherObject('polygon', np.array({_points(shape)}).T)")
+    elif t == "ellipse":
+        r1, r2 = _floats(shape["radii"])
+        w(f"{v} = gf.MesherObject('ellipse', {_floats(shape['center'])}, {r1!r}, {r2!r}, "
+          f"{math.radians(float(shape.get('angle', 0.0)))!r})")
     elif t == "cylinder":
         w(f"{v} = gf.MesherObject('cylinder', {_floats(shape['origin'])}, {_floats(shape['axis'])}, "
           f"{float(shape['length'])!r}, {float(shape['radius'])!r})")
@@ -160,6 +165,14 @@ def _occ_shape(shape, dim, w) -> str:
             w(f"{v} = [(2, {occ}.addDisk({c[0]!r}, {c[1]!r}, 0.0, {r!r}, {r!r}))]")
         else:
             w(f"{v} = [(3, {occ}.addSphere({c[0]!r}, {c[1]!r}, {c[2]!r}, {r!r}))]")
+    elif t == "ellipse":
+        (cx, cy), (r1, r2) = _floats(shape["center"]), _floats(shape["radii"])
+        th = math.radians(float(shape.get("angle", 0.0)))
+        if r1 < r2:                    # OpenCASCADE wants the major semi-axis along x first
+            r1, r2, th = r2, r1, th + math.pi / 2
+        w(f"{v} = [(2, {occ}.addDisk({cx!r}, {cy!r}, 0.0, {r1!r}, {r2!r}))]")
+        if th:
+            w(f"{occ}.rotate({v}, {cx!r}, {cy!r}, 0.0, 0.0, 0.0, 1.0, {th!r})")
     elif t == "polygon":
         w(f"_p = [{occ}.addPoint(x, y, 0.0) for x, y in {_points(shape)}]")
         w(f"_l = [{occ}.addLine(_p[i], _p[(i + 1) % len(_p)]) for i in range(len(_p))]")
@@ -282,6 +295,9 @@ def _selection_code(name, sel, w, shape=None):
                 w(f"    ('rectangle', {_floats(p['min'])}, {_floats(p['max'])}),")
             elif p["type"] == "polygon":
                 w(f"    ('polygon', {_points(p)}, None),")
+            elif p["type"] == "ellipse":
+                w(f"    ('ellipse', {_floats(p['center'])}, ({_floats(p['radii'])}, "
+                  f"{math.radians(float(p.get('angle', 0.0)))!r})),")
             else:
                 w(f"    ('ball', {_floats(p['center'])}, {float(p['radius'])!r}),")
         w("]")
@@ -345,6 +361,17 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("        s = (Q - a) @ d / L**2")
     w("        h = np.abs((Q - a) @ np.array([-d[1], d[0]])) / L")
     w("        return bool(np.all(h < tol) and np.all(s > -tol / L) and np.all(s < 1 + tol / L))")
+    w("    if 'ellipse' in piece:")
+    w("        e = piece['ellipse']")
+    w("        (r1, r2), th = e['radii'], e['angle']")
+    w("        D = Q - np.asarray(e['center'], float)")
+    w("        u = D[:, 0] * np.cos(th) + D[:, 1] * np.sin(th)")
+    w("        v = -D[:, 0] * np.sin(th) + D[:, 1] * np.cos(th)")
+    w("        if not np.all(np.abs(np.hypot(u / r1, v / r2) - 1) * min(r1, r2) < tol):")
+    w("            return False")
+    w("        t = (np.arctan2(v / r2, u / r1) / (2 * np.pi) - e['from']) % 1.0")
+    w("        slack = tol / min(r1, r2)")
+    w("        return bool(np.all((t <= e['to'] - e['from'] + slack) | (t >= 1.0 - slack)))")
     w("    arc = piece['arc']")
     w("    D = Q - np.asarray(arc['center'], float)")
     w("    if not np.all(np.abs(np.linalg.norm(D, axis=1) - arc['radius']) < tol):")
@@ -373,6 +400,12 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    for kind, a, b in primitives:")
     w("        if kind == 'rectangle':")
     w("            inside.append(np.all((C > np.c_[a]) & (C < np.c_[b]), axis=0))")
+    w("        elif kind == 'ellipse':")
+    w("            (r1, r2), th = b")
+    w("            D = C - np.c_[a]")
+    w("            u = D[0] * np.cos(th) + D[1] * np.sin(th)")
+    w("            v = -D[0] * np.sin(th) + D[1] * np.cos(th)")
+    w("            inside.append((u / r1)**2 + (v / r2)**2 < 1)")
     w("        elif kind == 'polygon':                 # crossing number")
     w("            V = np.array(a)")
     w("            W = np.roll(V, -1, axis=0)")

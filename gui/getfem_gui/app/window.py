@@ -827,7 +827,7 @@ class MainWindow(QMainWindow):
         self._redo.clear()
         self._update_undo()
         self._changed(select=("geometries", gi))
-        what = {"rectangle": "Rectangle", "ball": "Disk", "polygon": "Polygon"}.get(shape["type"], "Shape")
+        what = {"rectangle": "Rectangle", "ball": "Disk", "ellipse": "Ellipse", "polygon": "Polygon"}.get(shape["type"], "Shape")
         verb = {"union": "added", "difference": "subtracted", "intersection": "intersected"}[op]
         self.state.setText(f"{what} {verb}" + (": " + "; ".join(notes) if notes else ""))
         for n in notes:

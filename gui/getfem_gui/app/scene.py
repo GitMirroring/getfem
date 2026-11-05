@@ -643,6 +643,9 @@ def show_rubber(plotter, shape: dict | None) -> None:
     elif shape["type"] == "rectangle":
         (x0, y0), (x1, y1) = shape["min"], shape["max"]
         pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
+    elif shape["type"] == "ellipse":
+        from .. import geometry2d as G
+        pts = next(s for s in G.sides(shape)).points(np.linspace(0, 1, 129))
     elif shape["type"] in ("polygon", "polyline"):
         pts = np.array([p[:2] for p in shape["points"]], float)
         if shape["type"] == "polygon":

@@ -86,6 +86,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
         return np.linalg.norm(P - np.asarray(shape["center"], float), axis=1) - float(shape["radius"])
     if t == "polygon":
         return polygon_sdf(np.asarray(shape["points"], float), P)
+    if t == "ellipse":
+        return ellipse_sdf(shape["center"], shape["radii"], float(shape.get("angle", 0.0)), P)
     parts = [sdf(s, P) for s in shape["of"]]
     if t == "union":
         return np.min(parts, axis=0)
@@ -106,6 +108,12 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
     if t == "polygon":
         V = np.asarray(shape["points"], float)
         return V.min(axis=0), V.max(axis=0)
+    if t == "ellipse":
+        c = np.asarray(shape["center"], float)
+        (r1, r2), th = (float(r) for r in shape["radii"]), math.radians(float(shape.get("angle", 0.0)))
+        e = np.array([math.hypot(r1 * math.cos(th), r2 * math.sin(th)),
+                      math.hypot(r1 * math.sin(th), r2 * math.cos(th))])
+        return c - e, c + e
     b = [bounds(s) for s in shape["of"]]
     if t == "union":
         return np.min([x[0] for x in b], axis=0), np.max([x[1] for x in b], axis=0)
@@ -131,6 +139,46 @@ def polygon_sdf(V: np.ndarray, P: np.ndarray) -> np.ndarray:
     cross = ((ya > y) != (yb > y)) & (x < xc)
     inside = np.sum(cross, axis=1) % 2 == 1
     return np.where(inside, -dist, dist)
+
+
+def ellipse_sdf(center, radii, angle_deg: float, P: np.ndarray) -> np.ndarray:
+    """Signed euclidean distance to an ellipse (semi-axes radii, the first
+    one at angle_deg degrees from the x axis), negative inside; the nearest
+    point is found as in D. Eberly, "Distance from a point to an ellipse"."""
+    th = math.radians(angle_deg)
+    D = np.asarray(P, float) - np.asarray(center, float)
+    a = D[:, 0] * math.cos(th) + D[:, 1] * math.sin(th)
+    b = -D[:, 0] * math.sin(th) + D[:, 1] * math.cos(th)
+    r1, r2 = float(radii[0]), float(radii[1])
+    swap = r1 < r2
+    e0, e1 = max(r1, r2), min(r1, r2)
+    y0, y1 = (np.abs(b), np.abs(a)) if swap else (np.abs(a), np.abs(b))
+    q0, q1 = np.empty_like(y0), np.empty_like(y1)
+    # y1 > 0 and y0 > 0: the root of F(s) by bisection
+    gen = (y0 > 0) & (y1 > 0)
+    z0, z1 = y0[gen] / e0, y1[gen] / e1
+    g = z0 ** 2 + z1 ** 2 - 1
+    r0 = (e0 / e1) ** 2
+    n0 = r0 * z0
+    s0, s1 = z1 - 1, np.where(g < 0, 0.0, np.hypot(n0, z1) - 1)
+    for _ in range(100):
+        s = (s0 + s1) / 2
+        gs = (n0 / (s + r0)) ** 2 + (z1 / (s + 1)) ** 2 - 1
+        s0, s1 = np.where(gs > 0, s, s0), np.where(gs > 0, s1, s)
+    s = (s0 + s1) / 2
+    q0[gen], q1[gen] = r0 * y0[gen] / (s + r0), y1[gen] / (s + 1)
+    # on the minor axis
+    m = (y0 <= 0) & (y1 > 0)
+    q0[m], q1[m] = 0.0, e1
+    # on the major axis
+    m = y1 <= 0
+    x = e0 * y0[m] / (e0 * e0 - e1 * e1) if e0 > e1 else np.full(m.sum(), np.inf)
+    inner = x < 1
+    q0[m] = np.where(inner, e0 * np.minimum(x, 1), e0)
+    q1[m] = np.where(inner, e1 * np.sqrt(np.maximum(0.0, 1 - np.minimum(x, 1) ** 2)), 0.0)
+    d = np.hypot(y0 - q0, y1 - q1)
+    inside = (a / r1) ** 2 + (b / r2) ** 2 < 1
+    return np.where(inside, -d, d)
 
 
 def polygon_area(points) -> float:
@@ -185,19 +233,35 @@ class Side:
     """A side of a primitive, parametrized by t in [0, 1]."""
     shape: tuple            # path of the primitive
     side: str               # xmin, xmax, ymin, ymax (rectangle) or circle (disk)
-    kind: str               # "segment" or "arc"
-    a: tuple                # segment: first point; arc: center
-    b: tuple                # segment: second point; arc: (radius, 0)
+    kind: str               # "segment", "arc" or "ellipse" (closed curves: t = 0 and 1 meet)
+    a: tuple                # segment: first point; arc, ellipse: center
+    b: tuple                # segment: second point; arc: (radius, 0); ellipse: (r1, r2, angle in radians)
 
     @property
     def ref(self) -> dict:
         return {"shape": list(self.shape), "side": self.side}
+
+    @property
+    def closed(self) -> bool:
+        return self.kind != "segment"
+
+    def length(self, t0: float = 0.0, t1: float = 1.0) -> float:
+        if self.kind == "segment":
+            return float(np.linalg.norm(np.subtract(self.b, self.a))) * (t1 - t0)
+        if self.kind == "arc":
+            return 2 * math.pi * self.b[0] * (t1 - t0)
+        P = self.points(np.linspace(t0, t1, 2049))
+        return float(np.linalg.norm(np.diff(P, axis=0), axis=1).sum())
 
     def points(self, t) -> np.ndarray:
         t = np.atleast_1d(np.asarray(t, float))
         if self.kind == "segment":
             a, b = np.asarray(self.a), np.asarray(self.b)
             return a + t[:, None] * (b - a)
+        if self.kind == "ellipse":
+            (r1, r2, th), c = self.b, np.asarray(self.a)
+            u, v = r1 * np.cos(2 * math.pi * t), r2 * np.sin(2 * math.pi * t)
+            return c + np.column_stack([u * math.cos(th) - v * math.sin(th), u * math.sin(th) + v * math.cos(th)])
         c, r = np.asarray(self.a), self.b[0]
         th = 2 * math.pi * t
         return c + r * np.column_stack([np.cos(th), np.sin(th)])
@@ -208,6 +272,11 @@ class Side:
             d = np.asarray(self.b) - np.asarray(self.a)
             n = np.array([-d[1], d[0]]) / (np.linalg.norm(d) or 1.0)
             return np.tile(n, (len(t), 1))
+        if self.kind == "ellipse":
+            r1, r2, th = self.b
+            nu, nv = np.cos(2 * math.pi * t) / r1, np.sin(2 * math.pi * t) / r2
+            N = np.column_stack([nu * math.cos(th) - nv * math.sin(th), nu * math.sin(th) + nv * math.cos(th)])
+            return N / np.linalg.norm(N, axis=1)[:, None]
         th = 2 * math.pi * t
         return np.column_stack([np.cos(th), np.sin(th)])
 
@@ -219,6 +288,8 @@ def side_names(prim: dict) -> tuple:
         return RECTANGLE_SIDES
     if t == "polygon":
         return tuple(f"side{i + 1}" for i in range(len(prim.get("points", []))))
+    if t == "ellipse":
+        return ("ellipse",)
     return ("circle",)
 
 
@@ -233,6 +304,9 @@ def sides(shape: dict) -> list[Side]:
                     Side(path, "ymax", "segment", (x0, y1), (x1, y1))]
         elif p["type"] == "ball":
             out.append(Side(path, "circle", "arc", tuple(p["center"]), (float(p["radius"]), 0.0)))
+        elif p["type"] == "ellipse":
+            out.append(Side(path, "ellipse", "ellipse", tuple(float(x) for x in p["center"]),
+                            (float(p["radii"][0]), float(p["radii"][1]), math.radians(float(p.get("angle", 0.0))))))
         elif p["type"] == "polygon":
             V = [tuple(float(x) for x in v) for v in p["points"]]
             out += [Side(path, f"side{i + 1}", "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
@@ -248,7 +322,7 @@ class Piece:
     t1: float
 
     def points(self, n: int = 64) -> np.ndarray:
-        m = max(2, int(n * (self.t1 - self.t0)) + 2) if self.side.kind == "arc" else 2
+        m = max(2, int(n * (self.t1 - self.t0)) + 2) if self.side.closed else 2
         return self.side.points(np.linspace(self.t0, self.t1, m))
 
     def criterion(self) -> dict:
@@ -256,6 +330,10 @@ class Piece:
         if self.side.kind == "segment":
             p = self.side.points([self.t0, self.t1])
             return {"segment": [p[0].tolist(), p[1].tolist()]}
+        if self.side.kind == "ellipse":
+            r1, r2, th = self.side.b
+            return {"ellipse": {"center": [float(c) for c in self.side.a], "radii": [float(r1), float(r2)],
+                                "angle": float(th), "from": float(self.t0), "to": float(self.t1)}}
         return {"arc": {"center": [float(c) for c in self.side.a], "radius": float(self.side.b[0]),
                         "from": float(360.0 * self.t0), "sweep": float(360.0 * (self.t1 - self.t0))}}
 
@@ -302,7 +380,7 @@ def _runs(side: Side, test, samples: int) -> list[Piece]:
     if on[-1]:
         stops = list(stops) + [1.0]
     runs = list(zip(starts, stops))
-    if side.kind == "arc" and on[0] and on[-1] and len(runs) > 1:   # through angle 0
+    if side.closed and on[0] and on[-1] and len(runs) > 1:   # through angle 0
         (s0, e0), (sl, el) = runs[0], runs[-1]
         runs = [(sl, 1.0 + e0)] + runs[1:-1]
     return [Piece(side, a, b) for a, b in runs if b > a]
@@ -344,10 +422,9 @@ def interface_points(shape: dict, h: float) -> np.ndarray:
     pts = []
     for pc in interfaces(shape):
         side = pc.side
-        length = (pc.t1 - pc.t0) * (2 * math.pi * side.b[0] if side.kind == "arc"
-                                     else float(np.linalg.norm(np.subtract(side.b, side.a))))
+        length = side.length(pc.t0, pc.t1)
         n = max(1, int(math.ceil(length / h)))
-        closed = side.kind == "arc" and pc.t1 - pc.t0 >= 1.0 - 1e-12
+        closed = side.closed and pc.t1 - pc.t0 >= 1.0 - 1e-12
         t = np.linspace(pc.t0, pc.t1, n + 1)[:-1 if closed else None]
         if closed and n < 8:
             t = np.linspace(0.0, 1.0, 8, endpoint=False)
@@ -566,14 +643,21 @@ def snap(point, step: float) -> list[float]:
 
 
 def drawn_shape(kind: str, p0, p1) -> dict | None:
-    """The primitive drawn from p0 to p1: a rectangle (two corners) or a disk
-    (center, point of the circle); None if degenerate."""
+    """The primitive drawn from p0 to p1: a rectangle (two corners), a disk
+    (center, point of the circle) or an ellipse (inscribed in the rectangle
+    of two corners); None if degenerate."""
     p0, p1 = np.asarray(p0, float)[:2], np.asarray(p1, float)[:2]
     if kind == "rectangle":
         lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
         if np.any(hi - lo <= 0):
             return None
         return {"type": "rectangle", "min": [float(x) for x in lo], "max": [float(x) for x in hi]}
+    if kind == "ellipse":
+        lo, hi = np.minimum(p0, p1), np.maximum(p0, p1)
+        if np.any(hi - lo <= 0):
+            return None
+        return {"type": "ellipse", "center": [float(x) for x in (lo + hi) / 2],
+                "radii": [float(x) for x in (hi - lo) / 2], "angle": 0.0}
     if kind == "ball":
         r = float(np.linalg.norm(p1 - p0))
         if r <= 0:

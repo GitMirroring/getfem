@@ -75,6 +75,8 @@ Geometry sources
               shape = {"type": "rectangle", "min": [...], "max": [...]}
                     | {"type": "ball", "center": [...], "radius": r}
                     | {"type": "polygon", "points": [[x, y], ...]}   (2D, simple, any orientation)
+                    | {"type": "ellipse", "center": [x, y], "radii": [r1, r2], "angle": a}
+                      (2D; the semi-axis r1 at a degrees from the x axis)
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
                     | {"type": "extrusion", "profile": <2D shape>, "z": [z0, z1]}  (3D, along z)
                     | {"type": "revolution", "profile": <2D shape>}  (3D, about the z axis; the
@@ -686,6 +688,14 @@ def _check_shape(shape, dim, where, errors):
     elif t == "ball":
         _check_vec(shape.get("center"), dim, f"{where}.center", errors)
         _check_positive(shape.get("radius"), f"{where}.radius", errors)
+    elif t == "ellipse":
+        if dim != 2:
+            errors.append(f"{where}: ellipse only exists in 2D (extrude or turn it in 3D)")
+        _check_vec(shape.get("center"), 2, f"{where}.center", errors)
+        _check_vec(shape.get("radii"), 2, f"{where}.radii", errors, positive=True)
+        a = shape.get("angle", 0.0)
+        if isinstance(a, bool) or not isinstance(a, (int, float)):
+            errors.append(f"{where}.angle: number expected (degrees)")
     elif t == "polygon":
         if dim != 2:
             errors.append(f"{where}: polygon only exists in 2D (extrude or turn it in 3D)")
@@ -723,7 +733,7 @@ def _check_shape(shape, dim, where, errors):
             _check_shape(s, dim, f"{where}.of[{i}]", errors)
     else:
         errors.append(f"{where}.type: unknown shape {t!r} "
-                      "(rectangle, ball, polygon, cylinder, extrusion, revolution, union, intersection, "
+                      "(rectangle, ball, ellipse, polygon, cylinder, extrusion, revolution, union, intersection, "
                       "difference)")
 
 
