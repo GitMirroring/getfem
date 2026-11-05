@@ -120,6 +120,9 @@ class PropertiesPanel(QScrollArea):
             if f.kind == "parameter_table":
                 form.addRow(self._parameter_table(model, f, errors))
                 continue
+            if f.kind == "material_table":
+                form.addRow(self._material_table(model, f, errors))
+                continue
             widget = self._editor(model, f)
             msgs = E.errors_at(errors, f.key) if f.op != "rename_selection" else []
             if msgs:
@@ -218,6 +221,49 @@ class PropertiesPanel(QScrollArea):
         table.setMinimumHeight(min(80 + 30 * len(rows), 420))
         self._fields[f.key] = table
         return holder
+
+    def _material_table(self, model, f: E.Field, errors) -> QWidget:
+        """Materials x the properties asked by the modules; a cell edited sets
+        (or adds) the property of the material."""
+        props, rows = E.material_rows(model)
+        table = QTableWidget(len(rows), len(props) + 1)
+        table.setObjectName("materials_table")
+        units = [M.PROPERTIES.get(p, (p, ""))[1] for p in props]
+        table.setHorizontalHeaderLabels(["Material"] + [f"{p} ({u})" if u and u != "1" else p
+                                                        for p, u in zip(props, units)])
+        table.verticalHeader().hide()
+        for i, r in enumerate(rows):
+            item = QTableWidgetItem(r["name"] or "")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            item.setToolTip(f"copied from the {r['from'].replace(':', ' ', 1)}" if r["from"] else "")
+            table.setItem(i, 0, item)
+            for j, v in enumerate(r["values"]):
+                cell = QTableWidgetItem("" if v is None else E.format_value(v))
+                msgs = E.errors_at(errors, r["fields"][j].key)
+                if msgs:
+                    cell.setBackground(Qt.GlobalColor.yellow)
+                    cell.setToolTip("\n".join(msgs))
+                table.setItem(i, j + 1, cell)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column() - 1
+            if j < 0 or i >= len(rows):
+                return
+            text = item.text().strip()
+            if not text or E.parse_value(text) == rows[i]["values"][j]:
+                return
+            self._last_cell = (f.key, i, j + 1)
+            self._commit(rows[i]["fields"][j], E.parse_value(text))
+        table.itemChanged.connect(edited)
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        table.setMinimumHeight(min(80 + 30 * len(rows), 420))
+        self._fields[f.key] = table
+        return table
 
     def _row_action(self, key, verb, row):
         target = {"move_up": row - 1, "move_down": row + 1}.get(verb, row)

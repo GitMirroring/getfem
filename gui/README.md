@@ -143,6 +143,14 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   table: name, value or expression, its number, description; rows are added,
   removed and moved (a parameter may only use the ones above it), and a
   renamed parameter is renamed in all its uses.
+- **Materials**: *Add from a library…* copies a material of the built-in
+  library (`getfem_gui/data/materials.json`, 27 common materials, typical
+  values near 20 °C in SI units, read only) or of your own library
+  (`~/.config/getfem_gui/materials.json`, or `$GETFEM_GUI_MATERIALS`; a
+  material of the model is added to it with *Save in my library*). Only the
+  copies are in the model file, with their origin; the solve script only
+  gets the properties the modules use. The Materials node shows a table of
+  the materials and the properties asked by the modules of the file.
 - **Results**: one entry per model, then its fields; with a result field selected, its form sets the component
   (or magnitude), the deformed shape, the colormap, the color range (empty
   bounds: the range of the values), isolines (evenly spaced in the range),
@@ -182,6 +190,7 @@ widget itself needs a real display.
 | `getfem_gui/cli.py` | command line interface |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
+| `getfem_gui/library.py`, `data/materials.json` | material libraries (built-in, user's), copies into the model |
 | `getfem_gui/geometry2d.py` | exact 2D geometry: boundary pieces of CSG shapes, picked edges, regions and interfaces |
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |

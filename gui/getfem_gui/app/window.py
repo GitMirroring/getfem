@@ -930,7 +930,7 @@ class MainWindow(QMainWindow):
         # Rebuilding the form would lose the keyboard focus: only do it when the
         # form itself changes, otherwise just update the error marks.
         same = new_fields == old_fields and new_path is None and not self._focus_outside_panel() \
-            and not any(x.kind == "parameter_table" for x in self._panel_fields)   # its values change
+            and not any(x.kind in ("parameter_table", "material_table") for x in self._panel_fields)
         self._changed(select=path, rebuild_panel=not same)
         if same:
             self._update_marks()
@@ -995,7 +995,7 @@ class MainWindow(QMainWindow):
         from .properties import ERROR_STYLE
         for f in self._panel_fields:
             w = self.props.editor(f.key)
-            if w is None or f.kind in ("info", "parameter_table"):
+            if w is None or f.kind in ("info", "parameter_table", "material_table"):
                 continue
             msgs = E.errors_at(self.errors, f.key) if f.op != "rename_selection" else []
             w.setStyleSheet(ERROR_STYLE if msgs else "")
@@ -1008,6 +1008,23 @@ class MainWindow(QMainWindow):
             return
         if ident == "cmd:compute":
             self.compute()
+            return
+        if ident == "add_from_library":
+            from .. import library
+            entries = library.materials()
+            labels = [f"{m['name']} ({m.get('category', '')}{', my library' if src == library.USER else ''})"
+                      for src, m in entries]
+            label, ok = QInputDialog.getItem(self, APP_NAME, "Material to copy into the model:", labels, 0, False)
+            if not ok:
+                return
+            src, mat = entries[labels.index(label)]
+            ident = f"add_from_library:{src}:{mat['name']}"
+        if ident == "cmd:save_material":
+            from .. import library
+            mat = E.get_at(self.model, path)
+            where = library.save_to_user(mat)
+            self._log(f"Material {mat.get('name')!r} saved in {where}")
+            self.state.setText(f"Saved in your library ({where})")
             return
         name = None
         if E.needs_name(ident):

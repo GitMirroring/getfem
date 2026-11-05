@@ -527,6 +527,20 @@ def _param_fields(model, path) -> list[Field]:
     return out
 
 
+def material_rows(model: dict) -> tuple[list[str], list[dict]]:
+    """The table of materials: the properties asked by the modules (columns),
+    and per material its name, origin and a field per cell."""
+    from . import library
+    props = library.used_properties(model)
+    rows = []
+    for i, mat in enumerate(model.get("materials", [])):
+        values = mat.get("properties", {})
+        rows.append({"name": mat.get("name"), "from": mat.get("from", ""),
+                     "values": [values.get(p) for p in props],
+                     "fields": [Field(("materials", i, "properties", p), p, "value") for p in props]})
+    return props, rows
+
+
 def parameter_rows(model: dict, path: Path) -> list[dict]:
     """The rows of a table of parameters (path: ("parameters",) or
     ("models", k, "parameters")): name, value as written, its number (None
@@ -782,13 +796,21 @@ def fields(model: dict, path: Path) -> list[Field]:
     if path[0] == "parameters" and n == 2:
         return _param_fields(model, path)
     if path == ("materials",):
-        return [Field(path, "", "info", help="Named sets of property values, used by the "
-                      "properties of the modules.")]
+        return [Field(path, "", "info", help="Materials of the file: copies of library materials "
+                      "or your own ones, used by the properties of the modules (\"Given by\"). "
+                      "The table shows the properties asked by the modules of the file."),
+                Field(path, "", "material_table")]
     if path[0] == "materials" and n == 2:
+        mat = get_at(model, path, {})
         out = [Field(path + ("name",), "Name", "ident", op="rename_material"),
                Field(path + ("description",), "Description", "text")]
-        for p in get_at(model, path + ("properties",), {}):
-            out.append(Field(path + ("properties", p), p, "value", remove=path + ("properties", p)))
+        if mat.get("from"):
+            out.append(Field(path, "", "info", help=f"Copied from the {mat['from'].replace(':', ' ', 1)} "
+                             "(the copy may be changed: the library is not)."))
+        for p in mat.get("properties", {}):
+            label, unit = M.PROPERTIES.get(p, (p, ""))
+            out.append(Field(path + ("properties", p), f"{p} ({unit})" if unit and unit != "1" else p,
+                             "value", help=label, remove=path + ("properties", p)))
         return out
     if path == ("fields",):
         return [Field(path, "", "info", help="Fields defined by a value per domain selection of a "
@@ -1241,9 +1263,10 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif path == ("parameters",):
         out.append(("add_parameter", "Add a parameter"))
     elif path == ("materials",):
-        out.append(("add_material", "Add a material"))
+        out += [("add_from_library", "Add from a library…"), ("add_material", "Add an empty material")]
     elif path[:1] == ("materials",) and n == 2:
-        out += [("add_property", "Add a property"), ("remove", "Remove")]
+        out += [("add_property", "Add a property"), ("cmd:save_material", "Save in my library"),
+                ("remove", "Remove")]
     elif path == ("fields",):
         out.append(("add_field", "Add a field"))
     elif path[:1] in (("fields",), ("parameters",)) and n == 2:
@@ -1399,6 +1422,9 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         fpath = path if path[-2] == "fields" else path
         get_at(model, fpath).setdefault("values", []).append({"selection": M.ALL, "value": 0.0})
         return path
+    if action.startswith("add_from_library:"):
+        from . import library
+        return ("materials", library.copy_into(model, action.split(":", 1)[1]))
     if action == "add_material":
         mats = model.setdefault("materials", [])
         mats.append({"name": unique_name(name or "material", [m.get("name") for m in mats]),

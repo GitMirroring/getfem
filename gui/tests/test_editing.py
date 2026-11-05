@@ -48,7 +48,7 @@ def test_tree_and_fields_of_every_node():
         for node in root.walk():
             for f in E.fields(model, node.path):
                 assert f.kind in ("text", "ident", "value", "vector", "numbers", "ints", "int",
-                                  "number", "choice", "names", "file", "info", "parameter_table"), (node.path, f)
+                                  "number", "choice", "names", "file", "info", "parameter_table", "material_table"), (node.path, f)
                 if f.kind == "choice":
                     value = E.field_value(model, f)
                     assert value is None or value in [c[0] for c in f.choices], (node.path, f, value)
@@ -61,7 +61,7 @@ def test_every_action_keeps_a_valid_model():
         assert M.validate(base) == [], ex.name
         for node in E.tree(base).walk():
             for action, _ in E.actions(base, node.path):
-                if action in ("remove", "add_import") or (action == "unfold"):
+                if action in ("remove", "add_import", "unfold", "add_from_library") or action.startswith("cmd:"):
                     continue
                 model = copy.deepcopy(base)
                 new = E.do_action(model, node.path, action, name="rho" if E.needs_name(action) else None)
@@ -261,6 +261,47 @@ def test_graphics():
     m = copy.deepcopy(model)
     m["models"][0]["graphics"].append({"name": "von_mises", "field": "u"})
     assert any("used more than once" in e for e in M.validate(m))
+
+
+def test_material_libraries():
+    import json
+    import os
+    import tempfile
+    from getfem_gui import library
+    names = [m["name"] for _, m in library.materials(library.LIBRARY)]
+    assert "Copper" in names and len(names) > 20
+    for _, m in library.materials(library.LIBRARY):
+        assert set(m["properties"]) <= set(M.PROPERTIES), m["name"]
+    model = load("plate_inclusion.json")
+    p = E.do_action(model, ("materials",), "add_from_library:library:Stainless steel 304")
+    mat = E.get_at(model, p)
+    assert mat["name"] == "stainless_steel_304" and mat["from"] == "library:Stainless steel 304"
+    assert mat["properties"]["k"] == 16.2 and M.validate(model) == []
+    p2 = E.do_action(model, ("materials",), "add_from_library:library:Stainless steel 304")
+    assert E.get_at(model, p2)["name"] == "stainless_steel_3042"        # a second copy
+    # used by a property: the copy, not the library
+    piece = MB() + ("properties", "k", 1)
+    f = next(x for x in E.fields(model, piece) if x.op == "piece_source")
+    assert ("material:stainless_steel_304", "material stainless_steel_304") in f.choices
+    E.apply(model, f, "material:stainless_steel_304")
+    mat["properties"]["k"] = 15.0
+    assert M.validate(model) == [] and library.find("library:Stainless steel 304")["properties"]["k"] == 16.2
+    # the table: the properties asked by the modules only (here k)
+    props, rows = E.material_rows(model)
+    assert props == ["k"] and [r["values"] for r in rows][-2] == [15.0]
+    E.apply(model, rows[0]["fields"][0], 0.3)
+    assert model["materials"][0]["properties"]["k"] == 0.3
+    # the user's library
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["GETFEM_GUI_MATERIALS"] = str(Path(tmp) / "mine.json")
+        try:
+            library.save_to_user({"name": "x", "description": "My steel", "properties": {"k": 20.0}})
+            assert json.loads((Path(tmp) / "mine.json").read_text())["materials"][0]["name"] == "My steel"
+            assert ("user", library.find("user:My steel")) in library.materials()
+            p3 = E.do_action(model, ("materials",), "add_from_library:user:My steel")
+            assert E.get_at(model, p3)["name"] == "my_steel"
+        finally:
+            del os.environ["GETFEM_GUI_MATERIALS"]
 
 
 def test_values():

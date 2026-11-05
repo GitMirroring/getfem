@@ -190,6 +190,17 @@ GLOBAL_SOLVERS = ("sequence", "staggered")
 DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
 COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
 
+# Catalogue of the material properties: name -> (label, SI unit). The
+# modules and the material libraries use these names.
+PROPERTIES = {
+    "k": ("thermal conductivity", "W/(m·K)"),
+    "E": ("Young's modulus", "Pa"),
+    "nu": ("Poisson's ratio", "1"),
+    "alpha": ("thermal expansion coefficient", "1/K"),
+    "rho": ("density", "kg/m³"),
+    "cp": ("specific heat capacity", "J/(kg·K)"),
+}
+
 # Saved views of a result field (models[k].graphics): their display settings;
 # a missing key takes the default value.
 GRAPHIC_DEFAULTS = {"component": None, "warp": True, "scale": None, "isolines": 0, "bands": False,

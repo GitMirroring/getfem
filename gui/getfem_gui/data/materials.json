@@ -1,0 +1,323 @@
+{
+ "description": "Built-in material library of getfem_gui: typical values near 20 °C, in SI units, for prototyping (isotropic, linear); check them against a datasheet for a design.",
+ "materials": [
+  {
+   "name": "Aluminium (pure)",
+   "category": "metals",
+   "properties": {
+    "k": 237,
+    "E": 70000000000.0,
+    "nu": 0.35,
+    "alpha": 2.31e-05,
+    "rho": 2700,
+    "cp": 897
+   }
+  },
+  {
+   "name": "Aluminium alloy 6061-T6",
+   "category": "metals",
+   "properties": {
+    "k": 167,
+    "E": 68900000000.0,
+    "nu": 0.33,
+    "alpha": 2.36e-05,
+    "rho": 2700,
+    "cp": 896
+   }
+  },
+  {
+   "name": "Copper",
+   "category": "metals",
+   "properties": {
+    "k": 401,
+    "E": 117000000000.0,
+    "nu": 0.34,
+    "alpha": 1.65e-05,
+    "rho": 8960,
+    "cp": 385
+   }
+  },
+  {
+   "name": "Brass",
+   "category": "metals",
+   "properties": {
+    "k": 109,
+    "E": 100000000000.0,
+    "nu": 0.34,
+    "alpha": 1.9e-05,
+    "rho": 8500,
+    "cp": 380
+   }
+  },
+  {
+   "name": "Structural steel",
+   "category": "metals",
+   "properties": {
+    "k": 50,
+    "E": 200000000000.0,
+    "nu": 0.3,
+    "alpha": 1.2e-05,
+    "rho": 7850,
+    "cp": 460
+   }
+  },
+  {
+   "name": "Stainless steel 304",
+   "category": "metals",
+   "properties": {
+    "k": 16.2,
+    "E": 193000000000.0,
+    "nu": 0.29,
+    "alpha": 1.73e-05,
+    "rho": 8000,
+    "cp": 500
+   }
+  },
+  {
+   "name": "Grey cast iron",
+   "category": "metals",
+   "properties": {
+    "k": 50,
+    "E": 110000000000.0,
+    "nu": 0.26,
+    "alpha": 1.1e-05,
+    "rho": 7200,
+    "cp": 460
+   }
+  },
+  {
+   "name": "Titanium alloy Ti-6Al-4V",
+   "category": "metals",
+   "properties": {
+    "k": 6.7,
+    "E": 114000000000.0,
+    "nu": 0.34,
+    "alpha": 8.6e-06,
+    "rho": 4430,
+    "cp": 526
+   }
+  },
+  {
+   "name": "Nickel",
+   "category": "metals",
+   "properties": {
+    "k": 90.9,
+    "E": 200000000000.0,
+    "nu": 0.31,
+    "alpha": 1.34e-05,
+    "rho": 8908,
+    "cp": 445
+   }
+  },
+  {
+   "name": "Lead",
+   "category": "metals",
+   "properties": {
+    "k": 35,
+    "E": 16000000000.0,
+    "nu": 0.44,
+    "alpha": 2.89e-05,
+    "rho": 11340,
+    "cp": 129
+   }
+  },
+  {
+   "name": "Gold",
+   "category": "metals",
+   "properties": {
+    "k": 318,
+    "E": 79000000000.0,
+    "nu": 0.42,
+    "alpha": 1.42e-05,
+    "rho": 19300,
+    "cp": 129
+   }
+  },
+  {
+   "name": "Silver",
+   "category": "metals",
+   "properties": {
+    "k": 429,
+    "E": 83000000000.0,
+    "nu": 0.37,
+    "alpha": 1.89e-05,
+    "rho": 10490,
+    "cp": 235
+   }
+  },
+  {
+   "name": "Tungsten",
+   "category": "metals",
+   "properties": {
+    "k": 173,
+    "E": 411000000000.0,
+    "nu": 0.28,
+    "alpha": 4.5e-06,
+    "rho": 19250,
+    "cp": 134
+   }
+  },
+  {
+   "name": "Alumina (Al2O3)",
+   "category": "ceramics and glasses",
+   "properties": {
+    "k": 30,
+    "E": 370000000000.0,
+    "nu": 0.22,
+    "alpha": 8.1e-06,
+    "rho": 3950,
+    "cp": 880
+   }
+  },
+  {
+   "name": "Silicon",
+   "category": "ceramics and glasses",
+   "properties": {
+    "k": 148,
+    "E": 150000000000.0,
+    "nu": 0.27,
+    "alpha": 2.6e-06,
+    "rho": 2329,
+    "cp": 700
+   }
+  },
+  {
+   "name": "Soda-lime glass",
+   "category": "ceramics and glasses",
+   "properties": {
+    "k": 1.0,
+    "E": 70000000000.0,
+    "nu": 0.22,
+    "alpha": 9e-06,
+    "rho": 2500,
+    "cp": 840
+   }
+  },
+  {
+   "name": "Fused silica",
+   "category": "ceramics and glasses",
+   "properties": {
+    "k": 1.38,
+    "E": 73000000000.0,
+    "nu": 0.17,
+    "alpha": 5.5e-07,
+    "rho": 2200,
+    "cp": 740
+   }
+  },
+  {
+   "name": "Epoxy",
+   "category": "polymers",
+   "properties": {
+    "k": 0.2,
+    "E": 3500000000.0,
+    "nu": 0.35,
+    "alpha": 5.5e-05,
+    "rho": 1200,
+    "cp": 1100
+   }
+  },
+  {
+   "name": "Polyethylene (HDPE)",
+   "category": "polymers",
+   "properties": {
+    "k": 0.48,
+    "E": 1000000000.0,
+    "nu": 0.42,
+    "alpha": 0.00012,
+    "rho": 950,
+    "cp": 1900
+   }
+  },
+  {
+   "name": "PMMA",
+   "category": "polymers",
+   "properties": {
+    "k": 0.19,
+    "E": 3000000000.0,
+    "nu": 0.37,
+    "alpha": 7e-05,
+    "rho": 1180,
+    "cp": 1460
+   }
+  },
+  {
+   "name": "Nylon 6,6",
+   "category": "polymers",
+   "properties": {
+    "k": 0.25,
+    "E": 2800000000.0,
+    "nu": 0.39,
+    "alpha": 8e-05,
+    "rho": 1140,
+    "cp": 1670
+   }
+  },
+  {
+   "name": "Natural rubber",
+   "category": "polymers",
+   "properties": {
+    "k": 0.13,
+    "E": 50000000.0,
+    "nu": 0.49,
+    "alpha": 0.00022,
+    "rho": 920,
+    "cp": 1900
+   }
+  },
+  {
+   "name": "Concrete",
+   "category": "construction",
+   "properties": {
+    "k": 1.7,
+    "E": 30000000000.0,
+    "nu": 0.2,
+    "alpha": 1e-05,
+    "rho": 2400,
+    "cp": 880
+   }
+  },
+  {
+   "name": "Granite",
+   "category": "construction",
+   "properties": {
+    "k": 2.8,
+    "E": 50000000000.0,
+    "nu": 0.25,
+    "alpha": 8e-06,
+    "rho": 2700,
+    "cp": 790
+   }
+  },
+  {
+   "name": "Pine wood (along the grain)",
+   "category": "construction",
+   "properties": {
+    "k": 0.12,
+    "E": 11000000000.0,
+    "nu": 0.35,
+    "alpha": 5e-06,
+    "rho": 500,
+    "cp": 1600
+   }
+  },
+  {
+   "name": "Water (20 °C)",
+   "category": "fluids",
+   "properties": {
+    "k": 0.6,
+    "rho": 998,
+    "cp": 4182
+   }
+  },
+  {
+   "name": "Air (20 °C, 1 atm)",
+   "category": "fluids",
+   "properties": {
+    "k": 0.0257,
+    "rho": 1.204,
+    "cp": 1005
+   }
+  }
+ ]
+}
