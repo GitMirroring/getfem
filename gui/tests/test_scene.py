@@ -436,3 +436,61 @@ def test_field_display_options():
         finally:
             win.setWindowModified(False)
             win.close()
+
+
+def test_3d_geometry_preview():
+    """3D box and CSG geometries are previewed without meshing (implicit
+    surface), with their boundary selections and the selected shape."""
+    import os
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    from getfem_gui import geometry3d as G3
+    from getfem_gui.app import scene
+    shape = {"type": "difference", "of": [
+        {"type": "rectangle", "min": [0, 0, 0], "max": [2, 1, 0.5]},
+        {"type": "cylinder", "origin": [1, 0.5, -0.1], "axis": [0, 0, 1], "length": 0.7, "radius": 0.25}]}
+    P = np.array([[0.1, 0.1, 0.1], [1, 0.5, 0.25], [3, 0, 0], [1.0, 0.5, 0.6]])
+    d = G3.sdf(shape, P)
+    assert d[0] < 0 and d[1] > 0 and d[2] > 0 and d[3] > 0
+    assert abs(G3.sdf(shape["of"][1], np.array([[1.25, 0.5, 0.3]]))[0]) < 1e-12
+    surf = scene.geometry_surface_3d(shape)
+    C, N = np.asarray(surf.cell_centers().points), np.asarray(surf.cell_data["Normals"])
+    top = C[:, 2] > 0.49
+    assert np.mean(N[top, 2]) > 0.9                                  # outward normals
+    table = {"top": {"kind": "boundary", "criteria": {"type": "plane", "point": [0, 0, 0.5], "normal": [0, 0, 1]}},
+             "hole": {"kind": "boundary", "criteria": {"type": "in_ball", "center": [1, 0.5, 0.25], "radius": 0.3}}}
+    m_top = G3.faces_matching(shape, C, N, "top", table)
+    area = np.asarray(surf.compute_cell_sizes().cell_data["Area"])
+    assert abs(area[m_top].sum() / (2 * 1 - np.pi * 0.25 ** 2) - 1) < 0.1    # a grid surface: approximate
+    m_hole = G3.faces_matching(shape, C, N, "hole", table)
+    assert abs(area[m_hole & ~m_top].sum() / (2 * np.pi * 0.25 * 0.5) - 1) < 0.2   # the hole, roughly
+    # in the window
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as tmp:
+        model = M.default_model()
+        model["geometries"][0]["source"] = {"type": "csg", "dim": 3, "shape": shape}
+        model["meshes"][0] = {"name": "mesh", "geometry": "geometry", "mesher": "getfem", "h": 0.1}
+        model["models"][0]["modules"][0]["conditions"] = [
+            {"type": "temperature", "selection": "boundary", "value": 0.0}]
+        path = Path(tmp) / "m.json"
+        M.save(model, path)
+        win = MainWindow(path)
+        try:
+            win.select(("geometries", 0))
+            last = win.viewer._last
+            assert last[0] == "geometry3d" and last[2] is None and "surface" in win.viewer.plotter.actors
+            win.select(("geometries", 0, "source", "shape", "of", 1))
+            assert win.viewer._last[3]["type"] == "cylinder" and "part" in win.viewer.plotter.actors
+            win.select(("models", 0, "modules", 0, "conditions", 0))
+            last = win.viewer._last
+            assert last[0] == "geometry3d" and np.all(last[2])               # the whole boundary
+            assert "selected" in win.viewer.plotter.actors
+            win.select(("models", 0, "modules", 0, "properties", "k", 0))
+            assert win.viewer._last[2] is True                                # the whole domain
+        finally:
+            win.setWindowModified(False)
+            win.close()

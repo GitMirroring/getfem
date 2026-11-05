@@ -358,6 +358,82 @@ def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain:
         plotter.reset_camera()
 
 
+_surfaces: dict[str, pv.PolyData] = {}
+
+
+def geometry_surface_3d(shape: dict, n: int = 90) -> pv.PolyData:
+    """The boundary of a 3D CSG shape: the zero level set of its distance
+    function on a grid of about n points along the longest side, with
+    outward normals (cell data "Normals"). The last ones are cached."""
+    key = repr((shape, n))
+    if key not in _surfaces:
+        if len(_surfaces) > 8:
+            _surfaces.clear()
+        _surfaces[key] = _surface_3d(shape, n)
+    return _surfaces[key]
+
+
+def _surface_3d(shape: dict, n: int) -> pv.PolyData:
+    from .. import geometry3d as G3
+    lo, hi = G3.bounds(shape)
+    margin = 0.03 * (hi - lo).max()
+    lo, hi = lo - margin, hi + margin
+    h = (hi - lo).max() / n
+    dims = np.maximum(np.ceil((hi - lo) / h).astype(int) + 1, 2)
+    grid = pv.ImageData(dimensions=tuple(int(d) for d in dims), spacing=(h, h, h), origin=tuple(lo))
+    grid.point_data["d"] = G3.sdf(shape, np.asarray(grid.points))
+    surf = grid.contour(isosurfaces=[0.0], scalars="d").triangulate().clean()
+    if surf.n_cells == 0:
+        return surf
+    surf = surf.compute_normals(cell_normals=True, point_normals=True, auto_orient_normals=False,
+                                consistent_normals=True, split_vertices=False)
+    # outward: along the gradient of the distance function
+    C = np.asarray(surf.cell_centers().points)
+    N = np.asarray(surf.cell_data["Normals"])
+    eps = 0.5 * h
+    if np.mean(G3.sdf(shape, C + eps * N) - G3.sdf(shape, C - eps * N)) < 0:
+        surf.cell_data["Normals"] = -N
+        surf.point_data["Normals"] = -np.asarray(surf.point_data["Normals"])
+    return surf
+
+
+def show_geometry_3d(plotter, shape: dict, highlighted=None, part: dict | None = None,
+                     title: str = "", reset: bool = True) -> None:
+    """Preview of a 3D geometry: its surface; highlighted: a boolean per face
+    (a boundary selection) or True (the whole domain); part: a primitive
+    drawn as a translucent overlay (the shape selected in the tree)."""
+    clear(plotter)
+    surf = geometry_surface_3d(shape)
+    if surf.n_cells == 0:
+        message(plotter, "empty geometry")
+        return
+    plotter.add_mesh(surf, color=HIGHLIGHT if highlighted is True else SURFACE, smooth_shading=True,
+                     opacity=0.55 if highlighted is True else 1.0, ambient=0.3, diffuse=0.7,
+                     specular=0.1, name="surface")
+    # the edges of the grid surface are slightly chamfered: a moderate angle
+    edges = surf.extract_feature_edges(feature_angle=30, boundary_edges=False, manifold_edges=False,
+                                       non_manifold_edges=False)
+    if edges.n_points:
+        plotter.add_mesh(edges, color=OUTLINE, line_width=2, lighting=False, name="feature_edges")
+    if highlighted is not None and highlighted is not True and np.any(highlighted):
+        sel = surf.extract_cells(np.flatnonzero(highlighted))
+        plotter.add_mesh(sel, color=HIGHLIGHT, smooth_shading=True, name="selected")
+    if part is not None:
+        try:
+            p = geometry_surface_3d(part, 60)
+            if p.n_cells:
+                plotter.add_mesh(p, color=HOVER, opacity=0.45, smooth_shading=True, name="part")
+        except (KeyError, TypeError, ValueError):
+            pass
+    if title:
+        plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
+    if reset:
+        plotter.disable_parallel_projection()
+        plotter.view_isometric()
+        set_style(plotter, False)
+        plotter.reset_camera()
+
+
 def show_region_hover(plotter, shape: dict, region) -> None:
     """Highlight the region under the mouse (None: remove)."""
     from .. import geometry2d as G

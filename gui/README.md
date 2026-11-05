@@ -143,7 +143,12 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   table: name, value or expression, its number, description; rows are added,
   removed and moved (a parameter may only use the ones above it), and a
   renamed parameter is renamed in all its uses.
-- **Materials**: *Add from a library…* copies a material of the built-in
+- **3D geometries** (box, CSG) are previewed without meshing too: the
+  surface is the zero level set of the distance function of the shapes on a
+  grid (marching cubes, so slightly rounded edges), with the boundary
+  selections (plane, normal, box, ball criteria, approximately) and the
+  shape selected in the tree. See `examples/block_with_hole_3d.json`.
+- **Materials**: *Add from a library* (a menu by category) copies a material of the built-in
   library (`getfem_gui/data/materials.json`, 27 common materials, typical
   values near 20 °C in SI units, read only) or of your own library
   (`~/.config/getfem_gui/materials.json`, or `$GETFEM_GUI_MATERIALS`; a
@@ -191,6 +196,7 @@ widget itself needs a real display.
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
 | `getfem_gui/library.py`, `data/materials.json` | material libraries (built-in, user's), copies into the model |
+| `getfem_gui/geometry3d.py` | 3D shapes as distance functions, selections on the preview surface |
 | `getfem_gui/geometry2d.py` | exact 2D geometry: boundary pieces of CSG shapes, picked edges, regions and interfaces |
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |

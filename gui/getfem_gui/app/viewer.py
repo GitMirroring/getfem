@@ -321,6 +321,22 @@ class Viewer(QWidget):
             _s.show_handles(self.plotter, [p for _, p in self._handles])
         self.plotter.render()
 
+    def show_geometry_3d(self, shape: dict, highlighted=None, part=None, status: str = "",
+                         key: str | None = None) -> None:
+        """Preview of a 3D geometry (its implicit surface), without meshing."""
+        self._leave_field()
+        self.status.setText(status)
+        self._last = ("geometry3d", shape, highlighted, part, status, key)
+        self._pieces, self._regions_of, self._hover = [], None, None
+        if self.plotter is None:
+            self._placeholder(status)
+            return
+        from . import scene
+        key = ("geometry3d", key if key is not None else repr(shape))
+        scene.show_geometry_3d(self.plotter, shape, highlighted, part, reset=key != self._shown_key)
+        self._shown_key = key
+        self.plotter.render()
+
     # -------------------------------------------------------------- picking
 
     def _install_picking(self):
@@ -713,6 +729,8 @@ class Viewer(QWidget):
             self.show_mesh(*last[1:])
         elif last[0] == "geometry":
             self.show_geometry(*last[1:])
+        elif last[0] == "geometry3d":
+            self.show_geometry_3d(*last[1:])
         elif last[0] == "field":
             self.show_field(*last[1:])
         else:

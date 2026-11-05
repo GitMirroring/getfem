@@ -1,0 +1,43 @@
+{
+  "format_version": 3,
+  "name": "Block with a hole, heated inside (3D)",
+  "parameters": [
+    {"name": "Lx", "value": 0.2, "description": "length (m)"},
+    {"name": "Ly", "value": 0.1, "description": "width (m)"},
+    {"name": "Lz", "value": 0.05, "description": "thickness (m)"},
+    {"name": "R", "value": 0.02, "description": "radius of the hole (m)"}
+  ],
+  "materials": [
+    {"name": "structural_steel", "description": "Structural steel", "from": "library:Structural steel",
+     "properties": {"k": 50, "E": 200e9, "nu": 0.3, "alpha": 12e-6, "rho": 7850, "cp": 460}}
+  ],
+  "geometries": [
+    {
+      "name": "block",
+      "source": {"type": "csg", "dim": 3, "shape": {"type": "difference", "of": [
+        {"type": "rectangle", "min": [0, 0, 0], "max": ["Lx", "Ly", "Lz"]},
+        {"type": "cylinder", "origin": ["Lx/2", "Ly/2", "-Lz"], "axis": [0, 0, 1], "length": "3*Lz", "radius": "R"}]}},
+      "selections": {
+        "hole": {"kind": "boundary", "criteria": {"type": "in_ball", "center": ["Lx/2", "Ly/2", "Lz/2"], "radius": "1.001*sqrt(sqr(R) + sqr(Lz/2))"}}
+      }
+    }
+  ],
+  "meshes": [
+    {"name": "mesh", "geometry": "block", "mesher": "getfem", "h": 0.012, "order": 1}
+  ],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {"type": "heat_conduction", "variable": "T",
+         "properties": {"k": [{"selection": "all", "material": "structural_steel"}]},
+         "sources": [],
+         "conditions": [{"type": "temperature", "selection": "hole", "value": 100},
+                        {"type": "convection", "selection": "boundary", "h": 20, "T_ext": 20}]}
+      ],
+      "outputs": [{"name": "injected_power", "expr": "k*Grad_T.Normal", "selection": "hole"}],
+      "vtu": "heat.vtu"
+    }
+  ]
+}

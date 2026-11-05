@@ -513,21 +513,20 @@ def test_changing_the_mesher_from_its_combo_box():
 
 
 def test_materials_from_the_library_in_the_window():
-    from PySide6.QtWidgets import QInputDialog
     win = window("plate_inclusion.json")
     win.select(("materials",))
-    original = QInputDialog.getItem
-    QInputDialog.getItem = staticmethod(lambda parent, title, label, items, *a: (
-        next(i for i in items if i.startswith("Copper (")), True))
-    try:
-        button(win, "add_from_library").click()
-    finally:
-        QInputDialog.getItem = original
+    menu = button(win, "add_from_library").menu()
+    metals = next(a.menu() for a in menu.actions() if a.text() == "Metals")
+    next(a for a in metals.actions() if a.text() == "Copper").trigger()
     assert win.model["materials"][-1]["from"] == "library:Copper"
     assert win.current_path() == ("materials", len(win.model["materials"]) - 1)
     win.select(("materials",))
     table = win.props.editor(("materials",))
     assert table.columnCount() == 2 and table.horizontalHeaderItem(1).text() == "k (W/(m·K))"
     table.item(0, 1).setText("0.25")
+    # the same menu from the + button above the tree
+    win.select(("materials",))
+    labels = [a.text() for a in win._populate(win.add_button.menu(), ("materials",), True).actions()]
+    assert "Add from a library" in labels
     assert win.model["materials"][0]["properties"]["k"] == 0.25 and win.errors == []
     close(win)

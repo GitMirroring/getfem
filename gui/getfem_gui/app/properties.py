@@ -25,7 +25,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
@@ -40,6 +40,26 @@ def _mono() -> QFont:
     f = QFont("monospace")
     f.setStyleHint(QFont.StyleHint.Monospace)
     return f
+
+
+def library_menu(parent, emit) -> QMenu:
+    """The materials of the libraries, by category (the user's last);
+    choosing one emits the action that copies it into the model."""
+    from .. import library
+    menu = QMenu(parent)
+    subs = {}
+    for src, mat in library.materials():
+        cat = "My library" if src == library.USER else mat.get("category", "other").capitalize()
+        if cat not in subs:                 # parented: owned by the menu, not by Python
+            subs[cat] = QMenu(cat, menu)
+            menu.addMenu(subs[cat])
+        props = ", ".join(f"{p} = {E.format_value(v)}" for p, v in mat.get("properties", {}).items())
+        act = subs[cat].addAction(mat["name"])
+        act.setToolTip(props)
+        act.triggered.connect(lambda _=False, o=f"{src}:{mat['name']}": emit(f"add_from_library:{o}"))
+    for sub in subs.values():
+        sub.setToolTipsVisible(True)
+    return menu
 
 
 class PropertiesPanel(QScrollArea):
@@ -94,7 +114,11 @@ class PropertiesPanel(QScrollArea):
         for ident, label in actions:
             b = QPushButton(label)
             b.setObjectName(f"action:{ident}")
-            b.clicked.connect(lambda _=False, i=ident: self.action.emit(i))
+            if ident == "add_from_library":            # the materials, in a menu on the button
+                b.setText(label.rstrip("…").rstrip("."))
+                b.setMenu(library_menu(b, self.action.emit))
+            else:
+                b.clicked.connect(lambda _=False, i=ident: self.action.emit(i))
             row.addWidget(b)
         row.addStretch(1)
         w = QWidget()

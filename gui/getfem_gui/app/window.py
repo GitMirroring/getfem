@@ -27,6 +27,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QInputDialog, QLabel,
@@ -733,6 +734,56 @@ class MainWindow(QMainWindow):
             title += ": click edges to add or remove them"
         return title, shape, pieces, highlighted, domain, pickable
 
+    def _show_preview_3d(self, path) -> bool:
+        """The preview of a 3D box or CSG geometry for a node (False if none
+        applies): its surface, the selection or the support of the node,
+        or the selected shape."""
+        from .. import geometry3d as G3
+        if path[:1] in (("meshes",), (E.RESULTS,)):
+            return False
+        model = P.resolved(self.model)
+        gi = E.preview_geometry(self.model, path)
+        geoms = model.get("geometries", [])
+        if gi is None or gi >= len(geoms):
+            return False
+        geom = geoms[gi]
+        shape = G3.shape_of(geom.get("source", {}))
+        if shape is None or not self.viewer.available:
+            return False
+        try:
+            G3.bounds(shape)
+            table = M.selection_table(model, geom)
+        except (KeyError, TypeError, ValueError, IndexError):
+            return False
+        title = f"Geometry {geom.get('name')!r}"
+        highlighted, part = None, None
+        if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape"):
+            part = E.get_at(model, path)
+            title += " — shape highlighted"
+        else:
+            if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
+                sel = path[3]
+            else:
+                _, sel = E.highlighted_selection(self.model, path)
+            if sel is not None and sel in table:
+                if table[sel]["kind"] == M.DOMAIN:
+                    highlighted = True if sel == M.ALL else None
+                    title += f" — domain {sel!r}" + ("" if sel == M.ALL else " (shown on the mesh only)")
+                else:
+                    from . import scene
+                    surf = scene.geometry_surface_3d(shape)
+                    C = np.asarray(surf.cell_centers().points) if surf.n_cells else np.zeros((0, 3))
+                    N = np.asarray(surf.cell_data["Normals"]) if surf.n_cells else np.zeros((0, 3))
+                    found = G3.faces_matching(shape, C, N, sel, table)
+                    highlighted = found
+                    title += f" — boundary {sel!r}" + ("" if found is not None else " (shown on the mesh only)")
+        try:
+            self.viewer.show_geometry_3d(shape, highlighted, part, status=title + " (preview, no mesh)",
+                                         key=geom.get("name"))
+        except Exception as exc:  # noqa: BLE001
+            self.viewer.show_message(f"Cannot display the geometry: {exc}")
+        return True
+
     def _handle_preview(self, path, name, point):
         """The primitive as it would be with the handle at point (for the view)."""
         m = copy.deepcopy(self.model)
@@ -852,6 +903,10 @@ class MainWindow(QMainWindow):
         if path[:1] == (E.RESULTS,):
             return
         preview = self._preview(path)
+        if preview is None and self._show_preview_3d(path):
+            self.viewer.set_drawing(False)
+            self.viewer.set_handles([])
+            return
         self.viewer.set_drawing(preview is not None and E.can_draw(self.model, path) is not None)
         handles = E.shape_handles(self.model, path) if preview is not None else []
         self.viewer.set_handles([])
@@ -955,8 +1010,14 @@ class MainWindow(QMainWindow):
         return out
 
     def _populate(self, menu, path, adding_only):
+        from .properties import library_menu
         menu.clear()
         for ident, label in self.menu_actions(path, adding_only):
+            if ident == "add_from_library":             # a submenu of the materials
+                sub = library_menu(menu, lambda i, p=path: self._run_action(p, i))
+                sub.setTitle(label.rstrip("…"))
+                menu.addMenu(sub)
+                continue
             act = menu.addAction(label)
             act.setData(ident)
             act.triggered.connect(lambda checked=False, i=ident, p=path: self._run_action(p, i))
@@ -1009,16 +1070,6 @@ class MainWindow(QMainWindow):
         if ident == "cmd:compute":
             self.compute()
             return
-        if ident == "add_from_library":
-            from .. import library
-            entries = library.materials()
-            labels = [f"{m['name']} ({m.get('category', '')}{', my library' if src == library.USER else ''})"
-                      for src, m in entries]
-            label, ok = QInputDialog.getItem(self, APP_NAME, "Material to copy into the model:", labels, 0, False)
-            if not ok:
-                return
-            src, mat = entries[labels.index(label)]
-            ident = f"add_from_library:{src}:{mat['name']}"
         if ident == "cmd:save_material":
             from .. import library
             mat = E.get_at(self.model, path)

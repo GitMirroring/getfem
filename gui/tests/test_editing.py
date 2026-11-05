@@ -64,7 +64,7 @@ def test_every_action_keeps_a_valid_model():
                 if action in ("remove", "add_import", "unfold", "add_from_library") or action.startswith("cmd:"):
                     continue
                 model = copy.deepcopy(base)
-                new = E.do_action(model, node.path, action, name="rho" if E.needs_name(action) else None)
+                new = E.do_action(model, node.path, action, name="zeta" if E.needs_name(action) else None)
                 errors = M.validate(model)
                 if action.startswith(("add_model:", "add_module:")):   # new: conditions to be set
                     errors = [e for e in errors if "up to a constant" not in e and "rigid body" not in e]
