@@ -141,7 +141,7 @@ def values(model: dict) -> tuple[dict[str, float], list[str]]:
 # ------------------------------------------------------------------ resolution
 
 # Numerical fields of geometries and meshes that may hold an expression
-SHAPE_KEYS = ("min", "max", "center", "radius", "origin", "axis", "length")
+SHAPE_KEYS = ("min", "max", "center", "radius", "origin", "axis", "length", "z")
 CRITERIA_KEYS = ("point", "normal", "direction", "angle", "min", "max", "center", "radius")
 BOX_KEYS = ("origin", "size")
 MESH_KEYS = ("h", "size")
@@ -178,6 +178,7 @@ def _resolve_shape(shape, where, vals, errors):
     _resolve(shape, SHAPE_KEYS, where, vals, errors)
     for j, s in enumerate(shape.get("of", [])):
         _resolve_shape(s, f"{where}.of[{j}]", vals, errors)
+    _resolve_shape(shape.get("profile"), f"{where}.profile", vals, errors)
 
 
 def _resolve_geometries(geoms, meshes, prefix, vals, errors):

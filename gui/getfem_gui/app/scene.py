@@ -408,6 +408,8 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
         caps = [pv.Disc(center=o, inner=0.0, outer=r, normal=-a, r_res=nr, c_res=nt),
                 pv.Disc(center=o + L * a, inner=0.0, outer=r, normal=a, r_res=nr, c_res=nt)]
         surf = side.merge(caps)
+    elif t in ("extrusion", "revolution"):
+        surf = _swept_surface(prim, h)
     else:
         raise ValueError(f"no 3D surface for {t!r}")
     surf = surf.triangulate().clean()
@@ -423,6 +425,70 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
         tri = np.array(surf.faces).reshape(-1, 4)
         tri[wrong] = tri[wrong][:, [0, 1, 3, 2]]
         surf = pv.PolyData(np.asarray(surf.points), tri.ravel())
+    return surf
+
+
+def _profile_face(profile: dict, curves, h: float) -> pv.PolyData:
+    """The 2D domain of a profile (holes included) in the plane z = 0,
+    triangles of size about h: Delaunay triangulation of the points of its
+    boundary (curves) and of a grid of interior points far enough from the
+    boundary for the sides to be edges; the triangles outside are removed."""
+    from .. import geometry2d as G2
+    B = np.unique(np.round(np.concatenate(curves), 12), axis=0)
+    lo, hi = B.min(axis=0), B.max(axis=0)
+    gx = np.arange(lo[0] + h / 2, hi[0], h)
+    gy = np.arange(lo[1] + h / 2, hi[1], h)
+    X, Y = np.meshgrid(gx, gy, indexing="ij")
+    Q = np.column_stack([X.ravel(), Y.ravel()])
+    if len(Q):
+        Q = Q[G2.sdf(profile, Q) < -0.6 * h]
+    pts = np.concatenate([B, Q])
+    cloud = pv.PolyData(np.column_stack([pts, np.zeros(len(pts))]))
+    face = cloud.delaunay_2d()
+    if face.n_cells == 0:
+        return face
+    C = np.asarray(face.cell_centers().points)[:, :2]
+    inside = np.flatnonzero(G2.sdf(profile, C) < 0)
+    return face.extract_cells(inside).extract_surface().triangulate()
+
+
+def _swept_surface(prim: dict, h: float) -> pv.PolyData:
+    """Surface of an extrusion (along z: sides and two caps) or of a
+    revolution (about z: the boundary of the profile turned around)."""
+    from .. import geometry3d as G3
+    curves = G3.profile_curves(prim, h)
+    if not curves:
+        raise ValueError("empty profile")
+    parts = []
+    if prim["type"] == "extrusion":
+        z0, z1 = sorted(float(v) for v in prim["z"])
+        z = np.linspace(z0, z1, max(1, int(np.ceil((z1 - z0) / h))) + 1)
+        for c in curves:
+            X = np.repeat(c[:, 0:1], len(z), axis=1)
+            Y = np.repeat(c[:, 1:2], len(z), axis=1)
+            Z = np.repeat(z[None, :], len(c), axis=0)
+            parts.append(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface())
+        face = _profile_face(G3.effective_profile(prim), curves, h)
+        for value in (z0, z1):
+            cap = face.copy()
+            cap.points[:, 2] = value
+            parts.append(cap)
+    else:
+        R = max(float(np.max(c[:, 0])) for c in curves)
+        nt = max(48, int(np.ceil(2 * np.pi * R / h)))
+        th = np.linspace(0.0, 2 * np.pi, nt + 1)
+        for c in curves:
+            r = np.maximum(c[:, 0], 0.0)[:, None]
+            X, Y = r * np.cos(th)[None, :], r * np.sin(th)[None, :]
+            Z = np.repeat(c[:, 1:2], len(th), axis=1)
+            parts.append(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface())
+    surf = parts[0].merge(parts[1:]) if len(parts) > 1 else parts[0]
+    surf = surf.triangulate().clean()
+    # degenerate triangles (on the axis of a revolution) removed
+    if surf.n_cells:
+        tri = np.array(surf.faces).reshape(-1, 4)
+        good = (tri[:, 1] != tri[:, 2]) & (tri[:, 2] != tri[:, 3]) & (tri[:, 1] != tri[:, 3])
+        surf = pv.PolyData(np.asarray(surf.points), tri[good].ravel())
     return surf
 
 

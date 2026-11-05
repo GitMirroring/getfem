@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from . import geometry2d as G2
+
 BOOLEANS = ("union", "intersection", "difference")
 
 
@@ -64,6 +66,13 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
         q = np.stack([radial, axial], axis=1)
         outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
         return np.where(np.all(q <= 0, axis=1), np.max(q, axis=1), outside)
+    if t == "extrusion":
+        z0, z1 = (float(v) for v in shape["z"])
+        q = np.stack([G2.sdf(shape["profile"], P[:, :2]), np.maximum(z0 - P[:, 2], P[:, 2] - z1)], axis=1)
+        outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
+        return np.where(np.all(q <= 0, axis=1), np.max(q, axis=1), outside)
+    if t == "revolution":
+        return G2.sdf(shape["profile"], meridian(P))
     parts = [sdf(s, P) for s in shape["of"]]
     if t == "union":
         return np.min(parts, axis=0)
@@ -72,6 +81,11 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "difference":
         return np.maximum(parts[0], -np.min(parts[1:], axis=0))
     raise ValueError(f"shape {t!r} is not 3D")
+
+
+def meridian(P: np.ndarray) -> np.ndarray:
+    """(r, z) of the points P (n x 3), for a revolution about the z axis."""
+    return np.column_stack([np.hypot(P[:, 0], P[:, 1]), P[:, 2]])
 
 
 def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -89,12 +103,54 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         e = r * np.sqrt(np.maximum(1.0 - a * a, 0.0))        # extent of the end disks
         ends = np.array([o, o + L * a])
         return ends.min(axis=0) - e, ends.max(axis=0) + e
+    if t == "extrusion":
+        lo, hi = G2.bounds(shape["profile"])
+        z = sorted(float(v) for v in shape["z"])
+        return np.array([lo[0], lo[1], z[0]]), np.array([hi[0], hi[1], z[1]])
+    if t == "revolution":
+        lo, hi = G2.bounds(shape["profile"])
+        R = max(float(hi[0]), 0.0)
+        return np.array([-R, -R, lo[1]]), np.array([R, R, hi[1]])
     b = [bounds(s) for s in shape["of"]]
     if t == "union":
         return np.min([x[0] for x in b], axis=0), np.max([x[1] for x in b], axis=0)
     if t == "intersection":
         return np.max([x[0] for x in b], axis=0), np.min([x[1] for x in b], axis=0)
     return b[0]
+
+
+def effective_profile(shape: dict) -> dict:
+    """The profile of an extrusion or a revolution; for a revolution, its
+    part with r >= 0 (the rest is ignored, as by the GetFEM mesher)."""
+    prof = shape["profile"]
+    if shape["type"] == "revolution":
+        lo, hi = G2.bounds(prof)
+        if lo[0] < 0:
+            m = 1.0 + float(np.max(np.abs(np.concatenate([lo, hi]))))
+            prof = {"type": "intersection",
+                    "of": [prof, {"type": "rectangle", "min": [0.0, lo[1] - m], "max": [hi[0] + m, hi[1] + m]}]}
+    return prof
+
+
+def profile_curves(shape: dict, h: float) -> list[np.ndarray]:
+    """The boundary of the profile of an extrusion or a revolution, as
+    polylines (n x 2) with segments of length about h; for a revolution,
+    without the parts on the axis."""
+    prof = effective_profile(shape)
+    size = G2.size(prof)
+    out = []
+    for p in G2.pieces(prof):
+        side = p.side
+        if side.kind == "segment":
+            length = float(np.linalg.norm(np.subtract(side.b, side.a))) * (p.t1 - p.t0)
+        else:
+            length = 2 * np.pi * side.b[0] * (p.t1 - p.t0)
+        n = max(1, int(np.ceil(length / h)))
+        pts = side.points(np.linspace(p.t0, p.t1, n + 1))
+        if shape["type"] == "revolution" and np.max(np.abs(pts[:, 0])) < 1e-9 * size:
+            continue
+        out.append(pts)
+    return out
 
 
 def primitives(shape: dict, path: tuple = ()):

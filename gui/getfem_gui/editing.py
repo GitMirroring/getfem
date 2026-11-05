@@ -41,7 +41,12 @@ from . import model as M, parameters as P
 
 Path = tuple
 
-PRIMITIVES = ("rectangle", "ball", "cylinder")
+PRIMITIVES = ("rectangle", "ball", "cylinder") + M.SHAPES_SWEPT
+
+
+def primitives_of_dim(dim: int) -> tuple:
+    """The primitives of a shape of dimension dim (2: a 2D geometry or a profile)."""
+    return ("rectangle", "ball") if dim == 2 else PRIMITIVES
 RESULTS = "_results"          # first element of the path of the result nodes
 
 _TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]")
@@ -124,6 +129,12 @@ def item_geometry(model: dict, path: Path) -> dict | None:
 def geometry_dim(model: dict, gi: int) -> int:
     geoms = model.get("geometries", [])
     return (M.geometry_dim(model, geoms[gi]) if gi < len(geoms) else None) or 2
+
+
+def shape_dim(model: dict, path: Path) -> int:
+    """Dimension of the shape at path (a node under geometries/i/source/shape):
+    2 in the profile of an extrusion or a revolution."""
+    return 2 if "profile" in path[4:] else geometry_dim(model, path[1])
 
 
 def item_dim(model: dict, path: Path) -> int:
@@ -245,6 +256,10 @@ def _shape_node(shape: dict, path: Path) -> Node:
     if shape.get("type") in M.SHAPES_BOOLEAN:
         for j, s in enumerate(shape.get("of", [])):
             node.children.append(_shape_node(s, path + ("of", j)))
+    elif shape.get("type") in M.SHAPES_SWEPT and isinstance(shape.get("profile"), dict):
+        child = _shape_node(shape["profile"], path + ("profile",))
+        child.label = f"Profile: {child.label}"
+        node.children.append(child)
     return node
 
 
@@ -449,8 +464,11 @@ def _vec_field(key, label, kind, dim, help=""):
 def _shape_fields(model, path, dim) -> list[Field]:
     shape = get_at(model, path, {})
     t = shape.get("type")
-    types = PRIMITIVES + M.SHAPES_BOOLEAN
+    types = primitives_of_dim(dim) + M.SHAPES_BOOLEAN
     out = [Field(path + ("type",), "Type", "choice", tuple((x, x) for x in types), op="shape_type")]
+    if path[-1] == "profile":
+        out.append(Field(path, "", "info", help="2D profile: (x, y) for an extrusion, (r, z) for a "
+                                                "revolution (the part with r < 0 is ignored)."))
     if t == "rectangle":
         out += [_vec_field(path + ("min",), "Lower corner", "numbers", dim),
                 _vec_field(path + ("max",), "Upper corner", "numbers", dim)]
@@ -462,6 +480,12 @@ def _shape_fields(model, path, dim) -> list[Field]:
                 _vec_field(path + ("axis",), "Axis", "numbers", dim),
                 Field(path + ("length",), "Length", "number"),
                 Field(path + ("radius",), "Radius", "number")]
+    elif t == "extrusion":
+        out += [_vec_field(path + ("z",), "From z to z", "numbers", 2),
+                Field(path, "", "info", help="The profile (2D shape below) is extruded along z.")]
+    elif t == "revolution":
+        out.append(Field(path, "", "info", help="The profile (2D shape below, in the (r, z) plane) "
+                                                "turns about the z axis."))
     else:
         out.append(Field(path, "", "info", help="The first shape is combined with the following ones."))
     return out
@@ -773,7 +797,7 @@ def fields(model: dict, path: Path) -> list[Field]:
                 out.append(Field(base + ("file",), "File", "file"))
             return out
         if path[2] == "source":
-            return _shape_fields(model, path, dim)
+            return _shape_fields(model, path, shape_dim(model, path))
         if path[2] == "selections" and n == 3:
             return [Field(path, "", "info", help="Named parts of the geometry, used by properties, "
                                                  "conditions, terms and outputs.")]
@@ -874,20 +898,31 @@ def _default_shape(t: str, dim: int) -> dict:
     if t == "cylinder":
         return {"type": "cylinder", "origin": [0.0] * dim, "axis": [0.0] * (dim - 1) + [1.0],
                 "length": 1.0, "radius": 0.5}
+    if t == "extrusion":
+        return {"type": "extrusion", "z": [0.0, 0.5],
+                "profile": {"type": "difference", "of": [
+                    {"type": "rectangle", "min": [0.0, 0.0], "max": [2.0, 1.0]},
+                    {"type": "ball", "center": [1.0, 0.5], "radius": 0.25}]}}
+    if t == "revolution":
+        return {"type": "revolution",
+                "profile": {"type": "rectangle", "min": [0.5, 0.0], "max": [1.0, 1.0]}}
     return {"type": t, "of": [_default_shape("rectangle", dim), _default_shape("ball", dim)]}
 
 
-def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
-    """A new primitive for a 2D geometry: in its middle, at its scale (the
-    default shape otherwise)."""
-    import numpy as np
+def _shape_in_profile(model: dict, path: Path, t: str) -> dict:
+    """A new primitive in the profile of an extrusion or a revolution, at its scale."""
     from . import geometry2d as G
-    dim = geometry_dim(model, gi)
+    k = len(path) - 1 - path[::-1].index("profile")
     try:
-        lo, hi = G.bounds(G.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+        lo, hi = G.bounds(get_at(P.resolved(model), path[:k + 1]))
     except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
-        return _default_shape(t, dim)
-    if dim != 2 or not np.all(np.isfinite([*lo, *hi])) or np.any(hi <= lo):
+        return _default_shape(t, 2)
+    return _scaled_shape(t, lo, hi, 2)
+
+
+def _scaled_shape(t: str, lo, hi, dim: int) -> dict:
+    import numpy as np
+    if not np.all(np.isfinite([*lo, *hi])) or np.any(hi <= lo):
         return _default_shape(t, dim)
     r = lambda v: float(f"{v:.3g}")          # noqa: E731
     c, e = (lo + hi) / 2, float((hi - lo).min())
@@ -896,6 +931,20 @@ def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
     if t == "ball":
         return {"type": "ball", "center": [r(x) for x in c], "radius": r(e / 8)}
     return _default_shape(t, dim)
+
+
+def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
+    """A new primitive for a 2D geometry: in its middle, at its scale (the
+    default shape otherwise)."""
+    from . import geometry2d as G
+    dim = geometry_dim(model, gi)
+    if dim != 2:
+        return _default_shape(t, dim)
+    try:
+        lo, hi = G.bounds(G.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        return _default_shape(t, dim)
+    return _scaled_shape(t, lo, hi, dim)
 
 
 def _default_source(t: str, dim: int) -> dict:
@@ -1126,7 +1175,7 @@ def apply(model: dict, f: Field, value) -> Path | None:
         path = key[:-1]
         shape = get_at(model, path)
         old = shape.get("type")
-        dim = geometry_dim(model, key[1])
+        dim = shape_dim(model, path)
         if value == old:
             return None
         if value in M.SHAPES_BOOLEAN and old in M.SHAPES_BOOLEAN:
@@ -1282,8 +1331,8 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif path[:1] == ("geometries",) and n > 3 and path[2] == "source":
         shape = get_at(model, path, {})
         if shape.get("type") in M.SHAPES_BOOLEAN:
-            out += [(f"add_shape:{t}", f"Add a {t}") for t in PRIMITIVES
-                    if t != "cylinder" or geometry_dim(model, path[1]) == 3]
+            out += [(f"add_shape:{t}", f"Add a{'n' if t[0] in 'aeiou' else ''} {t}")
+                    for t in primitives_of_dim(shape_dim(model, path))]
         parent = get_at(model, path[:-2], {})
         if path[-2] == "of" and len(parent.get("of", [])) > 2:
             out.append(("remove", "Remove"))
@@ -1454,7 +1503,10 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return ("geometries", gi, "selections", sname)
     if action.startswith("add_shape:"):
         shape = get_at(model, path)
-        shape.setdefault("of", []).append(_shape_in_geometry(model, path[1], action.split(":", 1)[1]))
+        t = action.split(":", 1)[1]
+        new = _shape_in_geometry(model, path[1], t) if shape_dim(model, path) == geometry_dim(model, path[1]) \
+            else _shape_in_profile(model, path, t)
+        shape.setdefault("of", []).append(new)
         return path + ("of", len(shape["of"]) - 1)
     if action == "add_mesh":
         meshes = model.setdefault("meshes", [])
@@ -1713,6 +1765,18 @@ def mesh_to_show(model: dict, path: Path) -> str | None:
         return (geometry_mesh(model, model["geometries"][path[1]]) or {}).get("name")
     md = owner(model, path) or main_model(model)
     return (M.model_mesh(model, md) or {}).get("name") if md else None
+
+
+def part_3d(model: dict, path: Path) -> dict | None:
+    """The 3D shape drawn over the preview for the shape node at path; in
+    the profile of an extrusion or a revolution, the part of the profile
+    extruded or turned likewise."""
+    shape = get_at(model, path)
+    if "profile" not in path[4:] or not isinstance(shape, dict):
+        return shape
+    k = path.index("profile", 4)
+    swept = get_at(model, path[:k])
+    return dict(swept, profile=shape) if isinstance(swept, dict) else None
 
 
 def preview_geometry(model: dict, path: Path) -> int | None:

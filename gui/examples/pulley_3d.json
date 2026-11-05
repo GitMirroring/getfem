@@ -1,0 +1,64 @@
+{
+  "format_version": 3,
+  "name": "Grooved pulley: solid of revolution (3D)",
+  "parameters": [
+    {"name": "Ri", "value": 0.01, "description": "bore radius (m)"},
+    {"name": "Re", "value": 0.05, "description": "outer radius (m)"},
+    {"name": "H", "value": 0.02, "description": "height (m)"},
+    {"name": "g", "value": 0.006, "description": "radius of the groove (m)"}
+  ],
+  "materials": [
+    {
+      "name": "structural_steel",
+      "description": "Structural steel",
+      "from": "library:Structural steel",
+      "properties": {"k": 50, "E": 200000000000.0, "nu": 0.3, "alpha": 1.2e-05, "rho": 7850, "cp": 460}
+    }
+  ],
+  "geometries": [
+    {
+      "name": "pulley",
+      "source": {
+        "type": "csg",
+        "dim": 3,
+        "shape": {
+          "type": "revolution",
+          "profile": {
+            "type": "difference",
+            "of": [
+              {"type": "rectangle", "min": ["Ri", 0], "max": ["Re", "H"]},
+              {"type": "ball", "center": ["Re", "H/2"], "radius": "g"}
+            ]
+          }
+        }
+      },
+      "selections": {
+        "bottom": {
+          "kind": "boundary",
+          "criteria": {"type": "plane", "point": [0, 0, 0], "normal": [0, 0, 1]}
+        }
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "pulley", "mesher": "getfem", "h": 0.005, "order": 2}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "material": "structural_steel"}]},
+          "sources": [],
+          "conditions": [
+            {"type": "temperature", "selection": "bottom", "value": 80},
+            {"type": "convection", "selection": "boundary", "h": 20, "T_ext": 20}
+          ]
+        }
+      ],
+      "outputs": [{"name": "power", "expr": "k*Grad_T.Normal", "selection": "bottom"}],
+      "vtu": "heat.vtu"
+    }
+  ]
+}

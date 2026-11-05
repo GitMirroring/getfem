@@ -40,10 +40,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import geometry2d as G, model as M, parameters as P
+from . import geometry2d as G, geometry3d as G3, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 8
+SCRIPT_VERSION = 9
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -95,6 +95,13 @@ def _gf_shape(shape, w) -> str:
     elif t == "cylinder":
         w(f"{v} = gf.MesherObject('cylinder', {_floats(shape['origin'])}, {_floats(shape['axis'])}, "
           f"{float(shape['length'])!r}, {float(shape['radius'])!r})")
+    elif t == "extrusion":
+        p = _gf_shape(shape["profile"], w)
+        z0, z1 = _floats(shape["z"])
+        w(f"{v} = gf.MesherObject('extrusion', {p}, {z0!r}, {z1!r})")
+    elif t == "revolution":
+        p = _gf_shape(shape["profile"], w)
+        w(f"{v} = gf.MesherObject('revolution', {p})   # profile in the (r, z) plane, axis z")
     elif t == "difference" and len(parts) > 2:
         # a minus b minus c...: a minus the union of the others (some versions of
         # GetFEM only use the first two objects of 'set minus')
@@ -154,6 +161,17 @@ def _occ_shape(shape, dim, w) -> str:
         d = [x / n * L for x in a]
         w(f"{v} = [(3, {occ}.addCylinder({o[0]!r}, {o[1]!r}, {o[2]!r}, "
           f"{d[0]!r}, {d[1]!r}, {d[2]!r}, {float(shape['radius'])!r}))]")
+    elif t == "extrusion":
+        p = _occ_shape(shape["profile"], 2, w)
+        z0, z1 = _floats(shape["z"])
+        w(f"{occ}.translate({p}, 0.0, 0.0, {z0!r})")
+        w(f"{v} = [e for e in {occ}.extrude({p}, 0.0, 0.0, {z1 - z0!r}) if e[0] == 3]")
+    elif t == "revolution":
+        # the profile, drawn in the (x, y) plane for (r, z), is turned into
+        # the (x, z) plane, then about the z axis
+        p = _occ_shape(G3.effective_profile(shape), 2, w)
+        w(f"{occ}.rotate({p}, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, math.pi / 2)")
+        w(f"{v} = [e for e in {occ}.revolve({p}, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2 * math.pi) if e[0] == 3]")
     elif t == "intersection":
         # OpenCASCADE intersects the object with the union of the tools:
         # intersect the shapes two by two
@@ -167,6 +185,7 @@ def _occ_shape(shape, dim, w) -> str:
 
 def _build_gmsh(model, geom, mesh, w, msh_name):
     src = geom["source"]
+    w("import math")
     w("import gmsh")
     w("")
     w("gmsh.initialize()")

@@ -149,6 +149,13 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   other primitives), so that the faces stay flat and the edges sharp; the
   boundary selections (plane, normal, box, ball criteria) and the shape
   selected in the tree are shown on it. See `examples/block_with_hole_3d.json`.
+- **Extrusion and revolution**: a 3D CSG shape may be a 2D profile (itself a
+  CSG tree of rectangles and disks, edited under the shape in the tree)
+  extruded along z, or turned about the z axis (the profile is then given in
+  the (r, z) plane). The GetFEM mesher needs the `extrusion` and `revolution`
+  mesher objects (GetFEM patch "mesher: extrusion and revolution of 2D
+  objects"); with Gmsh, OpenCASCADE extrudes or revolves the profile. See
+  `examples/heat_sink_3d.json` and `examples/pulley_3d.json`.
 - **Materials**: *Add from a library* (a menu by category) copies a material of the built-in
   library (`getfem_gui/data/materials.json`, 27 common materials, typical
   values near 20 °C in SI units, read only) or of your own library
@@ -214,14 +221,16 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
-| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence) |
+| `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), 3D block with a hole, extruded heat sink, pulley (revolution) |
 
 ## Geometry, selections, meshes
 
 The complete format description is in the docstring of `model.py`.
 
 **Geometry sources**: `box` (1D/2D/3D), `csg` (rectangle, disk/ball,
-cylinder, union, intersection, difference), `cad` (STEP, IGES, BREP read by
+cylinder, extrusion and revolution of a 2D profile, union, intersection,
+difference), `cad` (STEP, IGES, BREP read by
 Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 
 **Meshers** and accepted sources:

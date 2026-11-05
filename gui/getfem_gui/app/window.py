@@ -758,7 +758,7 @@ class MainWindow(QMainWindow):
         title = f"Geometry {geom.get('name')!r}"
         highlighted, part = None, None
         if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape"):
-            part = E.get_at(model, path)
+            part = E.part_3d(model, path)
             title += " — shape highlighted"
         else:
             if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":

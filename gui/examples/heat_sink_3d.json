@@ -1,0 +1,106 @@
+{
+  "format_version": 3,
+  "name": "Heat sink: extruded finned profile (3D)",
+  "parameters": [
+    {"name": "W", "value": 0.06, "description": "width (m)"},
+    {"name": "B", "value": 0.008, "description": "thickness of the base (m)"},
+    {"name": "F", "value": 0.03, "description": "height of the fins (m)"},
+    {"name": "s", "value": "W/5", "description": "pitch of the fins (m)"},
+    {"name": "e", "value": 0.004, "description": "thickness of the fins (m)"},
+    {"name": "D", "value": 0.05, "description": "depth, along z (m)"},
+    {"name": "qin", "value": 10000.0, "description": "heat flux under the base (W/m2)"}
+  ],
+  "materials": [
+    {
+      "name": "aluminium_alloy_6061_t6",
+      "description": "Aluminium alloy 6061-T6",
+      "from": "library:Aluminium alloy 6061-T6",
+      "properties": {"k": 167, "E": 68900000000.0, "nu": 0.33, "alpha": 2.36e-05, "rho": 2700, "cp": 896}
+    }
+  ],
+  "geometries": [
+    {
+      "name": "sink",
+      "source": {
+        "type": "csg",
+        "dim": 3,
+        "shape": {
+          "type": "extrusion",
+          "z": [0, "D"],
+          "profile": {
+            "type": "union",
+            "of": [
+              {"type": "rectangle", "min": [0, 0], "max": ["W", "B"]},
+              {"type": "rectangle", "min": ["s/2 - e/2", "B"], "max": ["s/2 + e/2", "B + F"]},
+              {
+                "type": "rectangle",
+                "min": ["3*s/2 - e/2", "B"],
+                "max": ["3*s/2 + e/2", "B + F"]
+              },
+              {
+                "type": "rectangle",
+                "min": ["5*s/2 - e/2", "B"],
+                "max": ["5*s/2 + e/2", "B + F"]
+              },
+              {
+                "type": "rectangle",
+                "min": ["7*s/2 - e/2", "B"],
+                "max": ["7*s/2 + e/2", "B + F"]
+              },
+              {
+                "type": "rectangle",
+                "min": ["9*s/2 - e/2", "B"],
+                "max": ["9*s/2 + e/2", "B + F"]
+              }
+            ]
+          }
+        }
+      },
+      "selections": {
+        "base": {
+          "kind": "boundary",
+          "criteria": {"type": "plane", "point": [0, 0, 0], "normal": [0, 1, 0]}
+        },
+        "up": {"kind": "boundary", "criteria": {"type": "normal", "direction": [0, 1, 0], "angle": 1}},
+        "left": {
+          "kind": "boundary",
+          "criteria": {"type": "normal", "direction": [-1, 0, 0], "angle": 1}
+        },
+        "right": {"kind": "boundary", "criteria": {"type": "normal", "direction": [1, 0, 0], "angle": 1}},
+        "front": {
+          "kind": "boundary",
+          "criteria": {"type": "normal", "direction": [0, 0, -1], "angle": 1}
+        },
+        "back": {"kind": "boundary", "criteria": {"type": "normal", "direction": [0, 0, 1], "angle": 1}},
+        "air": {
+          "kind": "boundary",
+          "criteria": {"type": "union", "of": ["up", "left", "right", "front", "back"]}
+        }
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "sink", "mesher": "getfem", "h": 0.004, "order": 1}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "material": "aluminium_alloy_6061_t6"}]},
+          "sources": [],
+          "conditions": [
+            {"type": "heat_flux", "selection": "base", "value": "qin"},
+            {"type": "convection", "selection": "air", "h": 25, "T_ext": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "injected_power", "expr": "k*Grad_T.Normal", "selection": "base"},
+        {"name": "convected_power", "expr": "25*(T - 20)", "selection": "air"}
+      ],
+      "vtu": "heat.vtu"
+    }
+  ]
+}

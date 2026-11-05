@@ -75,6 +75,9 @@ Geometry sources
               shape = {"type": "rectangle", "min": [...], "max": [...]}
                     | {"type": "ball", "center": [...], "radius": r}
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
+                    | {"type": "extrusion", "profile": <2D shape>, "z": [z0, z1]}  (3D, along z)
+                    | {"type": "revolution", "profile": <2D shape>}  (3D, about the z axis; the
+                      profile is given in the (r, z) half plane, its part with r < 0 is ignored)
                     | {"type": "union" | "intersection" | "difference", "of": [<shape>, ...]}
 - cad       : {"type": "cad", "file": "part.step"}                   STEP, IGES, BREP (through Gmsh)
 - mesh_file : {"type": "mesh_file", "file": "part.msh"}              the geometry is the mesh
@@ -176,6 +179,7 @@ CRITERIA = {
     "regions": (DOMAIN,),
 }
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
+SHAPES_SWEPT = ("extrusion", "revolution")        # 3D shapes made of a 2D profile
 
 SCALAR = "scalar"
 VECTOR = "vector"
@@ -688,6 +692,17 @@ def _check_shape(shape, dim, where, errors):
         _check_vec(shape.get("axis"), dim, f"{where}.axis", errors)
         _check_positive(shape.get("length"), f"{where}.length", errors)
         _check_positive(shape.get("radius"), f"{where}.radius", errors)
+    elif t in SHAPES_SWEPT:
+        if dim != 3:
+            errors.append(f"{where}: {t} only exists in 3D")
+        if t == "extrusion" and _check_vec(shape.get("z"), 2, f"{where}.z", errors):
+            if shape["z"][0] >= shape["z"][1]:
+                errors.append(f"{where}.z: z0 < z1 expected")
+        profile = shape.get("profile")
+        if not isinstance(profile, dict):
+            errors.append(f"{where}.profile: 2D shape expected")
+        else:
+            _check_shape(profile, 2, f"{where}.profile", errors)
     elif t in SHAPES_BOOLEAN:
         parts = shape.get("of", [])
         if len(parts) < 2:
@@ -696,7 +711,8 @@ def _check_shape(shape, dim, where, errors):
             _check_shape(s, dim, f"{where}.of[{i}]", errors)
     else:
         errors.append(f"{where}.type: unknown shape {t!r} "
-                      "(rectangle, ball, cylinder, union, intersection, difference)")
+                      "(rectangle, ball, cylinder, extrusion, revolution, union, intersection, "
+                      "difference)")
 
 
 def _validate_geometry(model, geom, where, errors):
