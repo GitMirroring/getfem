@@ -286,6 +286,13 @@ Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 | `gmsh` (OpenCASCADE) | ✓ | ✓ | ✓ | |
 | `import` | | | | ✓ |
 
+New meshes of `csg` and `cad` geometries use Gmsh, more robust than the
+GetFEM mesher (in 3D above all); a box gets a structured mesh, and a
+geometry that changes its kind of source changes the mesher of its meshes
+when needed. `GETFEM_GUI_DEFAULT_MESHER=getfem` chooses the GetFEM mesher
+instead (without Gmsh, say). The examples keep the mesher they were written
+with.
+
 **Selections**: `all` and `boundary` always exist; `box` adds
 `xmin … zmax`, a `.msh` file brings its named physical groups. Other
 selections are defined by criteria evaluated *on the mesh*, which makes them

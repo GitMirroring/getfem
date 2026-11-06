@@ -326,6 +326,23 @@ def test_highlight():
     assert E.mesh_to_show(model, ("models", 0, "terms")) == mesh
 
 
+
+def test_default_mesher():
+    """New meshes of CSG and CAD geometries use Gmsh (a box: structured);
+    a geometry that changes its kind of source changes the mesher of its
+    meshes if needed."""
+    m = M.default_model()
+    assert E.default_mesher("box") == "structured" and E.default_mesher("cad") == "gmsh"
+    assert E.default_mesher("csg") == E.DEFAULT_MESHER == "gmsh"
+    E.apply(m, next(f for f in E.fields(m, ("geometries", 0)) if f.op == "source_type"), "csg")
+    assert m["meshes"][0]["mesher"] == "gmsh" and "divisions" not in m["meshes"][0]
+    path = E.do_action(m, ("geometries", 0), "add_mesh")
+    assert E.get_at(m, path)["mesher"] == "gmsh" and E.get_at(m, path)["size"] > 0
+    from getfem_gui import mesher
+    err = mesher.error_line("ModuleNotFoundError: No module named 'gmsh'")
+    assert "pip install gmsh" in err and "GetFEM mesher" in err
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

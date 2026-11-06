@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -1094,6 +1095,35 @@ def _default_criteria(t: str, dim: int, kind: str) -> dict:
     }[t]
 
 
+# Mesher of the new meshes of constructive (csg) and CAD geometries: Gmsh,
+# more robust than the GetFEM mesher (in 3D above all); a box keeps a
+# structured mesh. GETFEM_GUI_DEFAULT_MESHER=getfem chooses the GetFEM mesher.
+DEFAULT_MESHER = os.environ.get("GETFEM_GUI_DEFAULT_MESHER", "gmsh")
+
+
+def default_mesher(source_type: str | None) -> str:
+    """The mesher of a new mesh of a geometry of that source type."""
+    if source_type == "box":
+        return "structured"
+    if source_type in M.MESHERS.get(DEFAULT_MESHER, ()):
+        return DEFAULT_MESHER
+    return next((x for x, srcs in M.MESHERS.items() if source_type in srcs), "gmsh")
+
+
+def _fit_meshes(model: dict, gi: int) -> list[str]:
+    """The meshes of a geometry whose mesher cannot mesh its new source get
+    the default one (their element size kept). Returns notes."""
+    geom = model["geometries"][gi]
+    stype = geom.get("source", {}).get("type")
+    notes = []
+    for mesh in model.get("meshes", []):
+        if mesh.get("geometry") == geom.get("name") and stype not in M.MESHERS.get(mesh.get("mesher"), ()):
+            new = default_mesher(stype)
+            _change_mesher(model, mesh, new)
+            notes.append(f"mesh {mesh.get('name')!r}: {new} mesher")
+    return notes
+
+
 def _default_mesh_params(mesher: str, dim: int) -> dict:
     return {"structured": {"divisions": [10] * dim, "element": "simplex"},
             "getfem": {"h": 0.1, "order": 1},
@@ -1283,6 +1313,7 @@ def apply(model: dict, f: Field, value) -> Path | None:
         gi = key[1]
         if get_at(model, key) != value:
             model["geometries"][gi]["source"] = _default_source(value, geometry_dim(model, gi))
+            _fit_meshes(model, gi)
     elif f.op == "box_dim":
         src = get_at(model, key[:-1])
         dim = int(value)
@@ -1671,7 +1702,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         meshes = model.setdefault("meshes", [])
         geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else model["geometries"][0]
         stype = geom.get("source", {}).get("type")
-        mesher = next(x for x, srcs in M.MESHERS.items() if stype in srcs)
+        mesher = default_mesher(stype)
         gdim = M.geometry_dim(model, geom) or 2
         mesh = {"name": unique_name(name or "mesh", [m.get("name") for m, _ in M.all_meshes(model)]),
                 "geometry": geom["name"], "mesher": mesher}
@@ -2229,10 +2260,12 @@ def _box_to_csg(model: dict, gi: int) -> list[str]:
                 h = min(si / max(int(P.evaluate(d, vals)), 1) for si, d in zip(sizes, mesh["divisions"]))
             except (P.ParameterError, KeyError, TypeError):
                 h = 0.1
+            new = default_mesher("csg")
             for k in ("divisions", "element"):
                 mesh.pop(k, None)
-            mesh.update({"mesher": "getfem", "h": h, "order": 1})
-            notes.append(f"mesh {mesh.get('name')!r}: structured mesher replaced by the GetFEM mesher (h = {h:g})")
+            mesh.update({"mesher": new, "h" if new == "getfem" else "size": h, "order": 1})
+            notes.append(f"mesh {mesh.get('name')!r}: structured mesher replaced by the "
+                         f"{'GetFEM mesher' if new == 'getfem' else 'Gmsh'} (element size {h:g})")
     return notes
 
 

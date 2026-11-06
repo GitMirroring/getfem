@@ -576,6 +576,9 @@ def error_line(stderr: str) -> str:
             rest = [l for l in lines[i + 1:] if not _NOISE_LINE.match(l)]
             line = " ".join([lines[i]] + rest)
             break
+    if "No module named 'gmsh'" in line:
+        line += (" — the Gmsh Python module is missing in the Python that runs GetFEM: install it "
+                 "(pip install gmsh) or choose the GetFEM mesher for this mesh")
     missing = _MISSING_OBJECT.search(line)
     if missing and missing.group(1) in RECENT_MESHER_OBJECTS:
         line += (f" — this GetFEM has no '{missing.group(1)}' mesher object: it needs the patch "

@@ -193,8 +193,12 @@ def test_drawing_on_a_box_and_solving():
     assert geom["source"]["type"] == "csg" and len(notes) == 2
     assert uses <= set(geom["selections"])                       # xmin... are now selections
     assert geom["selections"]["west"]["criteria"]["edges"] == [{"shape": [0], "side": "xmin"}]
-    assert m["meshes"][0]["mesher"] == "getfem" and m["meshes"][0]["h"] > 0
+    assert m["meshes"][0]["mesher"] == E.default_mesher("csg") and m["meshes"][0]["size"] > 0
     assert M.validate(m) == []
+    import importlib.util
+    if importlib.util.find_spec("gmsh") is None:                 # solved with the GetFEM mesher then
+        E._change_mesher(m, m["meshes"][0], "getfem")
+        assert m["meshes"][0]["h"] > 0 and M.validate(m) == []
     with tempfile.TemporaryDirectory() as tmp:
         res = runner.run(m, tmp)
         assert res.ok, res.error
