@@ -178,8 +178,10 @@ MESHERS = {
     "structured": ("box",),
     "getfem": ("box", "csg"),
     "gmsh": ("box", "csg", "cad"),
+    "netgen": ("box", "csg", "cad"),
     "import": ("mesh_file",),
 }
+FREE_MESHERS = ("getfem", "gmsh", "netgen")    # unstructured meshers: element size, order
 CRITERIA = {
     "plane": (BOUNDARY,),
     "normal": (BOUNDARY,),
@@ -924,11 +926,54 @@ def _validate_mesh(model, mesh, where, errors):
             errors.append(f"{where}.element: 'simplex' or 'quad' expected")
     elif mesher == "getfem":
         _check_positive(mesh.get("h"), f"{where}.h", errors)
-    elif mesher == "gmsh":
+    elif mesher in ("gmsh", "netgen"):
         _check_positive(mesh.get("size"), f"{where}.size", errors)
     if mesher in ("getfem", "gmsh") and mesh.get("order", 1) not in (1, 2, 3):
         errors.append(f"{where}.order: 1, 2 or 3 expected")
+    if mesher == "netgen" and mesh.get("order", 1) not in (1, 2):
+        errors.append(f"{where}.order: 1 or 2 expected (Netgen)")
+    if mesher not in FREE_MESHERS:
+        return
+    src = geom.get("source", {})
+    dim = src.get("dim") if stype == "csg" else len(src.get("size", [])) if stype == "box" else None
+    layers = mesh.get("layers", 0)
+    swept = stype == "csg" and dim == 3 and src.get("shape", {}).get("type") in SHAPES_SWEPT
+    if layers:
+        if isinstance(layers, bool) or not isinstance(layers, int) or layers < 1:
+            errors.append(f"{where}.layers: integer >= 1 expected (0: no layers)")
+        elif not swept:
+            errors.append(f"{where}.layers: only for a 3D geometry that is an extrusion or a revolution")
+        elif src["shape"]["type"] == "revolution":
+            if layers < 3:
+                errors.append(f"{where}.layers: at least 3 layers around the axis")
+            try:
+                from . import geometry2d as G
+                lo, _ = G.bounds(src["shape"]["profile"])
+                if lo[0] <= 0:
+                    errors.append(f"{where}.layers: the profile of a revolution meshed in layers must not "
+                                  "touch the axis (r > 0)")
+            except (KeyError, TypeError, ValueError):
+                pass
+    element = mesh.get("element", "simplex")
+    if element not in ("simplex", "quad"):
+        errors.append(f"{where}.element: 'simplex' or 'quad' expected")
+    elif element == "quad":
+        if mesher == "getfem":
+            errors.append(f"{where}.element: the GetFEM mesher makes triangles and tetrahedra only "
+                          "(quadrangles: Gmsh or Netgen)")
+        elif dim != 2 and not layers:
+            errors.append(f"{where}.element: quadrangles in 2D; in 3D, hexahedra by layers only "
+                          "(an extrusion or a revolution)")
+    if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipse"):
+        errors.append(f"{where}.mesher: ellipses are not meshed by Netgen yet (use Gmsh)")
 
+
+
+def _has_type(shape, t) -> bool:
+    if not isinstance(shape, dict):
+        return False
+    return shape.get("type") == t or any(_has_type(s, t) for s in shape.get("of", [])) \
+        or _has_type(shape.get("profile"), t)
 
 
 def _check_name(name, where, errors, taken: dict[str, str] | None = None, what="name") -> bool:
@@ -1417,7 +1462,7 @@ def with_defaults(model: dict) -> dict:
     for mesh, _ in all_meshes(m):
         if mesh.get("mesher") == "structured":
             mesh.setdefault("element", "simplex")
-        if mesh.get("mesher") in ("getfem", "gmsh"):
+        if mesh.get("mesher") in FREE_MESHERS:
             mesh.setdefault("order", 1)
     geoms = m.get("geometries", [])
     for f in m["fields"]:

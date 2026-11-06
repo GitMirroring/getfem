@@ -889,11 +889,27 @@ def fields(model: dict, path: Path) -> list[Field]:
                     Field(path + ("element",), "Elements", "choice",
                           (("simplex", "triangles / tetrahedra"),
                            ("quad", "quadrilaterals / hexahedra")))]
-        elif mesher in ("getfem", "gmsh"):
-            key = "h" if mesher == "getfem" else "size"
-            out += [Field(path + (key,), "Element size", "number"),
-                    Field(path + ("order",), "Geometric order", "choice",
-                          ((1, "1 (straight)"), (2, "2 (curved)"), (3, "3")))]
+        elif mesher in M.FREE_MESHERS:
+            orders = ((1, "1 (straight)"), (2, "2 (curved)")) + (((3, "3"),) if mesher != "netgen" else ())
+            out += [Field(path + (_size_key(mesher),), "Element size", "number"),
+                    Field(path + ("order",), "Geometric order", "choice", orders)]
+            src = (M.geometry_of(model, mesh) or {}).get("source", {})
+            swept = src.get("type") == "csg" and src.get("dim") == 3 \
+                and src.get("shape", {}).get("type") in M.SHAPES_SWEPT
+            if swept:
+                around = src["shape"]["type"] == "revolution"
+                out.append(Field(path + ("layers",), "Layers", "number",
+                                 help="0: free tetrahedra. Otherwise the profile is meshed in 2D, then "
+                                      + ("turned about the axis in this number of layers"
+                                         if around else "extruded in this number of layers")
+                                      + ": prisms, or hexahedra with quadrangles."))
+            if mesher != "getfem" and (dim == 2 or (swept and mesh.get("layers"))):
+                out.append(Field(path + ("element",), "Elements", "choice",
+                                 (("simplex", "triangles" + (" (prisms)" if dim == 3 else "")),
+                                  ("quad", "quadrangles" + (" (hexahedra)" if dim == 3 else ""))),
+                                 help="Quadrangles: Blossom recombination with Gmsh (quadrangles only), "
+                                      "quad dominated with Netgen" if mesher == "gmsh" or mesher == "netgen"
+                                 else ""))
         return out
 
     if path == ("solvers",):
@@ -1124,10 +1140,16 @@ def _fit_meshes(model: dict, gi: int) -> list[str]:
     return notes
 
 
+def _size_key(mesher: str) -> str:
+    """The key of the element size of an unstructured mesher."""
+    return "h" if mesher == "getfem" else "size"
+
+
 def _default_mesh_params(mesher: str, dim: int) -> dict:
     return {"structured": {"divisions": [10] * dim, "element": "simplex"},
             "getfem": {"h": 0.1, "order": 1},
             "gmsh": {"size": 0.1, "order": 1},
+            "netgen": {"size": 0.1, "order": 1},
             "import": {}}[mesher]
 
 
@@ -1404,7 +1426,8 @@ def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
     geom = M.geometry_of(model, mesh) or {}
     dim = (M.geometry_dim(model, geom) if geom else None) or 2
     old = mesh.get("mesher")
-    size = mesh.get("h" if old == "getfem" else "size") if old in ("getfem", "gmsh") else None
+    size = mesh.get(_size_key(old)) if old in M.FREE_MESHERS else None
+    keep = {k: mesh[k] for k in ("layers", "element") if k in mesh and old in M.FREE_MESHERS}
     order = mesh.get("order", 1)
     rmesh = M.find_mesh(P.resolved(model), mesh.get("name")) or {}
     rgeom = M.geometry_of(P.resolved(model), rmesh) or {}
@@ -1416,16 +1439,20 @@ def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
         div = rmesh.get("divisions", [])
         if len(div) == len(lengths) and all(isinstance(d, int) and d > 0 for d in div):
             size = float(f"{min(l / d for l, d in zip(lengths, div)):.6g}")
-    for k in ("divisions", "element", "h", "size", "order"):
+    for k in ("divisions", "element", "h", "size", "order", "layers"):
         mesh.pop(k, None)
     mesh["mesher"] = mesher
     mesh.update(_default_mesh_params(mesher, dim))
-    if mesher in ("getfem", "gmsh"):
+    if mesher in M.FREE_MESHERS:
         if size is not None:
-            mesh["h" if mesher == "getfem" else "size"] = size
-        mesh["order"] = order
+            mesh[_size_key(mesher)] = size
+        mesh["order"] = min(order, 2) if mesher == "netgen" else order
+        if "layers" in keep:
+            mesh["layers"] = keep["layers"]
+        if keep.get("element") == "quad" and mesher != "getfem":
+            mesh["element"] = "quad"
     elif mesher == "structured" and lengths:
-        h = rmesh.get("h" if old == "getfem" else "size")
+        h = rmesh.get(_size_key(old))
         if isinstance(h, (int, float)) and h > 0:
             mesh["divisions"] = [max(1, int(math.ceil(l / h - 1e-9))) for l in lengths]
 

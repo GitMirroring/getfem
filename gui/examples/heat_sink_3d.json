@@ -31,25 +31,25 @@
             "type": "union",
             "of": [
               {"type": "rectangle", "min": [0, 0], "max": ["W", "B"]},
-              {"type": "rectangle", "min": ["s/2 - e/2", "B"], "max": ["s/2 + e/2", "B + F"]},
+              {"type": "rectangle", "min": ["s/2 - e/2", "B/2"], "max": ["s/2 + e/2", "B + F"]},
               {
                 "type": "rectangle",
-                "min": ["3*s/2 - e/2", "B"],
+                "min": ["3*s/2 - e/2", "B/2"],
                 "max": ["3*s/2 + e/2", "B + F"]
               },
               {
                 "type": "rectangle",
-                "min": ["5*s/2 - e/2", "B"],
+                "min": ["5*s/2 - e/2", "B/2"],
                 "max": ["5*s/2 + e/2", "B + F"]
               },
               {
                 "type": "rectangle",
-                "min": ["7*s/2 - e/2", "B"],
+                "min": ["7*s/2 - e/2", "B/2"],
                 "max": ["7*s/2 + e/2", "B + F"]
               },
               {
                 "type": "rectangle",
-                "min": ["9*s/2 - e/2", "B"],
+                "min": ["9*s/2 - e/2", "B/2"],
                 "max": ["9*s/2 + e/2", "B + F"]
               }
             ]
@@ -79,7 +79,7 @@
       }
     }
   ],
-  "meshes": [{"name": "mesh", "geometry": "sink", "mesher": "getfem", "h": 0.004, "order": 1}],
+  "meshes": [{"name": "mesh", "geometry": "sink", "mesher": "getfem", "h": 0.002, "order": 1, "layers": 12}],
   "models": [
     {
       "name": "heat",

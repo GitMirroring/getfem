@@ -45,7 +45,7 @@ import numpy as np
 from . import geometry2d as G, geometry3d as G3, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 12
+SCRIPT_VERSION = 13
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -225,11 +225,20 @@ def _build_gmsh(model, geom, mesh, w, msh_name):
         _occ_shape(shape, dim, w)
         w("gmsh.model.occ.synchronize()")
         w(f"dim = {dim}")
+    if mesh.get("element") == "quad":
+        w("# Quadrangles: Frontal-Delaunay for quads, Blossom recombination, then one")
+        w("# subdivision, which guarantees quadrangles only (and halves the size:")
+        w("# the size asked for is doubled before)")
+        w("gmsh.option.setNumber('Mesh.Algorithm', 8)")
+        w("gmsh.option.setNumber('Mesh.RecombinationAlgorithm', 1)")
+        w("gmsh.option.setNumber('Mesh.RecombineAll', 1)")
+        w("gmsh.option.setNumber('Mesh.SubdivisionAlgorithm', 1)")
+    size = float(mesh["size"]) * (2.0 if mesh.get("element") == "quad" else 1.0)
     w("# A single physical group (the domain): Gmsh then only writes elements of")
     w("# maximal dimension; boundaries come from the selections, further down.")
     w("gmsh.model.addPhysicalGroup(dim, [t for _, t in gmsh.model.getEntities(dim)], 1)")
-    w(f"gmsh.option.setNumber('Mesh.MeshSizeMin', {float(mesh['size'])!r})")
-    w(f"gmsh.option.setNumber('Mesh.MeshSizeMax', {float(mesh['size'])!r})")
+    w(f"gmsh.option.setNumber('Mesh.MeshSizeMin', {size!r})")
+    w(f"gmsh.option.setNumber('Mesh.MeshSizeMax', {size!r})")
     w("gmsh.option.setNumber('Mesh.MshFileVersion', 2.2)")
     w("gmsh.model.mesh.generate(dim)")
     w(f"gmsh.model.mesh.setOrder({int(mesh.get('order', 1))})")
@@ -237,6 +246,113 @@ def _build_gmsh(model, geom, mesh, w, msh_name):
     w("gmsh.finalize()")
     w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
     _drop_z(w)
+
+
+def _ng_shape(shape, dim, w) -> str:
+    """Lines creating a shape with the OpenCASCADE interface of Netgen
+    (netgen.occ); return its variable name."""
+    t = shape["type"]
+    parts = [_ng_shape(s, dim, w) for s in shape["of"]] if t in OCC_BOOLEANS else []
+    v = w.var("s")
+    if t == "rectangle":
+        lo, hi = _floats(shape["min"]), _floats(shape["max"])
+        if dim == 2:
+            w(f"{v} = WorkPlane().MoveTo({lo[0]!r}, {lo[1]!r}).Rectangle({hi[0] - lo[0]!r}, "
+              f"{hi[1] - lo[1]!r}).Face()")
+        else:
+            w(f"{v} = Box(Pnt({lo[0]!r}, {lo[1]!r}, {lo[2]!r}), Pnt({hi[0]!r}, {hi[1]!r}, {hi[2]!r}))")
+    elif t == "ball":
+        c, r = _floats(shape["center"]), float(shape["radius"])
+        if dim == 2:
+            w(f"{v} = WorkPlane().Circle({c[0]!r}, {c[1]!r}, {r!r}).Face()")
+        else:
+            w(f"{v} = Sphere(Pnt({c[0]!r}, {c[1]!r}, {c[2]!r}), {r!r})")
+    elif t == "polygon":
+        pts = _points(shape)
+        w(f"_wp = WorkPlane().MoveTo({pts[0][0]!r}, {pts[0][1]!r})")
+        for x, y in pts[1:]:
+            w(f"_wp.LineTo({x!r}, {y!r})")
+        w(f"{v} = _wp.Close().Face()")
+    elif t == "cylinder":
+        o, a = _floats(shape["origin"]), np.asarray(_floats(shape["axis"]))
+        a = (a / np.linalg.norm(a)).tolist()
+        w(f"{v} = Cylinder(Pnt({o[0]!r}, {o[1]!r}, {o[2]!r}), Vec({a[0]!r}, {a[1]!r}, {a[2]!r}), "
+          f"{float(shape['radius'])!r}, {float(shape['length'])!r})")
+    elif t == "extrusion":
+        p = _ng_shape(shape["profile"], 2, w)
+        z0, z1 = _floats(shape["z"])
+        w(f"{v} = {p}.Extrude({z1 - z0!r}).Move(Vec(0, 0, {z0!r}))")
+    elif t == "revolution":
+        p = _ng_shape(G3.effective_profile(shape), 2, w)
+        w("# the profile, drawn in the (x, y) plane for (r, z), turned into the (x, z) plane")
+        w(f"{v} = {p}.Rotate(Axis((0, 0, 0), X), 90).Revolve(Axis((0, 0, 0), Z), 360)")
+    elif t in OCC_BOOLEANS:
+        op = {"union": "+", "intersection": "*", "difference": "-"}[t]
+        w(f"{v} = " + f" {op} ".join(parts))
+    else:
+        raise ValueError(f"{t!r} shapes cannot be meshed by Netgen yet (use Gmsh)")
+    return v
+
+
+def _build_netgen(model, geom, mesh, w, msh_name):
+    src = geom["source"]
+    w("from netgen.occ import *")
+    if src["type"] == "cad":
+        w(f"geo = OCCGeometry({str(M.resolve_file(model, src['file']))!r})")
+    else:
+        dim = len(src["size"]) if src["type"] == "box" else src["dim"]
+        shape = _box_as_shape(src) if src["type"] == "box" else src["shape"]
+        top = _ng_shape(shape, dim, w)
+        w(f"geo = OCCGeometry({top}, dim={dim})")
+    quad = mesh.get("element") == "quad"
+    w("# Netgen: element size, quadrangles (quad dominated) if asked")
+    w(f"ngmesh = geo.GenerateMesh(maxh={float(mesh['size'])!r}" + (", quad_dominated=True)" if quad else ")"))
+    if int(mesh.get("order", 1)) == 2:
+        w("ngmesh.SecondOrder()")
+    w(f"ngmesh.Export({msh_name!r}, 'Gmsh2 Format')")
+    w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
+    _drop_z(w)
+
+
+def _build_layered(model, geom, mesh, w, basename):
+    """A 3D extrusion or revolution meshed in layers: the 2D profile is
+    meshed (triangles or quadrangles), then extruded or turned in layers of
+    prisms or hexahedra (gf.Mesh('prismatic'), its points then mapped)."""
+    shape = geom["source"]["shape"]
+    n, K = int(mesh["layers"]), int(mesh.get("order", 1))
+    profile = G3.effective_profile(shape)
+    g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": profile}, "selections": {}}
+    m2 = {k: v for k, v in mesh.items() if k != "layers"}
+    w("# The profile (2D)")
+    if mesh["mesher"] == "getfem":
+        _build_getfem(model, g2, m2, w)
+    elif mesh["mesher"] == "gmsh":
+        _build_gmsh(model, g2, m2, w, f"{basename}_profile.msh")
+    else:
+        _build_netgen(model, g2, m2, w, f"{basename}_profile.msh")
+    w(f"# {n} layers in [0, 1] along a third coordinate t (geometric degree {K} along t)")
+    w(f"m = gf.Mesh('prismatic', m, {n}, {K})")
+    if shape["type"] == "extrusion":
+        z0, z1 = _floats(shape["z"])
+        w(f"# extrusion: z = {z0!r} + {z1 - z0!r} t")
+        w(f"m.transform([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, {z1 - z0!r}]])")
+        w(f"m.translate([0.0, 0.0, {z0!r}])")
+        return
+    w("# revolution: (r, z, t) -> (r cos a, r sin a, z), a = -2 pi t (a direct basis);")
+    w("# the elements are added again, which merges the points of the seam (t = 0, 1)")
+    w("P = m.pts()")
+    w("a = -2 * np.pi * P[2]")
+    w("Q = np.vstack([P[0] * np.cos(a), P[0] * np.sin(a), P[1]])")
+    w("gts, gidx = m.geotrans(m.cvid())")
+    w("gts = list(gts) if isinstance(gts, (list, tuple)) else [gts]")
+    w("gidx = np.atleast_1d(gidx)")
+    w("pids, idx = m.pid_from_cvid(m.cvid())")
+    w("mr = gf.Mesh('empty', 3)")
+    w("for k, gt in enumerate(gts):")
+    w("    cvs = np.flatnonzero(gidx == k)")
+    w("    ids = np.array([pids[idx[c]:idx[c + 1]] for c in cvs]).T")
+    w("    mr.add_convex(gt, Q[:, ids])")
+    w("m = mr")
 
 
 def _build_import(model, geom, mesh, w):
@@ -456,12 +572,16 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     else:
         w.section(f"Mesh ({mesh['mesher']})")
         mesher = mesh["mesher"]
-        if mesher == "structured":
+        if mesh.get("layers"):
+            _build_layered(model, geom, mesh, w, basename)
+        elif mesher == "structured":
             _build_structured(model, geom, mesh, w)
         elif mesher == "getfem":
             _build_getfem(model, geom, mesh, w)
         elif mesher == "gmsh":
             _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh")
+        elif mesher == "netgen":
+            _build_netgen(model, geom, mesh, w, f"{basename}_netgen.msh")
         else:
             _build_import(model, geom, mesh, w)
         if raw_key is not None:
@@ -576,6 +696,9 @@ def error_line(stderr: str) -> str:
             rest = [l for l in lines[i + 1:] if not _NOISE_LINE.match(l)]
             line = " ".join([lines[i]] + rest)
             break
+    if "No module named 'netgen'" in line:
+        line += (" — Netgen is missing in the Python that runs GetFEM: install it "
+                 "(pip install netgen-mesher) or choose another mesher for this mesh")
     if "No module named 'gmsh'" in line:
         line += (" — the Gmsh Python module is missing in the Python that runs GetFEM: install it "
                  "(pip install gmsh) or choose the GetFEM mesher for this mesh")

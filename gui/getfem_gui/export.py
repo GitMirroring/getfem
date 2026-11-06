@@ -293,6 +293,9 @@ ELEMENTS = {
     "GT_PK(3,2)": (11, [0, 2, 5, 9, 1, 4, 3, 6, 8, 7], "C3D10", [0, 2, 5, 9, 1, 4, 3, 6, 7, 8], [0, 2, 5, 9]),
     "GT_QK(3,1)": (5, [0, 1, 3, 2, 4, 5, 7, 6], "C3D8", [0, 1, 3, 2, 4, 5, 7, 6], list(range(8))),
 }
+ELEMENTS["GT_PRODUCT(GT_PK(2,1),GT_PK(1,1))"] = (6, [0, 1, 2, 3, 4, 5], "C3D6", [0, 1, 2, 3, 4, 5],
+                                                 list(range(6)))          # prisms (meshes in layers)
+ELEMENTS["GT_PRODUCT(GT_LINEAR_PRODUCT(GT_PK(1,1),GT_PK(1,1)),GT_PK(1,1))"] = ELEMENTS["GT_QK(3,1)"]
 ELEMENTS["GT_LINEAR_PRODUCT(GT_PK(1,1),GT_PK(1,1))"] = ELEMENTS["GT_QK(2,1)"]
 ELEMENTS["GT_LINEAR_PRODUCT(GT_LINEAR_PRODUCT(GT_PK(1,1),GT_PK(1,1)),GT_PK(1,1))"] = ELEMENTS["GT_QK(3,1)"]
 # Gmsh element types of the faces: (number of vertices, order) -> type

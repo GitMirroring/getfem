@@ -261,6 +261,7 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
+| `tests/test_meshers.py` | Netgen, quadrangles, meshes in layers (prisms, hexahedra) |
 | `tests/test_export.py` | export of geometries and meshes (read back by GetFEM) |
 | `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |
 | `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |
@@ -284,7 +285,18 @@ Gmsh/OpenCASCADE), `mesh_file` (a `.msh` mesh used as the geometry).
 | `structured` (grid, simplices or quadrilaterals) | ✓ | | | |
 | `getfem` (experimental mesher, `MesherObject`) | ✓ | ✓ | | |
 | `gmsh` (OpenCASCADE) | ✓ | ✓ | ✓ | |
+| `netgen` (OpenCASCADE of Netgen, `pip install netgen-mesher`) | ✓ | ✓ | ✓ | |
 | `import` | | | | ✓ |
+
+**Quadrangles and hexahedra**: `"element": "quad"` gives quadrangles in 2D
+with Gmsh (Blossom recombination, then a subdivision: quadrangles only) or
+Netgen (quad dominated). A 3D extrusion or revolution can be meshed **in
+layers** (`"layers": n`, with any of the three meshers): its profile is
+meshed in 2D, then extruded or turned about the axis in n layers by GetFEM
+(`gf.Mesh('prismatic')`), which gives prisms, or hexahedra from
+quadrangles; with a geometric order 2 the layers of a revolution are
+curved. The profile of a revolution meshed in layers must not touch the
+axis. Netgen does not mesh ellipses yet.
 
 New meshes of `csg` and `cad` geometries use Gmsh, more robust than the
 GetFEM mesher (in 3D above all); a box gets a structured mesh, and a
