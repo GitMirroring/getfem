@@ -37,7 +37,7 @@
 #define GETFEM_NAVIER_STOKES_H__
 
 
-#include "getfem_assembling_tensors.h"
+#include "getfem_assembling.h"
 
 namespace getfem {
 
@@ -54,18 +54,18 @@ namespace getfem {
     GMM_ASSERT1(mf.get_qdim() == mf.linked_mesh().dim(),
 		"wrong qdim for the mesh_fem");
 
-    getfem::generic_assembly assem;
-    assem.set("u=data(#1);"
-	      "t=comp(vGrad(#1).vBase(#1).vBase(#1));"
-	      "M(#1, #1) += u(i).t(i,k,j,:,k,:,j);"
-	      "M(#1, #1) += u(i).t(:,j,k,:,k,i,j);"
-	      "M(#1, #1) += u(i).t(i,j,j,:,k,:,k)/2;"
-	      "M(#1, #1) += u(i).t(:,k,k,:,j,i,j)/2;");
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_mat(const_cast<MAT&>(M));
-    assem.push_data(U);
-    assem.assembly(rg);
+    ga_workspace workspace;
+    gmm::sub_interval Iu(0, mf.nb_dof());
+    base_vector u(mf.nb_dof());
+    gmm::copy(U, u);
+    workspace.add_fem_variable("u", mf, Iu, u);
+    workspace.add_expression("((Grad_u*Test2_u).Test_u)"
+                             "+((Grad_Test_u*Test2_u).u)"
+                             "+0.5*Div_u*(Test_u.Test2_u)"
+                             "+0.5*Div_Test_u*(Test2_u.u)", mim, rg);
+    workspace.assembly(2);
+    if (gmm::mat_nrows(workspace.assembled_matrix()))
+      gmm::add(workspace.assembled_matrix(), const_cast<MAT&>(M));
   }
 
   /**
@@ -81,19 +81,18 @@ namespace getfem {
     GMM_ASSERT1(mf.get_qdim() == mf.linked_mesh().dim(),
 		"wrong qdim for the mesh_fem");
 
-    getfem::generic_assembly assem;
-    assem.set("u=data(#1);"
-	      "t=comp(vBase(#1).vGrad(#1).vBase(#1));"
-	      "V(#1) += u(i).u(j).t(i,k,j,k,l,:,l);"
-	      "V(#1) += u(i).u(j).t(i,k,j,l,l,:,k)/2;");
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_vec(const_cast<VECT1&>(V));
-    assem.push_data(U);
-    assem.assembly(rg);
+    ga_workspace workspace;
+    gmm::sub_interval Iu(0, mf.nb_dof());
+    base_vector u(mf.nb_dof());
+    gmm::copy(U, u);
+    workspace.add_fem_variable("u", mf, Iu, u);
+    workspace.add_expression("((Grad_u'*u).Test_u)+0.5*Div_u*(u.Test_u)",
+                             mim, rg);
+    base_vector W(mf.nb_dof());
+    workspace.set_assembled_vector(W);
+    workspace.assembly(1);
+    gmm::add(W, const_cast<VECT1&>(V));
   }
-
- 
 
 }  /* end of namespace getfem.                                             */
 

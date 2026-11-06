@@ -40,7 +40,7 @@
 
 #include "getfem/getfem_mesh.h"
 #include "getfem/getfem_mesh_fem_global_function.h"
-#include "getfem/getfem_assembling_tensors.h"
+#include "getfem/getfem_generic_assembly.h"
 #include "getfem/getfem_level_set.h"
 
 namespace getfem {
@@ -126,30 +126,25 @@ namespace getfem {
        method for crack growth without remeshing", moes, dolbow &
        belytschko */
 
-    generic_assembly 
-      assem("lambda=data$1(1); mu=data$2(1); x1=data$3(mdim(#1)); "
-	    "U1=data$4(#1); U2=data$5(#2); q=data$6(#3);"
-            "t=U1(i).U2(j).q(k).comp(vGrad(#1).vGrad(#2).Grad(#3))(i,:,:,j,:,:,k,:);"
-            "e1=(t{1,2,:,:,:}+t{2,1,:,:,:})/2;"
-            "e2=(t{:,:,3,4,:}+t{:,:,4,3,:})/2;"
-            "e12=(e1{:,:,3,4,:}+e1{:,:,4,3,:})/2;"
-            "V()+=2*mu(p).e1(i,j,i,k,j).x1(k) + lambda(p).e1(i,i,j,k,j).x1(k);"
-            "V()+=2*mu(p).e2(i,k,i,j,j).x1(k) + lambda(p).e2(j,k,i,i,j).x1(k);"
-            "V()+=-2*mu(p).e12(i,j,i,j,k).x1(k) - lambda(p).e12(i,i,j,j,k).x1(k);");
-    assem.push_mf(mf);
-    assem.push_mf(mf_mode);
-    assem.push_mf(mf_q);
-    assem.push_mi(mim);
-    base_vector vlambda(1); vlambda[0] = lambda;
-    base_vector vmu(1); vmu[0] = mu;
-    assem.push_data(vlambda); 
-    assem.push_data(vmu); 
-    assem.push_data(T); // outgoing tangent of the crack
-    assem.push_data(U); 
-    assem.push_data(U_mode);
-    assem.push_data(q);
-    base_vector V(1);
-    assem.push_vec(V);
+    ga_workspace workspace;
+    gmm::sub_interval Iu(0, mf.nb_dof());
+    base_vector u(mf.nb_dof()), vlambda(1), vmu(1), x1(gmm::vect_size(T));
+    gmm::copy(U, u);
+    gmm::copy(T, x1); // outgoing tangent of the crack
+    vlambda[0] = lambda;
+    vmu[0] = mu;
+    workspace.add_fem_variable("u", mf, Iu, u);
+    workspace.add_fem_constant("u_mode", mf_mode, U_mode);
+    workspace.add_fem_constant("q", mf_q, q);
+    workspace.add_fixed_size_constant("lambda", vlambda);
+    workspace.add_fixed_size_constant("mu", vmu);
+    workspace.add_fixed_size_constant("x1", x1);
+    workspace.add_macro("s1", "2*mu*Sym(Grad_u)+lambda*Div_u*Id(meshdim)");
+    workspace.add_macro("s2", "2*mu*Sym(Grad_u_mode)"
+                        "+lambda*Div_u_mode*Id(meshdim)");
+    workspace.add_expression("((Grad_u_mode*x1).(s1*Grad_q))"
+                             "+((Grad_u*x1).(s2*Grad_q))"
+                             "-(s1:Sym(Grad_u_mode))*(Grad_q.x1)", mim, cvring);
 
     /* fill with the crack opening mode I or mode II */
     for (unsigned mode = 1; mode <= 2; ++mode) {
@@ -175,13 +170,13 @@ namespace getfem {
         } break;
       }
       gmm::scale(U_mode, coeff/young_modulus);
-      V[0] = 0.;
       cout << "assemblig SIFs ..." << std::flush; 
       double time = gmm::uclock_sec();
-      assem.assembly(cvring);
+      workspace.assembly(0);
       cout << "done (" << gmm::uclock_sec()-time << " sec)\n";
-      V[0] *= young_modulus/2; /* plane stress only, should be E/(2*(1-nu)) for plane strain */
-      if (mode == 1) KI = V[0]; else KII = V[0];
+      scalar_type V = workspace.assembled_potential();
+      V *= young_modulus/2; /* plane stress only, should be E/(2*(1-nu)) for plane strain */
+      if (mode == 1) KI = V; else KII = V;
     }
   }
 

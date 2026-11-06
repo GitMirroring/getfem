@@ -55,49 +55,53 @@ namespace getfem {
   (const MAT &M, const mesh_im &mim, const mesh_fem &mf,
    const mesh_fem &mf_data, const VECT &A,
    const mesh_region &rg = mesh_region::all_convexes()) {
-    generic_assembly assem
-      ("a=data$1(#2);"
-       "M(#1,#1)+=sym(comp(Hess(#1).Hess(#1).Base(#2))(:,i,i,:,j,j,k).a(k))");
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_mf(mf_data);
-    assem.push_data(A);
-    assem.push_mat(const_cast<MAT &>(M));
-    assem.assembly(rg);
+    asm_real_or_complex_1_param_mat
+      (const_cast<MAT &>(M), mim, mf, &mf_data, A, rg,
+       "A*Trace(Hess_Test_u)*Trace(Hess_Test2_u)");
   }
 
   template<typename MAT, typename VECT>
   void asm_stiffness_matrix_for_homogeneous_bilaplacian
   (const MAT &M, const mesh_im &mim, const mesh_fem &mf,
    const VECT &A, const mesh_region &rg = mesh_region::all_convexes()) {
-    generic_assembly assem
-      ("a=data$1(1);"
-       "M(#1,#1)+=sym(comp(Hess(#1).Hess(#1))(:,i,i,:,j,j).a(1))");
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_data(A);
-    assem.push_mat(const_cast<MAT &>(M));
-    assem.assembly(rg);
+    asm_real_or_complex_1_param_mat
+      (const_cast<MAT &>(M), mim, mf, 0, A, rg,
+       "A*Trace(Hess_Test_u)*Trace(Hess_Test2_u)");
   }
 
+  /* Common part of the Kirchhoff-Love stiffness matrices. */
+  template<typename MAT, typename VECT>
+  void asm_stiffness_matrix_for_bilaplacian_KL_
+  (const MAT &M, const mesh_im &mim, const mesh_fem &mf,
+   const mesh_fem *mf_data, const VECT &D_, const VECT &nu_,
+   const mesh_region &rg) {
+    ga_workspace workspace;
+    gmm::sub_interval Iu(0, mf.nb_dof());
+    base_vector u(mf.nb_dof()), D(gmm::vect_size(D_)), nu(gmm::vect_size(nu_));
+    gmm::copy(D_, D);
+    gmm::copy(nu_, nu);
+    workspace.add_fem_variable("u", mf, Iu, u);
+    if (mf_data) {
+      workspace.add_fem_constant("D", *mf_data, D);
+      workspace.add_fem_constant("nu", *mf_data, nu);
+    } else {
+      workspace.add_fixed_size_constant("D", D);
+      workspace.add_fixed_size_constant("nu", nu);
+    }
+    workspace.add_expression("D*((1-nu)*(Hess_Test_u:Hess_Test2_u)"
+                             "+nu*Trace(Hess_Test_u)*Trace(Hess_Test2_u))",
+                             mim, rg);
+    workspace.assembly(2);
+    if (gmm::mat_nrows(workspace.assembled_matrix()))
+      gmm::add(workspace.assembled_matrix(), const_cast<MAT &>(M));
+  }
 
   template<typename MAT, typename VECT>
   void asm_stiffness_matrix_for_bilaplacian_KL
   (const MAT &M, const mesh_im &mim, const mesh_fem &mf,
    const mesh_fem &mf_data, const VECT &D_, const VECT &nu_,
    const mesh_region &rg = mesh_region::all_convexes()) {
-    generic_assembly assem
-      ("d=data$1(#2); n=data$2(#2);"
-       "t=comp(Hess(#1).Hess(#1).Base(#2).Base(#2));"
-       "M(#1,#1)+=sym(t(:,i,j,:,i,j,k,l).d(k)-t(:,i,j,:,i,j,k,l).d(k).n(l)"
-       "+t(:,i,i,:,j,j,k,l).d(k).n(l))");
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_mf(mf_data);
-    assem.push_data(D_);
-    assem.push_data(nu_);
-    assem.push_mat(const_cast<MAT &>(M));
-    assem.assembly(rg);
+    asm_stiffness_matrix_for_bilaplacian_KL_(M, mim, mf, &mf_data, D_, nu_, rg);
   }
 
   template<typename MAT, typename VECT>
@@ -105,17 +109,7 @@ namespace getfem {
   (const MAT &M, const mesh_im &mim, const mesh_fem &mf,
    const VECT &D_, const VECT &nu_,
    const mesh_region &rg = mesh_region::all_convexes()) {
-    generic_assembly assem
-      ("d=data$1(1); n=data$2(1);"
-       "t=comp(Hess(#1).Hess(#1));"
-       "M(#1,#1)+=sym(t(:,i,j,:,i,j).d(1)-t(:,i,j,:,i,j).d(1).n(1)"
-       "+t(:,i,i,:,j,j).d(1).n(1))");
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_data(D_);
-    assem.push_data(nu_);
-    assem.push_mat(const_cast<MAT &>(M));
-    assem.assembly(rg);
+    asm_stiffness_matrix_for_bilaplacian_KL_(M, mim, mf, 0, D_, nu_, rg);
   }
 
   /* ******************************************************************** */
@@ -267,47 +261,50 @@ namespace getfem {
     assembly of the special boundary condition for Kirchhoff-Love model.
     @ingroup asm
   */
+  /* Common part of the Kirchhoff-Love Neumann terms. */
+  template<typename VECT1, typename VECT2>
+  void asm_neumann_KL_term_
+  (VECT1 &B, const mesh_im &mim, const mesh_fem &mf, const mesh_fem *mf_data,
+   const VECT2 &M_, const VECT2 &divM_, const mesh_region &rg) {
+    ga_workspace workspace;
+    gmm::sub_interval Iu(0, mf.nb_dof());
+    base_vector u(mf.nb_dof()), M(gmm::vect_size(M_));
+    base_vector divM(gmm::vect_size(divM_));
+    gmm::copy(M_, M);
+    gmm::copy(divM_, divM);
+    workspace.add_fem_variable("u", mf, Iu, u);
+    if (mf_data) {
+      workspace.add_fem_constant("M", *mf_data, M);
+      workspace.add_fem_constant("divM", *mf_data, divM);
+    } else {
+      workspace.add_fixed_size_constant("M", M);
+      workspace.add_fixed_size_constant("divM", divM);
+    }
+    workspace.add_expression
+      ("(divM.Normal)*Test_u"
+       "-Grad_Test_u.(Reshape(M,meshdim,meshdim)*Normal)"
+       "+(Grad_Test_u.Normal)*(Normal.(Reshape(M,meshdim,meshdim)*Normal))",
+       mim, rg);
+    base_vector V(mf.nb_dof());
+    workspace.set_assembled_vector(V);
+    workspace.assembly(1);
+    gmm::add(V, B);
+  }
+
   template<typename VECT1, typename VECT2>
   void asm_neumann_KL_term
   (VECT1 &B, const mesh_im &mim, const mesh_fem &mf, const mesh_fem &mf_data,
    const VECT2 &M, const VECT2 &divM, const mesh_region &rg) {
     GMM_ASSERT1(mf_data.get_qdim() == 1,
                 "invalid data mesh fem (Qdim=1 required)");
-
-    generic_assembly assem
-      ("MM=data$1(mdim(#1),mdim(#1),#2);"
-       "divM=data$2(mdim(#1),#2);"
-       "V(#1)+=comp(Base(#1).Normal().Base(#2))(:,i,j).divM(i,j);"
-       "V(#1)+=comp(Grad(#1).Normal().Base(#2))(:,i,j,k).MM(i,j,k)*(-1);"
-       "V(#1)+=comp(Grad(#1).Normal().Normal().Normal().Base(#2))(:,i,i,j,k,l).MM(j,k,l);");
-    
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_mf(mf_data);
-    assem.push_data(M);
-    assem.push_data(divM);
-    assem.push_vec(B);
-    assem.assembly(rg);
+    asm_neumann_KL_term_(B, mim, mf, &mf_data, M, divM, rg);
   }
 
   template<typename VECT1, typename VECT2>
   void asm_neumann_KL_homogeneous_term
   (VECT1 &B, const mesh_im &mim, const mesh_fem &mf,
    const VECT2 &M, const VECT2 &divM, const mesh_region &rg) {
-
-    generic_assembly assem
-      ("MM=data$1(mdim(#1),mdim(#1));"
-       "divM=data$2(mdim(#1));"
-       "V(#1)+=comp(Base(#1).Normal())(:,i).divM(i);"
-       "V(#1)+=comp(Grad(#1).Normal())(:,i,j).MM(i,j)*(-1);"
-       "V(#1)+=comp(Grad(#1).Normal().Normal().Normal())(:,i,i,j,k).MM(j,k);");
-    
-    assem.push_mi(mim);
-    assem.push_mf(mf);
-    assem.push_data(M);
-    assem.push_data(divM);
-    assem.push_vec(B);
-    assem.assembly(rg);
+    asm_neumann_KL_term_(B, mim, mf, 0, M, divM, rg);
   }
 
   /* ******************************************************************** */
@@ -358,18 +355,19 @@ namespace getfem {
     rg.from_mesh(mim.linked_mesh()).error_if_not_faces();
     
     if (version & ASMDIR_BUILDH) {
-      const char *s;
+      ga_workspace workspace;
+      gmm::sub_interval Imult(0, mf_mult.nb_dof());
+      gmm::sub_interval Iu(mf_mult.nb_dof(), mf_u.nb_dof());
+      base_vector mult(mf_mult.nb_dof()), u(mf_u.nb_dof());
+      workspace.add_fem_variable("mult", mf_mult, Imult, mult);
+      workspace.add_fem_variable("u", mf_u, Iu, u);
       if (mf_u.get_qdim() == 1 && mf_mult.get_qdim() == 1)
-        s = "M(#1,#2)+=comp(Base(#1).Grad(#2).Normal())(:,:,i,i)";
+        workspace.add_expression("Test_mult*(Grad_Test2_u.Normal)", mim, rg);
       else
-        s = "M(#1,#2)+=comp(vBase(#1).vGrad(#2).Normal())(:,i,:,i,j,j);";
-      
-      generic_assembly assem(s);
-      assem.push_mi(mim);
-      assem.push_mf(mf_mult);
-      assem.push_mf(mf_u);
-      assem.push_mat(H);
-      assem.assembly(rg);
+        workspace.add_expression("Test_mult.(Grad_Test2_u*Normal)", mim, rg);
+      workspace.assembly(2);
+      if (gmm::mat_nrows(workspace.assembled_matrix()))
+        gmm::add(gmm::sub_matrix(workspace.assembled_matrix(), Imult, Iu), H);
       gmm::clean(H, gmm::default_tol(magn_type())
                  * gmm::mat_maxnorm(H) * magn_type(1000));
     }
