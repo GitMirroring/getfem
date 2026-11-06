@@ -39,6 +39,7 @@
 
 #include "getfem_models.h"
 #include "getfem_assembling_tensors.h"
+#include "getfem_generic_assembly.h"
 
 namespace getfem {
 
@@ -368,6 +369,17 @@ namespace getfem {
 
     const bgeot::multi_index &sizes(size_type) const { return sizes_; }
 
+    /** Sets the local state, for an evaluation without interpolation context.
+        `lnt_` is the multiplier in the case with friction. */
+    void set_state(const base_small_vector &no_, const base_small_vector &lnt_,
+                   const base_small_vector &zt_, scalar_type un_, scalar_type g_,
+                   scalar_type ln_, scalar_type f_coeff_, scalar_type tau_adh_,
+                   scalar_type tresca_lim_) {
+      no = no_; lnt = lnt_; zt = zt_; un = un_; g = g_; ln = ln_;
+      lt = lnt - ln * no;
+      f_coeff = f_coeff_; tau_adh = tau_adh_; tresca_lim = tresca_lim_;
+    }
+
     virtual void friction_law(scalar_type p, scalar_type &tau);
     virtual void friction_law(scalar_type p, scalar_type &tau, scalar_type &tau_grad);
 
@@ -379,96 +391,43 @@ namespace getfem {
   };
 
 
-  class contact_rigid_obstacle_nonlinear_term : public contact_nonlinear_term {
-
-    // temporary variables to be used inside the prepare method
-    base_small_vector vt; // of size N
-    base_vector coeff; // of variable size
-    base_matrix grad;  // of size 1xN
+  /** Data of the contact with a rigid obstacle, in a GWFL workspace. The
+      obstacle is a level set and the terms are given by term(option).
+      Everything is copied, so that the arguments can be temporary.
+  */
+  class ga_contact_rigid_obstacle {
+    base_vector U, obs, lambda, ca, r, alpha, gamma, WT, VT;
+    base_vector f_coeff, tau_adh, tresca_lim;
+    gmm::sub_interval Iu, Ilambda, Ica;
+    const mesh_im &mim;
+    const mesh_region rg;
 
   public:
-    // class specific objects to take into account inside the prepare method
-    const mesh_fem &mf_u;       // mandatory
-    const mesh_fem &mf_obs;     // mandatory
-    const mesh_fem *pmf_lambda; // optional for terms involving lagrange multipliers
-    const mesh_fem *pmf_coeff;  // optional for terms involving fem described coefficient of friction
-    base_vector U, obs, lambda, friction_coeff, tau_adhesion, tresca_limit, WT, VT;
-    scalar_type gamma;
+    ga_workspace workspace;
+    std::string term(size_type option) const;
+    const gmm::sub_interval &interval_u() const { return Iu; }
+    const gmm::sub_interval &interval_lambda() const { return Ilambda; }
+    const gmm::sub_interval &interval_ca() const { return Ica; }
 
-    template <typename VECT1>
-    contact_rigid_obstacle_nonlinear_term
-    (size_type option_, scalar_type r_,
-     const mesh_fem &mf_u_, const VECT1 &U_,
-     const mesh_fem &mf_obs_, const VECT1 &obs_,
-     const mesh_fem *pmf_lambda_ = 0, const VECT1 *lambda_ = 0,
-     const mesh_fem *pmf_coeff_ = 0, const VECT1 *f_coeffs_ = 0,
-     scalar_type alpha_ = scalar_type(1), const VECT1 *WT_ = 0,
-     scalar_type gamma_ = scalar_type(1), const VECT1 *VT_ = 0
-    )
-      : contact_nonlinear_term(mf_u_.linked_mesh().dim(), option_, r_,
-                               (f_coeffs_ == 0), alpha_
-                              ),
-        mf_u(mf_u_), mf_obs(mf_obs_),
-        pmf_lambda(pmf_lambda_), pmf_coeff(pmf_coeff_),
-        U(mf_u.nb_basic_dof()), obs(mf_obs.nb_basic_dof()),
-        lambda(0), friction_coeff(0), tau_adhesion(0), tresca_limit(0),
-        WT(0), VT(0), gamma(gamma_)
-    {
+    /* adds a term. Its derivatives are given explicitely if any is needed. */
+    void add(const std::string &expr)
+    { workspace.add_expression(expr, mim, rg, 0); }
 
-      mf_u.extend_vector(U_, U);
-      mf_obs.extend_vector(obs_, obs);
-
-      if (pmf_lambda) {
-        lambda.resize(pmf_lambda->nb_basic_dof());
-        pmf_lambda->extend_vector(*lambda_, lambda);
-      }
-
-      if (!contact_only) {
-        if (!pmf_coeff) {
-          f_coeff = (*f_coeffs_)[0];
-          if (gmm::vect_size(*f_coeffs_) > 1) tau_adh = (*f_coeffs_)[1];
-          if (gmm::vect_size(*f_coeffs_) > 2) tresca_lim = (*f_coeffs_)[2];
-        }
-        else {
-          size_type ncoeffs = gmm::vect_size(*f_coeffs_)/pmf_coeff->nb_dof();
-          GMM_ASSERT1(ncoeffs >= 1 && ncoeffs <= 3, "Wrong vector dimension for friction coefficients");
-          gmm::resize(friction_coeff, pmf_coeff->nb_basic_dof());
-          pmf_coeff->extend_vector(gmm::sub_vector(*f_coeffs_, gmm::sub_slice(0,pmf_coeff->nb_dof(),ncoeffs)),
-                                   friction_coeff);
-          if (ncoeffs > 1) {
-            gmm::resize(tau_adhesion, pmf_coeff->nb_basic_dof());
-            pmf_coeff->extend_vector(gmm::sub_vector(*f_coeffs_, gmm::sub_slice(1,pmf_coeff->nb_dof(),ncoeffs)),
-                                     tau_adhesion);
-          }
-          if (ncoeffs > 2) {
-            gmm::resize(tresca_limit, pmf_coeff->nb_basic_dof());
-            pmf_coeff->extend_vector(gmm::sub_vector(*f_coeffs_, gmm::sub_slice(2,pmf_coeff->nb_dof(),ncoeffs)),
-                                     tresca_limit);
-          }
-        }
-
-        if (WT_ && gmm::vect_size(*WT_)) {
-          WT.resize(mf_u.nb_basic_dof());
-          mf_u.extend_vector(*WT_, WT);
-        }
-
-        if (VT_ && gmm::vect_size(*VT_)) {
-          VT.resize(mf_u.nb_basic_dof());
-          mf_u.extend_vector(*VT_, VT);
-        }
-      }
-
-      vt.resize(N);
-      gmm::resize(grad, 1, N);
-
-      GMM_ASSERT1(mf_u.get_qdim() == N, "wrong qdim for the mesh_fem");
-    }
-
-    // this methode prepares all necessary data for the compute method
-    // of the base class
-    virtual void prepare(fem_interpolation_context& ctx, size_type nb);
-
+    /* mf_ca is an additional test field (Test_ca). */
+    ga_contact_rigid_obstacle
+    (const mesh_im &mim_, const mesh_region &rg_, const mesh_fem &mf_u,
+     const base_vector &U_, const mesh_fem &mf_obs, const base_vector &obs_,
+     const mesh_fem *pmf_lambda, const base_vector *lambda_,
+     bool contact_only, const mesh_fem *pmf_coeff = 0,
+     const base_vector *f_coeffs = 0, scalar_type r_ = scalar_type(0),
+     scalar_type alpha_ = scalar_type(1), const base_vector *WT_ = 0,
+     scalar_type gamma_ = scalar_type(1), const base_vector *VT_ = 0,
+     const mesh_fem *pmf_ca = 0);
   };
+
+  /** Integral of the base functions of the scalar fem `mf`. */
+  void asm_contact_base_integral(base_vector &V, const mesh_im &mim,
+                                 const mesh_fem &mf, const mesh_region &rg);
 
 
   class contact_nonmatching_meshes_nonlinear_term : public contact_nonlinear_term {
@@ -562,6 +521,26 @@ namespace getfem {
   /** Specific assembly procedure for the use of an Uzawa algorithm to solve
       contact with rigid obstacle problems with friction.
   */
+  void asm_integral_contact_Uzawa_proj_
+  (base_vector &R, const mesh_im &mim, const mesh_fem &mf_u,
+   const base_vector &U, const mesh_fem &mf_obs, const base_vector &obs,
+   const mesh_fem &mf_lambda, const base_vector &lambda,
+   const mesh_fem *pmf_coeff, const base_vector *f_coeff,
+   const base_vector *WT, scalar_type r, scalar_type alpha,
+   const mesh_region &rg, int option);
+
+  void asm_level_set_normal_source_term_
+  (base_vector &R, const mesh_im &mim, const mesh_fem &mf_u,
+   const mesh_fem &mf_obs, const base_vector &obs,
+   const mesh_fem &mf_lambda, const base_vector &lambda,
+   const mesh_region &rg);
+
+  scalar_type asm_level_set_contact_area_
+  (const mesh_im &mim, const mesh_fem &mf_u, const base_vector &U,
+   const mesh_fem &mf_obs, const base_vector &obs, const mesh_region &rg,
+   scalar_type threshold_factor, const mesh_fem *mf_lambda,
+   const base_vector *lambda, scalar_type threshold_pressure_factor);
+
   template<typename VECT1>
   void asm_integral_contact_Uzawa_proj
   (VECT1 &R, const mesh_im &mim,
@@ -570,26 +549,16 @@ namespace getfem {
    const getfem::mesh_fem &mf_lambda, const VECT1 &lambda,
    const getfem::mesh_fem *pmf_coeff, const VECT1 &f_coeff, const VECT1 *WT,
    scalar_type r, scalar_type alpha, const mesh_region &rg, int option = 1) {
-
-    contact_rigid_obstacle_nonlinear_term
-      nterm1((option == 1) ? UZAWA_PROJ_FRICT : UZAWA_PROJ_FRICT_SAXCE, r,
-             mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, &f_coeff, alpha, WT);
-
-    getfem::generic_assembly assem;
-    if (pmf_coeff) // variable coefficient of friction
-      assem.set("V(#3)+=comp(NonLin$1(#1,#1,#2,#3,#4).vBase(#3))(i,:,i); ");
-    else // constant coefficient of friction
-      assem.set("V(#3)+=comp(NonLin$1(#1,#1,#2,#3).vBase(#3))(i,:,i); ");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    if (pmf_coeff)
-      assem.push_mf(*pmf_coeff);
-    assem.push_nonlinear_term(&nterm1);
-    assem.push_vec(R);
-    assem.assembly(rg);
+    base_vector R_(gmm::vect_size(R)), U_(gmm::vect_size(U));
+    base_vector obs_(gmm::vect_size(obs)), lambda_(gmm::vect_size(lambda));
+    base_vector f_(gmm::vect_size(f_coeff)), WT_;
+    gmm::copy(U, U_); gmm::copy(obs, obs_); gmm::copy(lambda, lambda_);
+    gmm::copy(f_coeff, f_);
+    if (WT) { gmm::resize(WT_, gmm::vect_size(*WT)); gmm::copy(*WT, WT_); }
+    asm_integral_contact_Uzawa_proj_
+      (R_, mim, mf_u, U_, mf_obs, obs_, mf_lambda, lambda_, pmf_coeff, &f_,
+       WT ? &WT_ : 0, r, alpha, rg, option);
+    gmm::add(R_, R);
   }
 
   /** Specific assembly procedure for the use of an Uzawa algorithm to solve
@@ -602,19 +571,13 @@ namespace getfem {
    const getfem::mesh_fem &mf_obs, const VECT1 &obs,
    const getfem::mesh_fem &mf_lambda, const VECT1 &lambda,
    scalar_type r, const mesh_region &rg) {
-
-    contact_rigid_obstacle_nonlinear_term
-      nterm1(UZAWA_PROJ, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda);
-
-    getfem::generic_assembly assem;
-    assem.set("V(#3)+=comp(NonLin$1(#1,#1,#2,#3).Base(#3))(i,:); ");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    assem.push_nonlinear_term(&nterm1);
-    assem.push_vec(R);
-    assem.assembly(rg);
+    base_vector R_(gmm::vect_size(R)), U_(gmm::vect_size(U));
+    base_vector obs_(gmm::vect_size(obs)), lambda_(gmm::vect_size(lambda));
+    gmm::copy(U, U_); gmm::copy(obs, obs_); gmm::copy(lambda, lambda_);
+    asm_integral_contact_Uzawa_proj_
+      (R_, mim, mf_u, U_, mf_obs, obs_, mf_lambda, lambda_, 0, 0, 0, r,
+       scalar_type(1), rg, 0);
+    gmm::add(R_, R);
   }
 
 
@@ -628,26 +591,12 @@ namespace getfem {
    const getfem::mesh_fem &mf_obs, const VEC &obs,
    const getfem::mesh_fem &mf_lambda, const VEC &lambda,
    const mesh_region &rg) {
-
-    bool contact_only = (mf_lambda.get_qdim() == 1);
-
-    VEC U;
-    gmm::resize(U, mf_u.nb_dof());
-    scalar_type dummy_r(0.);
-    VEC dummy_f_coeff; gmm::resize(dummy_f_coeff,1);
-    contact_rigid_obstacle_nonlinear_term
-      nterm(RHS_U_V1, dummy_r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-            0, contact_only ? 0 : &dummy_f_coeff);
-
-    getfem::generic_assembly assem;
-    assem.set("V(#1)+=comp(NonLin$1(#1,#1,#2,#3).vBase(#1))(i,:,i); ");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    assem.push_nonlinear_term(&nterm);
-    assem.push_vec(R);
-    assem.assembly(rg);
+    base_vector R_(gmm::vect_size(R));
+    base_vector obs_(gmm::vect_size(obs)), lambda_(gmm::vect_size(lambda));
+    gmm::copy(obs, obs_); gmm::copy(lambda, lambda_);
+    asm_level_set_normal_source_term_
+      (R_, mim, mf_u, mf_obs, obs_, mf_lambda, lambda_, rg);
+    gmm::add(R_, R);
   }
 
   template<typename VEC>
@@ -658,87 +607,15 @@ namespace getfem {
    const mesh_region &rg, scalar_type threshold_factor=0.0,
    const getfem::mesh_fem *mf_lambda=0, const VEC *lambda=0,
    scalar_type threshold_pressure_factor=0.0) {
-
-    if (!rg.get_parent_mesh())
-      rg.from_mesh(mim.linked_mesh());
-    getfem::mesh_fem mf_ca(mf_u.linked_mesh());
-    mf_ca.set_classical_finite_element(rg.index(),1);
-
-    VEC mesh_size(mf_ca.nb_dof());
-    VEC mesh_size2(mf_ca.nb_dof());
-    { // assemble an estimator of the mesh size
-      getfem::generic_assembly assem_mesh_size;
-      assem_mesh_size.set("V(#1)+=comp(Base(#1))");
-      assem_mesh_size.push_mi(mim);
-      assem_mesh_size.push_mf(mf_ca);
-      assem_mesh_size.push_vec(mesh_size2);
-      assem_mesh_size.assembly(rg);
-      for (dal::bv_visitor_c dof(mf_ca.basic_dof_on_region(rg));
-           !dof.finished(); ++dof)
-        mesh_size[dof] = sqrt(mesh_size2[dof]);
+    base_vector U_(gmm::vect_size(U)), obs_(gmm::vect_size(obs)), lambda_;
+    gmm::copy(U, U_); gmm::copy(obs, obs_);
+    if (lambda) {
+      gmm::resize(lambda_, gmm::vect_size(*lambda));
+      gmm::copy(*lambda, lambda_);
     }
-
-    VEC threshold(mf_ca.nb_dof());
-    if (mf_lambda && lambda) {
-      VEC pressure(mf_ca.nb_dof());
-      VEC dummy_f_coeff(1);
-      bool contact_only = (mf_lambda->get_qdim() == 1);
-      contact_rigid_obstacle_nonlinear_term
-        nterm_pressure(CONTACT_PRESSURE, 0., mf_u, U, mf_obs, obs,
-                       mf_lambda, lambda, 0, contact_only ? 0 : &dummy_f_coeff);
-
-      getfem::generic_assembly assem_pressure;
-      assem_pressure.set("V(#4)+=comp(NonLin(#1,#1,#2,#3).Base(#4))(i,:)");
-      assem_pressure.push_mi(mim);
-      assem_pressure.push_mf(mf_u);
-      assem_pressure.push_mf(mf_obs);
-      assem_pressure.push_mf(*mf_lambda);
-      assem_pressure.push_mf(mf_ca);
-      assem_pressure.push_nonlinear_term(&nterm_pressure);
-      assem_pressure.push_vec(pressure);
-      assem_pressure.assembly(rg);
-      for (dal::bv_visitor_c dof(mf_ca.basic_dof_on_region(rg));
-           !dof.finished(); ++dof)
-        pressure[dof] /= mesh_size2[dof];
-
-      // in areas where pressure is clearly non-zero set a low threshold
-      // in order to avoid false negative contact detection
-      scalar_type threshold_pressure(threshold_pressure_factor *
-                                     gmm::vect_norminf(pressure));
-      gmm::copy(gmm::scaled(mesh_size, scalar_type(-1)), threshold);
-      for (getfem::mr_visitor v(rg); !v.finished(); ++v) {
-        size_type nbdof = mf_ca.nb_basic_dof_of_face_of_element(v.cv(), v.f());
-        mesh_fem::ind_dof_face_ct::const_iterator
-          itdof = mf_ca.ind_basic_dof_of_face_of_element(v.cv(), v.f()).begin();
-        bool all_positive = true;
-        for (size_type k=0; k < nbdof; ++k, ++itdof)
-          if (pressure[*itdof] < threshold_pressure) { all_positive = false; break; }
-        if (!all_positive) {
-          itdof = mf_ca.ind_basic_dof_of_face_of_element(v.cv(), v.f()).begin();
-          for (size_type k=0; k < nbdof; ++k, ++itdof)
-            threshold[*itdof] = threshold_factor * mesh_size[*itdof];
-        }
-      }
-    }
-    else
-      gmm::copy(gmm::scaled(mesh_size, threshold_factor), threshold);
-
-    // compute the total contact area
-    // remark: the CONTACT_FLAG option misuses lambda as a threshold field
-    contact_rigid_obstacle_nonlinear_term
-      nterm(CONTACT_FLAG, 0., mf_u, U, mf_obs, obs, &mf_ca, &threshold);
-
-    getfem::generic_assembly assem;
-    assem.set("V()+=comp(NonLin(#1,#1,#2,#3))(i)");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_ca);
-    assem.push_nonlinear_term(&nterm);
-    std::vector<scalar_type> v(1);
-    assem.push_vec(v);
-    assem.assembly(rg);
-    return v[0];
+    return asm_level_set_contact_area_
+      (mim, mf_u, U_, mf_obs, obs_, rg, threshold_factor, mf_lambda,
+       lambda ? &lambda_ : 0, threshold_pressure_factor);
   }
 
 
@@ -789,12 +666,9 @@ namespace getfem {
     VEC mesh_size(mf_ca.nb_dof());
     VEC mesh_size2(mf_ca.nb_dof());
     { // assemble an estimator of the mesh size
-      getfem::generic_assembly assem_mesh_size;
-      assem_mesh_size.set("V(#1)+=comp(Base(#1))");
-      assem_mesh_size.push_mi(mim);
-      assem_mesh_size.push_mf(mf_ca);
-      assem_mesh_size.push_vec(mesh_size2);
-      assem_mesh_size.assembly(rg);
+      base_vector mesh_size2_(mf_ca.nb_dof());
+      asm_contact_base_integral(mesh_size2_, mim, mf_ca, rg);
+      gmm::copy(mesh_size2_, mesh_size2);
       for (dal::bv_visitor_c dof(mf_ca.basic_dof_on_region(rg));
            !dof.finished(); ++dof)
         mesh_size[dof] = sqrt(mesh_size2[dof]);

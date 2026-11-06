@@ -357,93 +357,273 @@ namespace getfem {
 
   //=========================================================================
   //
-  //  Non linear term used for contact with rigid obstacle bricks.
+  //  GWFL expression of the contact terms.
   //
   //=========================================================================
 
-  void contact_rigid_obstacle_nonlinear_term::prepare
-  (fem_interpolation_context& ctx, size_type nb) {
-    size_type cv = ctx.convex_num();
+  // Contact_term_<option>(no, lnt, zt, un, g, ln, f, tau_adh, tresca, alpha, r)
+  // Each term is an explicit expression, there is no need for its derivatives.
+  struct contact_term_operator : public ga_nonlinear_operator {
+    size_type option;
 
-    switch (nb) { // last is computed first
-    case 1 : // calculate [un] and [zt] interpolating [U],[WT],[VT] on [mf_u]
-      slice_vector_on_basic_dof_of_element(mf_u, U, cv, coeff);
-      ctx.pf()->interpolation(ctx, coeff, V, N);
-      un = gmm::vect_sp(V, no);
-      if (!contact_only) {
-        if (gmm::vect_size(WT) == gmm::vect_size(U)) {
-          slice_vector_on_basic_dof_of_element(mf_u, WT, cv, coeff);
-          ctx.pf()->interpolation(ctx, coeff, auxN, N);
-          auxN -= gmm::vect_sp(auxN, no) * no;
-          if (gmm::vect_size(VT) == gmm::vect_size(U)) {
-            slice_vector_on_basic_dof_of_element(mf_u, VT, cv, coeff);
-            ctx.pf()->interpolation(ctx, coeff, vt, N);
-            vt -= gmm::vect_sp(vt, no) * no;
-            // zt = r*(alpha*(u_T-w_T) + (1-gamma)*v_T)
-            zt = (((V - un * no) - auxN) * alpha + vt * (1 - gamma)) * r;
-          } else {
-            // zt = r*alpha*(u_T-w_T)
-            zt = ((V - un * no) - auxN) * (r * alpha);
-          }
-        } else {
-          // zt = r*alpha*u_T
-          zt = (V - un * no) * (r * alpha);
-        }
-      }
-      break;
-
-    case 2 : // calculate [g] and [no] interpolating [obs] on [mf_obs]
-             // calculate [ln] and [lt] from [lnt] and [no]
-      slice_vector_on_basic_dof_of_element(mf_obs, obs, cv, coeff);
-      ctx.pf()->interpolation_grad(ctx, coeff, grad, 1);
-      gmm::copy(gmm::mat_row(grad, 0), no);
-      no /= -gmm::vect_norm2(no);
-      ctx.pf()->interpolation(ctx, coeff, aux1, 1);
-      g = aux1[0];
-
-      if (!contact_only && pmf_lambda) {
-        ln = gmm::vect_sp(lnt, no);
-        lt = lnt - ln * no;
-      }
-
-      break;
-
-    case 3 : // calculate [ln] or [lnt] interpolating [lambda] on [mf_lambda]
-      if (pmf_lambda) {
-        slice_vector_on_basic_dof_of_element(*pmf_lambda, lambda, cv, coeff);
-        if (contact_only) {
-          ctx.pf()->interpolation(ctx, coeff, aux1, 1);
-          ln = aux1[0];
-        } else {
-          ctx.pf()->interpolation(ctx, coeff, lnt, N);
-        }
-      }
-      break;
-
-    case 4 : // calculate [f_coeff] interpolating [friction_coeff] on [mf_coeff]
-             // calculate [tau_adh] interpolating [tau_adhesion] on [mf_coeff]
-             // calculate [tresca_lim] interpolating [tresca_limit] on [mf_coeff]
-      GMM_ASSERT1(!contact_only, "Invalid friction option");
-      if (pmf_coeff) {
-        slice_vector_on_basic_dof_of_element(*pmf_coeff, friction_coeff, cv, coeff);
-        ctx.pf()->interpolation(ctx, coeff, aux1, 1);
-        f_coeff = aux1[0];
-        if (gmm::vect_size(tau_adhesion)) {
-          slice_vector_on_basic_dof_of_element(*pmf_coeff, tau_adhesion, cv, coeff);
-          ctx.pf()->interpolation(ctx, coeff, aux1, 1);
-          tau_adh = aux1[0];
-          if (gmm::vect_size(tresca_limit)) {
-            slice_vector_on_basic_dof_of_element(*pmf_coeff, tresca_limit, cv, coeff);
-            ctx.pf()->interpolation(ctx, coeff, aux1, 1);
-            tresca_lim = aux1[0];
-          }
-        }
-      }
-      break;
-
-    default : GMM_ASSERT1(false, "Invalid option");
+    bool result_size(const arg_list &args, bgeot::multi_index &sizes) const {
+      if (args.size() != 11) return false;
+      size_type N = args[0]->size();
+      contact_nonlinear_term nterm(dim_type(N), option, scalar_type(1));
+      sizes = nterm.sizes(0);
+      if (sizes.size() == 1 && sizes[0] == 1) sizes.resize(0);
+      return true;
     }
 
+    void value(const arg_list &args, base_tensor &result) const {
+      size_type N = args[0]->size();
+      base_small_vector no(N), lnt(N), zt(N);
+      gmm::copy(args[0]->as_vector(), no);
+      gmm::copy(args[1]->as_vector(), lnt);
+      gmm::copy(args[2]->as_vector(), zt);
+      contact_nonlinear_term nterm(dim_type(N), option, (*(args[10]))[0],
+                                   false, (*(args[9]))[0]);
+      nterm.set_state(no, lnt, zt, (*(args[3]))[0], (*(args[4]))[0],
+                      (*(args[5]))[0], (*(args[6]))[0], (*(args[7]))[0],
+                      (*(args[8]))[0]);
+      base_tensor t;
+      fem_interpolation_context ctx;
+      nterm.compute(ctx, t);
+      gmm::copy(t.as_vector(), result.as_vector());
+    }
+
+    void derivative(const arg_list &, size_type, base_tensor &) const
+    { GMM_ASSERT1(false, "Contact terms have no derivative"); }
+
+    void second_derivative(const arg_list &, size_type, size_type,
+                           base_tensor &) const
+    { GMM_ASSERT1(false, "Contact terms have no derivative"); }
+
+    contact_term_operator(size_type option_) : option(option_) {}
+  };
+
+  static std::string contact_term_name(size_type option)
+  { return "Contact_term_" + std::to_string(option); }
+
+  static bool init_contact_term_operators() {
+    ga_predef_operator_tab &PREDEF_OPERATORS
+      = dal::singleton<ga_predef_operator_tab>::instance();
+    for (size_type option = 0; option <= K_UU_FRICT_V5; ++option)
+      PREDEF_OPERATORS.add_method
+        (contact_term_name(option),
+         std::make_shared<contact_term_operator>(option));
+    return true;
+  }
+  static const bool contact_term_operators_initialized
+    = init_contact_term_operators();
+
+  std::string ga_contact_rigid_obstacle::term(size_type option) const {
+    return contact_term_name(option) + "(cno,clnt,czt,cun,obs,cln,cf,ctau,"
+      "ctresca,calpha,cr)";
+  }
+
+  void asm_contact_base_integral(base_vector &V, const mesh_im &mim,
+                                 const mesh_fem &mf, const mesh_region &rg) {
+    ga_workspace workspace;
+    gmm::sub_interval I(0, mf.nb_dof());
+    base_vector u(mf.nb_dof());
+    workspace.add_fem_variable("u", mf, I, u);
+    workspace.add_expression("Test_u", mim, rg);
+    workspace.set_assembled_vector(V);
+    workspace.assembly(1);
+  }
+
+  ga_contact_rigid_obstacle::ga_contact_rigid_obstacle
+  (const mesh_im &mim_, const mesh_region &rg_, const mesh_fem &mf_u,
+   const base_vector &U_, const mesh_fem &mf_obs, const base_vector &obs_,
+   const mesh_fem *pmf_lambda, const base_vector *lambda_, bool contact_only,
+   const mesh_fem *pmf_coeff, const base_vector *f_coeffs, scalar_type r_,
+   scalar_type alpha_, const base_vector *WT_, scalar_type gamma_,
+   const base_vector *VT_, const mesh_fem *pmf_ca)
+    : U(U_), obs(obs_), r(1, r_), alpha(1, alpha_), gamma(1, gamma_),
+      Iu(0, mf_u.nb_dof()), Ilambda(Iu.last(), pmf_lambda ? pmf_lambda->nb_dof() : 0),
+      Ica(Ilambda.last(), pmf_ca ? pmf_ca->nb_dof() : 0),
+      mim(mim_), rg(rg_) {
+
+    GMM_ASSERT1(mf_u.get_qdim() == mf_u.linked_mesh().dim(),
+                "wrong qdim for the mesh_fem");
+    workspace.add_fem_variable("u", mf_u, Iu, U);
+    workspace.add_fem_constant("obs", mf_obs, obs);
+    workspace.add_fixed_size_constant("cr", r);
+    workspace.add_fixed_size_constant("calpha", alpha);
+    workspace.add_macro("cno", "(-Grad_obs/Norm(Grad_obs))");
+    workspace.add_macro("cun", "(u.cno)");
+
+    if (pmf_lambda) {
+      lambda = *lambda_;
+      workspace.add_fem_variable("lambda", *pmf_lambda, Ilambda, lambda);
+      workspace.add_macro("cln", contact_only ? "lambda" : "(lambda.cno)");
+    } else
+      workspace.add_macro("cln", "0");
+    workspace.add_macro("clnt", (pmf_lambda && !contact_only)
+                        ? "lambda" : "(0*cno)");
+
+    if (pmf_ca) {
+      ca.resize(pmf_ca->nb_dof());
+      workspace.add_fem_variable("ca", *pmf_ca, Ica, ca);
+    }
+
+    tau_adh.assign(1, scalar_type(0));
+    tresca_lim.assign(1, gmm::default_max(scalar_type()));
+    f_coeff.assign(1, scalar_type(0));
+    if (!contact_only && pmf_coeff) {
+      size_type nbd = pmf_coeff->nb_dof();
+      size_type ncoeffs = gmm::vect_size(*f_coeffs)/nbd;
+      GMM_ASSERT1(ncoeffs >= 1 && ncoeffs <= 3,
+                  "Wrong vector dimension for friction coefficients");
+      base_vector *cf[3] = {&f_coeff, &tau_adh, &tresca_lim};
+      for (size_type i = 0; i < 3; ++i) {
+        cf[i]->resize(nbd);
+        if (i < ncoeffs)
+          gmm::copy(gmm::sub_vector(*f_coeffs, gmm::sub_slice(i, nbd, ncoeffs)),
+                    *(cf[i]));
+        else
+          std::fill(cf[i]->begin(), cf[i]->end(),
+                    (i == 1) ? scalar_type(0) : gmm::default_max(scalar_type()));
+      }
+      workspace.add_fem_constant("cf", *pmf_coeff, f_coeff);
+      workspace.add_fem_constant("ctau", *pmf_coeff, tau_adh);
+      workspace.add_fem_constant("ctresca", *pmf_coeff, tresca_lim);
+    } else {
+      if (!contact_only) {
+        f_coeff[0] = (*f_coeffs)[0];
+        if (gmm::vect_size(*f_coeffs) > 1) tau_adh[0] = (*f_coeffs)[1];
+        if (gmm::vect_size(*f_coeffs) > 2) tresca_lim[0] = (*f_coeffs)[2];
+      }
+      workspace.add_fixed_size_constant("cf", f_coeff);
+      workspace.add_fixed_size_constant("ctau", tau_adh);
+      workspace.add_fixed_size_constant("ctresca", tresca_lim);
+    }
+
+    workspace.add_macro("cPt", "(Id(meshdim)-cno@cno)");
+    std::string zt = "(0*cno)";
+    if (!contact_only) {
+      if (WT_ && gmm::vect_size(*WT_) == gmm::vect_size(U)) {
+        WT = *WT_;
+        workspace.add_fem_constant("cwt", mf_u, WT);
+        if (VT_ && gmm::vect_size(*VT_) == gmm::vect_size(U)) {
+          VT = *VT_;
+          workspace.add_fem_constant("cvt", mf_u, VT);
+          workspace.add_fixed_size_constant("cgamma", gamma);
+          zt = "(cr*(calpha*(cPt*(u-cwt))+(1-cgamma)*(cPt*cvt)))";
+        } else
+          zt = "(cr*calpha*(cPt*(u-cwt)))";
+      } else
+        zt = "(cr*calpha*(cPt*u))";
+    }
+    workspace.add_macro("czt", zt);
+  }
+
+  void asm_integral_contact_Uzawa_proj_
+  (base_vector &R, const mesh_im &mim, const mesh_fem &mf_u,
+   const base_vector &U, const mesh_fem &mf_obs, const base_vector &obs,
+   const mesh_fem &mf_lambda, const base_vector &lambda,
+   const mesh_fem *pmf_coeff, const base_vector *f_coeff,
+   const base_vector *WT, scalar_type r, scalar_type alpha,
+   const mesh_region &rg, int option) {
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_lambda,
+                                 &lambda, f_coeff == 0, pmf_coeff, f_coeff, r,
+                                 alpha, WT);
+    if (f_coeff)
+      ct.add(ct.term((option == 1) ? UZAWA_PROJ_FRICT
+                                   : UZAWA_PROJ_FRICT_SAXCE) + ".Test_lambda");
+    else
+      ct.add(ct.term(UZAWA_PROJ) + "*Test_lambda");
+    base_vector V(ct.interval_lambda().last());
+    ct.workspace.set_assembled_vector(V);
+    ct.workspace.assembly(1);
+    gmm::copy(gmm::sub_vector(V, ct.interval_lambda()), R);
+  }
+
+  void asm_level_set_normal_source_term_
+  (base_vector &R, const mesh_im &mim, const mesh_fem &mf_u,
+   const mesh_fem &mf_obs, const base_vector &obs,
+   const mesh_fem &mf_lambda, const base_vector &lambda,
+   const mesh_region &rg) {
+    bool contact_only = (mf_lambda.get_qdim() == 1);
+    base_vector U(mf_u.nb_dof()), dummy_f_coeff(1);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_lambda,
+                                 &lambda, contact_only, 0,
+                                 contact_only ? 0 : &dummy_f_coeff);
+    ct.add(ct.term(RHS_U_V1) + ".Test_u");
+    base_vector V(ct.interval_lambda().last());
+    ct.workspace.set_assembled_vector(V);
+    ct.workspace.assembly(1);
+    gmm::copy(gmm::sub_vector(V, ct.interval_u()), R);
+  }
+
+  scalar_type asm_level_set_contact_area_
+  (const mesh_im &mim, const mesh_fem &mf_u, const base_vector &U,
+   const mesh_fem &mf_obs, const base_vector &obs, const mesh_region &rg_,
+   scalar_type threshold_factor, const mesh_fem *mf_lambda,
+   const base_vector *lambda, scalar_type threshold_pressure_factor) {
+
+    mesh_region rg(rg_);
+    if (!rg.get_parent_mesh()) rg.from_mesh(mim.linked_mesh());
+    mesh_fem mf_ca(mf_u.linked_mesh());
+    mf_ca.set_classical_finite_element(rg.index(), 1);
+
+    base_vector mesh_size(mf_ca.nb_dof()), mesh_size2(mf_ca.nb_dof());
+    asm_contact_base_integral(mesh_size2, mim, mf_ca, rg);
+    for (dal::bv_visitor_c dof(mf_ca.basic_dof_on_region(rg));
+         !dof.finished(); ++dof)
+      mesh_size[dof] = sqrt(mesh_size2[dof]);
+
+    base_vector threshold(mf_ca.nb_dof());
+    if (mf_lambda && lambda) {
+      base_vector pressure(mf_ca.nb_dof()), dummy_f_coeff(1);
+      bool contact_only = (mf_lambda->get_qdim() == 1);
+      {
+        ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, mf_lambda,
+                                     lambda, contact_only, 0,
+                                     contact_only ? 0 : &dummy_f_coeff,
+                                     scalar_type(0), scalar_type(1), 0,
+                                     scalar_type(1), 0, &mf_ca);
+        ct.add(ct.term(CONTACT_PRESSURE) + "*Test_ca");
+        base_vector V(ct.interval_ca().last());
+        ct.workspace.set_assembled_vector(V);
+        ct.workspace.assembly(1);
+        gmm::copy(gmm::sub_vector(V, ct.interval_ca()), pressure);
+      }
+      for (dal::bv_visitor_c dof(mf_ca.basic_dof_on_region(rg));
+           !dof.finished(); ++dof)
+        pressure[dof] /= mesh_size2[dof];
+
+      // in areas where pressure is clearly non-zero set a low threshold
+      // in order to avoid false negative contact detection
+      scalar_type threshold_pressure(threshold_pressure_factor *
+                                     gmm::vect_norminf(pressure));
+      gmm::copy(gmm::scaled(mesh_size, scalar_type(-1)), threshold);
+      for (getfem::mr_visitor v(rg); !v.finished(); ++v) {
+        size_type nbdof = mf_ca.nb_basic_dof_of_face_of_element(v.cv(), v.f());
+        mesh_fem::ind_dof_face_ct::const_iterator
+          itdof = mf_ca.ind_basic_dof_of_face_of_element(v.cv(), v.f()).begin();
+        bool all_positive = true;
+        for (size_type k=0; k < nbdof; ++k, ++itdof)
+          if (pressure[*itdof] < threshold_pressure)
+            { all_positive = false; break; }
+        if (!all_positive) {
+          itdof = mf_ca.ind_basic_dof_of_face_of_element(v.cv(), v.f()).begin();
+          for (size_type k=0; k < nbdof; ++k, ++itdof)
+            threshold[*itdof] = threshold_factor * mesh_size[*itdof];
+        }
+      }
+    }
+    else
+      gmm::copy(gmm::scaled(mesh_size, threshold_factor), threshold);
+
+    // compute the total contact area
+    // remark: the CONTACT_FLAG option misuses lambda as a threshold field
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_ca,
+                                 &threshold, true);
+    ct.add(ct.term(CONTACT_FLAG));
+    ct.workspace.assembly(0);
+    return ct.workspace.assembled_potential();
   }
 
 
@@ -561,6 +741,29 @@ namespace getfem {
   //
   //=========================================================================
 
+  template<typename MAT>
+  static void asm_contact_rigid_tangent(ga_contact_rigid_obstacle &ct,
+                                        MAT &Kul, MAT &Klu, MAT &Kll, MAT &Kuu) {
+    ct.workspace.assembly(2);
+    const auto &K = ct.workspace.assembled_matrix();
+    if (!gmm::mat_nrows(K)) return;
+    const gmm::sub_interval &Iu = ct.interval_u(), &Il = ct.interval_lambda();
+    gmm::add(gmm::sub_matrix(K, Iu, Il), Kul);
+    gmm::add(gmm::sub_matrix(K, Il, Iu), Klu);
+    gmm::add(gmm::sub_matrix(K, Il, Il), Kll);
+    gmm::add(gmm::sub_matrix(K, Iu, Iu), Kuu);
+  }
+
+  template<typename VECT1>
+  static void asm_contact_rigid_rhs(ga_contact_rigid_obstacle &ct,
+                                    VECT1 &Ru, VECT1 &Rl) {
+    base_vector V(ct.interval_lambda().last());
+    ct.workspace.set_assembled_vector(V);
+    ct.workspace.assembly(1);
+    gmm::add(gmm::sub_vector(V, ct.interval_u()), Ru);
+    gmm::add(gmm::sub_vector(V, ct.interval_lambda()), Rl);
+  }
+
   template<typename MAT, typename VECT1>
   void asm_Alart_Curnier_contact_rigid_obstacle_tangent_matrix // frictionless
   (MAT &Kul, MAT &Klu, MAT &Kll, MAT &Kuu,
@@ -575,40 +778,21 @@ namespace getfem {
     size_type subterm3 = (option == 3) ? K_LL_V2 : K_LL_V1;
     size_type subterm4 = (option == 2) ? K_UU_V2 : K_UU_V1;
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm1(subterm1, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda),
-      nterm2(subterm2, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda),
-      nterm3(subterm3, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda),
-      nterm4(subterm4, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda);
-
-    getfem::generic_assembly assem;
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_lambda,
+                                 &lambda, true, 0, 0, r);
     switch (option) {
     case 1: case 3:
-      assem.set
-       ("M$1(#1,#3)+=comp(NonLin$1(#1,#1,#2,#3).vBase(#1).Base(#3))(i,:,i,:); " // UL
-        "M$2(#3,#1)+=comp(NonLin$2(#1,#1,#2,#3).Base(#3).vBase(#1))(i,:,:,i); " // LU
-        "M$3(#3,#3)+=comp(NonLin$3(#1,#1,#2,#3).Base(#3).Base(#3))(i,:,:)");    // LL
+      ct.add("(" + ct.term(subterm1) + ".Test_u)*Test2_lambda");
+      ct.add("(" + ct.term(subterm2) + ".Test2_u)*Test_lambda");
+      ct.add(ct.term(subterm3) + "*Test_lambda*Test2_lambda");
       break;
     case 2:
-      assem.set
-       ("M$1(#1,#3)+=comp(NonLin$2(#1,#1,#2,#3).vBase(#1).Base(#3))(i,:,i,:); "      // UL
-        "M$3(#3,#3)+=comp(NonLin$3(#1,#1,#2,#3).Base(#3).Base(#3))(i,:,:);"          // LL
-        "M$4(#1,#1)+=comp(NonLin$4(#1,#1,#2,#3).vBase(#1).vBase(#1))(i,j,:,i,:,j)"); // UU
+      ct.add("(" + ct.term(subterm2) + ".Test_u)*Test2_lambda");
+      ct.add(ct.term(subterm3) + "*Test_lambda*Test2_lambda");
+      ct.add("Test_u.(" + ct.term(subterm4) + "*Test2_u)");
       break;
     }
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    assem.push_nonlinear_term(&nterm1);
-    assem.push_nonlinear_term(&nterm2);
-    assem.push_nonlinear_term(&nterm3);
-    assem.push_nonlinear_term(&nterm4);
-    assem.push_mat(Kul);
-    assem.push_mat(Klu);
-    assem.push_mat(Kll);
-    assem.push_mat(Kuu);
-    assem.assembly(rg);
+    asm_contact_rigid_tangent(ct, Kul, Klu, Kll, Kuu);
   }
 
   template<typename MAT, typename VECT1>
@@ -636,51 +820,15 @@ namespace getfem {
     default : GMM_ASSERT1(false, "Incorrect option");
     }
 
-    size_type subterm4 = K_UU_FRICT_V3;
-
-    contact_rigid_obstacle_nonlinear_term
-      nterm1(subterm1, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, f_coeffs, alpha, WT, gamma, VT),
-      nterm2(subterm2, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, f_coeffs, alpha, WT, gamma, VT),
-      nterm3(subterm3, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, f_coeffs, alpha, WT, gamma, VT),
-      nterm4(subterm4, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, f_coeffs, alpha, WT, gamma, VT);
-
-    const std::string aux_fems = pmf_coeff ? "#1,#2,#3,#4" : "#1,#2,#3";
-
-    getfem::generic_assembly assem;
-    switch (option) {
-    case 1: case 3: case 4:
-      assem.set
-       ("M$1(#1,#3)+=comp(NonLin$1(#1," + aux_fems + ").vBase(#1).vBase(#3))(i,j,:,i,:,j); " // UL
-        "M$2(#3,#1)+=comp(NonLin$2(#1," + aux_fems + ").vBase(#3).vBase(#1))(i,j,:,j,:,i); " // LU
-        "M$3(#3,#3)+=comp(NonLin$3(#1," + aux_fems + ").vBase(#3).vBase(#3))(i,j,:,i,:,j)"); // LL
-      break;
-    case 2:
-      assem.set
-       ("M$1(#1,#3)+=comp(NonLin$1(#1," + aux_fems + ").vBase(#1).vBase(#3))(i,j,:,i,:,j); " // UL
-        "M$2(#3,#1)+=comp(NonLin$2(#1," + aux_fems + ").vBase(#3).vBase(#1))(i,j,:,j,:,i); " // LU
-        "M$3(#3,#3)+=comp(NonLin$3(#1," + aux_fems + ").vBase(#3).vBase(#3))(i,j,:,i,:,j);"  // LL
-        "M$4(#1,#1)+=comp(NonLin$4(#1," + aux_fems + ").vBase(#1).vBase(#1))(i,j,:,i,:,j)"); // UU
-      break;
-    }
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    if (pmf_coeff)
-      assem.push_mf(*pmf_coeff);
-    assem.push_nonlinear_term(&nterm1);
-    assem.push_nonlinear_term(&nterm2);
-    assem.push_nonlinear_term(&nterm3);
-    assem.push_nonlinear_term(&nterm4);
-    assem.push_mat(Kul);
-    assem.push_mat(Klu);
-    assem.push_mat(Kll);
-    assem.push_mat(Kuu);
-    assem.assembly(rg);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_lambda,
+                                 &lambda, false, pmf_coeff, f_coeffs, r, alpha,
+                                 WT, gamma, VT);
+    ct.add("Test_u.(" + ct.term(subterm1) + "*Test2_lambda)");
+    ct.add("Test2_u.(" + ct.term(subterm2) + "*Test_lambda)");
+    ct.add("Test_lambda.(" + ct.term(subterm3) + "*Test2_lambda)");
+    if (option == 2)
+      ct.add("Test_u.(" + ct.term(K_UU_FRICT_V3) + "*Test2_u)");
+    asm_contact_rigid_tangent(ct, Kul, Klu, Kll, Kuu);
   }
 
   template<typename VECT1>
@@ -701,23 +849,11 @@ namespace getfem {
     }
     size_type subterm2 = (option == 3) ? RHS_L_V2 : RHS_L_V1;
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm1(subterm1, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda),
-      nterm2(subterm2, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda);
-
-    getfem::generic_assembly assem;
-    assem.set("V$1(#1)+=comp(NonLin$1(#1,#1,#2,#3).vBase(#1))(i,:,i); "
-              "V$2(#3)+=comp(NonLin$2(#1,#1,#2,#3).Base(#3))(i,:)");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    assem.push_nonlinear_term(&nterm1);
-    assem.push_nonlinear_term(&nterm2);
-    assem.push_vec(Ru);
-    assem.push_vec(Rl);
-    assem.assembly(rg);
-
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_lambda,
+                                 &lambda, true, 0, 0, r);
+    ct.add(ct.term(subterm1) + ".Test_u");
+    ct.add(ct.term(subterm2) + "*Test_lambda");
+    asm_contact_rigid_rhs(ct, Ru, Rl);
   }
 
   template<typename VECT1>
@@ -741,28 +877,12 @@ namespace getfem {
     default : GMM_ASSERT1(false, "Incorrect option");
     }
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm1(subterm1, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, f_coeffs, alpha, WT, gamma, VT),
-      nterm2(subterm2, r, mf_u, U, mf_obs, obs, &mf_lambda, &lambda,
-             pmf_coeff, f_coeffs, alpha, WT, gamma, VT);
-
-    const std::string aux_fems = pmf_coeff ? "#1,#2,#3,#4" : "#1,#2,#3";
-
-    getfem::generic_assembly assem;
-    assem.set("V$1(#1)+=comp(NonLin$1(#1," + aux_fems + ").vBase(#1))(i,:,i); "
-              "V$2(#3)+=comp(NonLin$2(#1," + aux_fems + ").vBase(#3))(i,:,i)");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    assem.push_mf(mf_lambda);
-    if (pmf_coeff)
-      assem.push_mf(*pmf_coeff);
-    assem.push_nonlinear_term(&nterm1);
-    assem.push_nonlinear_term(&nterm2);
-    assem.push_vec(Ru);
-    assem.push_vec(Rl);
-    assem.assembly(rg);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, &mf_lambda,
+                                 &lambda, false, pmf_coeff, f_coeffs, r, alpha,
+                                 WT, gamma, VT);
+    ct.add(ct.term(subterm1) + ".Test_u");
+    ct.add(ct.term(subterm2) + ".Test_lambda");
+    asm_contact_rigid_rhs(ct, Ru, Rl);
   }
 
   struct integral_contact_rigid_obstacle_brick : public virtual_brick {
@@ -1021,21 +1141,14 @@ namespace getfem {
    const getfem::mesh_fem *pmf_lambda, const VECT1 *lambda,
    scalar_type r, const mesh_region &rg, int option = 1) {
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm((option == 1) ? K_UU_V1 : K_UU_V2, r,
-            mf_u, U, mf_obs, obs, pmf_lambda, lambda);
-
-    const std::string aux_fems = pmf_lambda ? "#1,#2,#3": "#1,#2";
-    getfem::generic_assembly assem;
-    assem.set("M(#1,#1)+=comp(NonLin(#1," + aux_fems + ").vBase(#1).vBase(#1))(i,j,:,i,:,j)");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    if (pmf_lambda)
-      assem.push_mf(*pmf_lambda);
-    assem.push_nonlinear_term(&nterm);
-    assem.push_mat(Kuu);
-    assem.assembly(rg);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, pmf_lambda,
+                                 lambda, true, 0, 0, r);
+    ct.add("Test_u.(" + ct.term((option == 1) ? K_UU_V1 : K_UU_V2)
+           + "*Test2_u)");
+    ct.workspace.assembly(2);
+    if (gmm::mat_nrows(ct.workspace.assembled_matrix()))
+      gmm::add(gmm::sub_matrix(ct.workspace.assembled_matrix(),
+                               ct.interval_u(), ct.interval_u()), Kuu);
   }
 
 
@@ -1048,21 +1161,13 @@ namespace getfem {
    const getfem::mesh_fem *pmf_lambda, const VECT1 *lambda,
    scalar_type r, const mesh_region &rg, int option = 1) {
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm((option == 1) ? RHS_U_V5 : RHS_U_V2, r,
-            mf_u, U, mf_obs, obs, pmf_lambda, lambda);
-
-    const std::string aux_fems = pmf_lambda ? "#1,#2,#3": "#1,#2";
-    getfem::generic_assembly assem;
-    assem.set("V(#1)+=comp(NonLin$1(#1," + aux_fems + ").vBase(#1))(i,:,i); ");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-    if (pmf_lambda)
-      assem.push_mf(*pmf_lambda);
-    assem.push_nonlinear_term(&nterm);
-    assem.push_vec(Ru);
-    assem.assembly(rg);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, pmf_lambda,
+                                 lambda, true, 0, 0, r);
+    ct.add(ct.term((option == 1) ? RHS_U_V5 : RHS_U_V2) + ".Test_u");
+    base_vector V(ct.interval_lambda().last());
+    ct.workspace.set_assembled_vector(V);
+    ct.workspace.assembly(1);
+    gmm::add(gmm::sub_vector(V, ct.interval_u()), Ru);
   }
 
   template<typename MAT, typename VECT1>
@@ -1083,29 +1188,14 @@ namespace getfem {
     case 3 : subterm =  K_UU_FRICT_V5; break;
     }
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm(subterm, r, mf_u, U, mf_obs, obs, pmf_lambda, lambda,
-            pmf_coeff, f_coeffs, alpha, WT);
-
-    const std::string aux_fems = pmf_coeff ? "#1,#2,#3,#4"
-                                           : (pmf_lambda ? "#1,#2,#3": "#1,#2");
-    getfem::generic_assembly assem;
-    assem.set("M(#1,#1)+=comp(NonLin(#1," + aux_fems + ").vBase(#1).vBase(#1))(i,j,:,i,:,j)");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-
-    if (pmf_lambda)
-      assem.push_mf(*pmf_lambda);
-    else if (pmf_coeff)
-      assem.push_mf(*pmf_coeff); // dummy
-
-    if (pmf_coeff)
-      assem.push_mf(*pmf_coeff);
-
-    assem.push_nonlinear_term(&nterm);
-    assem.push_mat(Kuu);
-    assem.assembly(rg);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, pmf_lambda,
+                                 lambda, false, pmf_coeff, f_coeffs, r, alpha,
+                                 WT);
+    ct.add("Test_u.(" + ct.term(subterm) + "*Test2_u)");
+    ct.workspace.assembly(2);
+    if (gmm::mat_nrows(ct.workspace.assembled_matrix()))
+      gmm::add(gmm::sub_matrix(ct.workspace.assembled_matrix(),
+                               ct.interval_u(), ct.interval_u()), Kuu);
   }
 
 
@@ -1127,31 +1217,15 @@ namespace getfem {
     case 3 : subterm =  RHS_U_FRICT_V8; break;
     }
 
-    contact_rigid_obstacle_nonlinear_term
-      nterm(subterm, r, mf_u, U, mf_obs, obs, pmf_lambda, lambda,
-            pmf_coeff, f_coeffs, alpha, WT);
-
-    const std::string aux_fems = pmf_coeff ? "#1,#2,#3,#4"
-                                           : (pmf_lambda ? "#1,#2,#3": "#1,#2");
-    getfem::generic_assembly assem;
-    assem.set("V(#1)+=comp(NonLin$1(#1," + aux_fems + ").vBase(#1))(i,:,i); ");
-    assem.push_mi(mim);
-    assem.push_mf(mf_u);
-    assem.push_mf(mf_obs);
-
-    if (pmf_lambda)
-      assem.push_mf(*pmf_lambda);
-    else if (pmf_coeff)
-      assem.push_mf(*pmf_coeff); // dummy
-
-    if (pmf_coeff)
-      assem.push_mf(*pmf_coeff);
-
-    assem.push_nonlinear_term(&nterm);
-    assem.push_vec(Ru);
-    assem.assembly(rg);
+    ga_contact_rigid_obstacle ct(mim, rg, mf_u, U, mf_obs, obs, pmf_lambda,
+                                 lambda, false, pmf_coeff, f_coeffs, r, alpha,
+                                 WT);
+    ct.add(ct.term(subterm) + ".Test_u");
+    base_vector V(ct.interval_lambda().last());
+    ct.workspace.set_assembled_vector(V);
+    ct.workspace.assembly(1);
+    gmm::add(gmm::sub_vector(V, ct.interval_u()), Ru);
   }
-
 
   struct penalized_contact_rigid_obstacle_brick : public virtual_brick {
 
