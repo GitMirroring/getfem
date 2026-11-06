@@ -17,6 +17,7 @@
 
 if QHULL
 optpy = check_levelset.py                               \
+        check_mesher_extrusion.py                       \
         demo_thermo_elasticity_electrical_coupling.py
 else
 optpy =
@@ -28,6 +29,7 @@ EXTRA_DIST=                                       \
     check_export_vtu.py                           \
     check_global_functions.py                     \
     check_levelset.py                             \
+    check_mesher_extrusion.py                     \
     check_asm.py                                  \
     check_mumps_ctx.py          		  \
     check_bspline_mesh_fem.py                     \

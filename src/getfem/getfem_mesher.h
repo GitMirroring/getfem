@@ -1066,7 +1066,203 @@ namespace getfem {
 
   inline pmesher_signed_distance new_mesher_torus(scalar_type R, scalar_type r)
   { return std::make_shared<mesher_torus>(R,r); }
-  
+
+
+  // 3D objects built from a 2D one by a map (x, y, z) -> (a, b):
+  // (x, y) for an extrusion along the z axis, (sqrt(x^2+y^2), z) for a
+  // revolution about the z axis (the profile is then given in the (r, z)
+  // half plane, r >= 0). Both maps preserve the distance to the boundary
+  // (in the meridian plane for the revolution).
+
+  inline scalar_type mesher_map_2d(const base_node &P, bool revolution,
+				   base_node &Q, base_small_vector &e) {
+    GMM_ASSERT1(P.size() == 3, "A 3D point is expected");
+    Q.resize(2); e.resize(2);
+    if (!revolution) { Q[0] = P[0]; Q[1] = P[1]; return scalar_type(0); }
+    scalar_type r = sqrt(P[0]*P[0] + P[1]*P[1]);
+    Q[0] = r; Q[1] = P[2];
+    if (r > scalar_type(0)) { e[0] = P[0] / r; e[1] = P[1] / r; }
+    else { e[0] = scalar_type(1); e[1] = scalar_type(0); }
+    return r;
+  }
+
+  // Gradient (G2) and hessian (H2) of the 2D function brought back in 3D.
+  inline void mesher_map_2d_grad(bool revolution, const base_small_vector &e,
+				 const base_small_vector &G2,
+				 base_small_vector &G) {
+    G.resize(3);
+    if (!revolution) { G[0] = G2[0]; G[1] = G2[1]; G[2] = scalar_type(0); }
+    else { G[0] = G2[0]*e[0]; G[1] = G2[0]*e[1]; G[2] = G2[1]; }
+  }
+
+  inline void mesher_map_2d_hess(bool revolution, scalar_type r,
+				 const base_small_vector &e,
+				 const base_small_vector &G2,
+				 const base_matrix &H2, base_matrix &H) {
+    gmm::resize(H, 3, 3); gmm::clear(H);
+    if (!revolution) {
+      for (size_type i = 0; i < 2; ++i)
+	for (size_type j = 0; j < 2; ++j) H(i, j) = H2(i, j);
+      return;
+    }
+    // J = [e0 e1 0; 0 0 1], H = J^T H2 J + dd/dr * Hess(r)
+    scalar_type J[2][3] = {{e[0], e[1], 0.}, {0., 0., 1.}};
+    for (size_type i = 0; i < 3; ++i)
+      for (size_type j = 0; j < 3; ++j)
+	for (size_type k = 0; k < 2; ++k)
+	  for (size_type l = 0; l < 2; ++l)
+	    H(i, j) += J[k][i] * H2(k, l) * J[l][j];
+    if (r > scalar_type(0))
+      for (size_type i = 0; i < 2; ++i)
+	for (size_type j = 0; j < 2; ++j)
+	  H(i, j) += G2[0] * ((i == j ? 1. : 0.) - e[i]*e[j]) / r;
+  }
+
+  // A constraint (elementary boundary) of the 2D object, seen in 3D.
+  class mesher_mapped_constraint : public mesher_signed_distance {
+    const mesher_signed_distance *c;
+    bool revolution;
+  public:
+    mesher_mapped_constraint(const mesher_signed_distance *c_, bool rev)
+      : c(c_), revolution(rev) {}
+    size_type constraint_id() const { return id; }
+    bool bounding_box(base_node &, base_node &) const { return false; }
+    virtual scalar_type operator()(const base_node &P) const {
+      base_node Q; base_small_vector e;
+      mesher_map_2d(P, revolution, Q, e);
+      return (*c)(Q);
+    }
+    virtual scalar_type operator()(const base_node &P,
+				   dal::bit_vector &bv) const {
+      scalar_type d = (*this)(P);
+      bv[id] = (gmm::abs(d) < SEPS);
+      return d;
+    }
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      base_node Q; base_small_vector e, G2;
+      mesher_map_2d(P, revolution, Q, e);
+      scalar_type d = c->grad(Q, G2);
+      mesher_map_2d_grad(revolution, e, G2, G);
+      return d;
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      base_node Q; base_small_vector e, G2; base_matrix H2;
+      scalar_type r = mesher_map_2d(P, revolution, Q, e);
+      c->grad(Q, G2); c->hess(Q, H2);
+      mesher_map_2d_hess(revolution, r, e, G2, H2, H);
+    }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>& list) const
+    { id = list.size(); list.push_back(this); }
+  };
+
+  // A 2D object seen in 3D: an infinite prism along z (revolution = false)
+  // or the solid of revolution about the z axis (revolution = true).
+  // The constraints of the 2D object are registered in a list of their
+  // own and replaced, in the 3D list, by mapped constraints.
+  class mesher_mapped_2d : public mesher_signed_distance {
+    pmesher_signed_distance d2;
+    bool revolution;
+    mutable std::vector<const mesher_signed_distance*> list2;
+    mutable std::vector<std::shared_ptr<mesher_mapped_constraint>> mapped;
+    mutable dal::bit_vector bv2;
+  public:
+    mesher_mapped_2d(const pmesher_signed_distance &d, bool rev)
+      : d2(d), revolution(rev) {}
+    bool bounding_box(base_node &bmin, base_node &bmax) const {
+      if (!revolution) return false;
+      base_node b0, b1;
+      if (!d2->bounding_box(b0, b1)) return false;
+      scalar_type R = std::max(gmm::abs(b0[0]), gmm::abs(b1[0]));
+      bmin = base_node(3); bmax = base_node(3);
+      bmin[0] = bmin[1] = -R; bmax[0] = bmax[1] = R;
+      bmin[2] = b0[1]; bmax[2] = b1[1];
+      return true;
+    }
+    virtual scalar_type operator()(const base_node &P) const {
+      base_node Q; base_small_vector e;
+      mesher_map_2d(P, revolution, Q, e);
+      return (*d2)(Q);
+    }
+    virtual scalar_type operator()(const base_node &P,
+				   dal::bit_vector &bv) const {
+      base_node Q; base_small_vector e;
+      mesher_map_2d(P, revolution, Q, e);
+      bv2.clear();
+      scalar_type d = (*d2)(Q, bv2);
+      for (dal::bv_visitor i(bv2); !i.finished(); ++i)
+	if (i < mapped.size()) bv[mapped[i]->constraint_id()] = true;
+      return d;
+    }
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      base_node Q; base_small_vector e, G2;
+      mesher_map_2d(P, revolution, Q, e);
+      scalar_type d = d2->grad(Q, G2);
+      mesher_map_2d_grad(revolution, e, G2, G);
+      return d;
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      base_node Q; base_small_vector e, G2; base_matrix H2;
+      scalar_type r = mesher_map_2d(P, revolution, Q, e);
+      d2->grad(Q, G2); d2->hess(Q, H2);
+      mesher_map_2d_hess(revolution, r, e, G2, H2, H);
+    }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>& list) const {
+      list2.clear();
+      d2->register_constraints(list2);
+      mapped.clear();
+      for (const mesher_signed_distance *c : list2) {
+	mapped.push_back
+	  (std::make_shared<mesher_mapped_constraint>(c, revolution));
+	mapped.back()->register_constraints(list);
+      }
+    }
+  };
+
+  // Extrusion of a 2D object along the z axis, between z0 and z1.
+  class mesher_extrusion : public mesher_signed_distance {
+    pmesher_signed_distance d2, p, h1, h2, i1;
+    scalar_type z0, z1;
+  public:
+    mesher_extrusion(const pmesher_signed_distance &d,
+		     scalar_type z0_, scalar_type z1_)
+      : d2(d), p(std::make_shared<mesher_mapped_2d>(d, false)),
+	z0(std::min(z0_, z1_)), z1(std::max(z0_, z1_)) {
+      base_node x0(0., 0., z0), x1(0., 0., z1);
+      base_small_vector n(0., 0., 1.);
+      h1 = new_mesher_half_space(x0, n);
+      h2 = new_mesher_half_space(x1, -1.0 * n);
+      i1 = new_mesher_intersection(p, h1, h2);
+    }
+    bool bounding_box(base_node &bmin, base_node &bmax) const {
+      base_node b0, b1;
+      if (!d2->bounding_box(b0, b1)) return false;
+      bmin = base_node(b0[0], b0[1], z0);
+      bmax = base_node(b1[0], b1[1], z1);
+      return true;
+    }
+    virtual scalar_type operator()(const base_node &P) const
+    { return (*i1)(P); }
+    virtual scalar_type operator()(const base_node &P,
+				   dal::bit_vector &bv) const
+    { return (*i1)(P, bv); }
+    scalar_type grad(const base_node &P, base_small_vector &G) const
+    { return i1->grad(P, G); }
+    void hess(const base_node &P, base_matrix &H) const { i1->hess(P, H); }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>& list) const
+    { i1->register_constraints(list); }
+  };
+
+  inline pmesher_signed_distance new_mesher_extrusion
+  (const pmesher_signed_distance &d2, scalar_type z0, scalar_type z1)
+  { return std::make_shared<mesher_extrusion>(d2, z0, z1); }
+
+  inline pmesher_signed_distance new_mesher_revolution
+  (const pmesher_signed_distance &d2)
+  { return std::make_shared<mesher_mapped_2d>(d2, true); }
+
   // mesher
   void build_mesh(mesh &m, const pmesher_signed_distance& dist_,
 		  scalar_type h0, const std::vector<base_node> &fixed_points

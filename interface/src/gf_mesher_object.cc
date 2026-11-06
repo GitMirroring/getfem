@@ -190,6 +190,30 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      psd = getfem::new_mesher_setminus(psd1, psd2);
      );
 
+
+  /*@INIT MF = ('extrusion', @tmo object2d, @scalar z0, @scalar z1)
+    3D object obtained by extruding the 2D object `object2d` along the z
+    axis, between z = `z0` and z = `z1`.@*/
+  sub_command
+    ("extrusion", 3, 3, 0, 1,
+     getfem::pmesher_signed_distance psd2 = to_mesher_object(in.pop());
+     double z0 = in.pop().to_scalar();
+     double z1 = in.pop().to_scalar();
+     GMM_ASSERT1(z0 != z1, "The extrusion should have a non zero length");
+     psd = getfem::new_mesher_extrusion(psd2, z0, z1);
+     );
+
+
+  /*@INIT MF = ('revolution', @tmo object2d)
+    3D object obtained by the revolution about the z axis of the 2D object
+    `object2d`, given in the (r, z) half plane (r >= 0). The parts of
+    `object2d` with r < 0 are ignored.@*/
+  sub_command
+    ("revolution", 1, 1, 0, 1,
+     getfem::pmesher_signed_distance psd2 = to_mesher_object(in.pop());
+     psd = getfem::new_mesher_revolution(psd2);
+     );
+
 } // build_sub_command_table
 
 
