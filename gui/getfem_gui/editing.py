@@ -137,7 +137,9 @@ def geometry_dim(model: dict, gi: int) -> int:
 def shape_dim(model: dict, path: Path) -> int:
     """Dimension of the shape at path (a node under geometries/i/source/shape):
     2 in the profile of an extrusion or a revolution."""
-    return 2 if "profile" in path[4:] else geometry_dim(model, path[1])
+    if "profile" in path[4:] or model["geometries"][path[1]].get("source", {}).get("type") == "surface":
+        return 2
+    return geometry_dim(model, path[1])
 
 
 def item_dim(model: dict, path: Path) -> int:
@@ -372,8 +374,11 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
     for i, g in enumerate(model.get("geometries", [])):
         src = g.get("source", {})
         gn = Node(("geometries", i), f"{g.get('name', '?')} ({src.get('type', '?')})", "geometry")
-        if src.get("type") == "csg" and isinstance(src.get("shape"), dict):
-            gn.children.append(_shape_node(src["shape"], ("geometries", i, "source", "shape")))
+        if src.get("type") in ("csg", "surface") and isinstance(src.get("shape"), dict):
+            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"))
+            if src["type"] == "surface":
+                node.label = f"Flat domain: {node.label}"
+            gn.children.append(node)
         sels = Node(("geometries", i, "selections"), "Selections", "selections")
         for name, s in M.selection_table(model, g).items():
             kind = "selection" if not s["builtin"] else "builtin_selection"
@@ -808,6 +813,8 @@ def fields(model: dict, path: Path) -> list[Field]:
             out = [Field(("geometries", gi, "name"), "Name", "ident", op="rename_geometry"),
                    Field(base + ("type",), "Source", "choice",
                          (("box", "box"), ("csg", "constructive geometry (csg)"),
+                          ("curve", "curve (2D or 3D)"), ("surface", "surface in 3D (flat domain + height)"),
+                          ("swept_surface", "surface in 3D swept by a curve"),
                           ("cad", "CAD file (STEP, IGES, BREP)"), ("mesh_file", "mesh file (.msh)")),
                          op="source_type")]
             t = src.get("type")
@@ -819,6 +826,37 @@ def fields(model: dict, path: Path) -> list[Field]:
             elif t == "csg":
                 out.append(Field(base + ("dim",), "Dimension", "choice", ((2, "2D"), (3, "3D")),
                                  op="csg_dim"))
+            elif t in ("curve", "swept_surface"):
+                if t == "curve":
+                    out.append(Field(base + ("dim",), "Dimension of the space", "choice",
+                                     ((2, "2D"), (3, "3D")), op="curve_dim"))
+                else:
+                    out.append(Field(base + ("sweep",), "Sweep", "choice",
+                                     (("extrusion", "extrusion along z (curve in the (x, y) plane)"),
+                                      ("revolution", "revolution about z (curve in the (r, z) plane)"))))
+                    if src.get("sweep") == "revolution":
+                        out.append(_vec_field(base + ("angle",), "From angle to angle (degrees)", "numbers", 2))
+                    else:
+                        out.append(_vec_field(base + ("z",), "From z to z", "numbers", 2))
+                out += [Field(base + ("points",), "Points", "chain_table",
+                              help="The curve goes through the points in order: a segment to the next one, "
+                                   "or an arc of circle through the point given in the last column "
+                                   "(\"x, y\" or \"x, y, z\"; empty: a segment)."),
+                        Field(base + ("closed",), "Closed", "choice", ((False, "no"), (True, "yes")),
+                              help="Closed: the last point is joined to the first one.")]
+                if t == "curve":
+                    out.append(Field(base, "", "info", help="The ends of an open curve are the built-in "
+                                                            "selections start and end."))
+            elif t == "surface":
+                out += [_vec_field(base + ("origin",), "Origin", "numbers", 3),
+                        _vec_field(base + ("axes", 0), "Axis x", "numbers", 3),
+                        _vec_field(base + ("axes", 1), "Axis y", "numbers", 3),
+                        Field(base + ("height",), "Height", "value",
+                              help="Height along the normal: a number or an expression of the local "
+                                   "coordinates x, y and the parameters (\"0.2*sqr(x)\")."),
+                        Field(base, "", "info", help="The flat domain (2D shape below) is drawn and its "
+                                                     "selections are defined in the local coordinates "
+                                                     "(x, y).")]
             elif t in ("cad", "mesh_file"):
                 out.append(Field(base + ("file",), "File", "file"))
             return out
@@ -837,7 +875,7 @@ def fields(model: dict, path: Path) -> list[Field]:
             return [Field(base, "Name", "ident", op="rename_selection"),
                     Field(base + ("kind",), "Kind", "choice",
                           ((M.BOUNDARY, "boundary"), (M.DOMAIN, "domain")), op="selection_kind")
-                    ] + _criteria_fields(model, gi, name, dim)
+                    ] + _criteria_fields(model, gi, name, M.selection_dim(model, geom) or dim)
 
     if path == ("parameters",):
         return [Field(path, "", "info", help="Named constants, usable in every numerical field "
@@ -903,7 +941,7 @@ def fields(model: dict, path: Path) -> list[Field]:
                                       + ("turned about the axis in this number of layers"
                                          if around else "extruded in this number of layers")
                                       + ": prisms, or hexahedra with quadrangles."))
-            if mesher != "getfem" and (dim == 2 or (swept and mesh.get("layers"))):
+            if mesher != "getfem" and (dim == 2 or stype == "surface" or (swept and mesh.get("layers"))):
                 out.append(Field(path + ("element",), "Elements", "choice",
                                  (("simplex", "triangles" + (" (prisms)" if dim == 3 else "")),
                                   ("quad", "quadrangles" + (" (hexahedra)" if dim == 3 else ""))),
@@ -1059,6 +1097,22 @@ def _vertex_removed(model: dict, path: Path, i: int, n: int) -> None:
     _map_side_refs(model, path, mapping)
 
 
+def chain_rows(model: dict, gi: int) -> tuple[int, list[tuple]]:
+    """(dimension, rows) of the point table of a curve or a swept surface:
+    a row per point, its coordinates (as given) then the point of the arc
+    to the next point ("x, y[, z]", or "" for a segment)."""
+    from . import manifold
+    src = model["geometries"][gi]["source"]
+    dim = manifold.chain_dim(src)
+    through = list(src.get("through") or [])
+    rows = []
+    for i, p in enumerate(src.get("points", [])):
+        t = through[i] if i < len(through) else None
+        rows.append(tuple((list(p) + [0.0] * dim)[:dim])
+                    + (", ".join(format_value(x) for x in t) if t is not None else "",))
+    return dim, rows
+
+
 def vertex_rows(model: dict, path: Path) -> list[tuple]:
     """Rows of the vertex table of a polygon at path (the points list):
     (x, y) as given (numbers or expressions) and their values."""
@@ -1078,7 +1132,7 @@ def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
     """A new primitive for a 2D geometry: in its middle, at its scale (the
     default shape otherwise)."""
     from . import geometry2d as G
-    dim = geometry_dim(model, gi)
+    dim = shape_dim(model, ("geometries", gi, "source", "shape"))
     if dim != 2:
         return _default_shape(t, dim)
     try:
@@ -1093,6 +1147,16 @@ def _default_source(t: str, dim: int) -> dict:
         return {"type": "box", "origin": [0.0] * dim, "size": [1.0] * dim}
     if t == "csg":
         return {"type": "csg", "dim": max(dim, 2), "shape": _default_shape("difference", max(dim, 2))}
+    if t == "curve":
+        d = 3 if dim == 3 else 2
+        return {"type": "curve", "dim": d, "points": [[0.0] * d, [1.0] + [0.0] * (d - 1), [1.0] * d],
+                "through": [None, None], "closed": False}
+    if t == "surface":
+        return {"type": "surface", "shape": {"type": "rectangle", "min": [0.0, 0.0], "max": [1.0, 1.0]},
+                "origin": [0.0, 0.0, 0.0], "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], "height": 0.0}
+    if t == "swept_surface":
+        return {"type": "swept_surface", "sweep": "revolution", "points": [[1.0, 0.0], [1.0, 1.0]],
+                "through": [None], "closed": False, "angle": [0.0, 360.0]}
     return {"type": t, "file": ""}
 
 
@@ -1342,6 +1406,31 @@ def apply(model: dict, f: Field, value) -> Path | None:
         src["origin"] = (list(src.get("origin", [])) + [0.0] * dim)[:dim]
         src["size"] = (list(src.get("size", [])) + [1.0] * dim)[:dim]
         _fit_dimension(model, key[1], dim)
+    elif f.op == "chain_through":
+        src = get_at(model, key[:2] + ("source",))
+        i = key[-1]
+        through = list(src.get("through") or [])
+        through += [None] * (i + 1 - len(through))
+        text = str(value).strip() if value is not None else ""
+        if text:
+            parts = [parse_value(x.strip()) for x in text.split(",")]
+            from . import manifold
+            if len(parts) != manifold.chain_dim(src):
+                raise ValueError(f"{manifold.chain_dim(src)} coordinates expected")
+            through[i] = parts
+        else:
+            through[i] = None
+        n = len(src.get("points", [])) if src.get("closed") else len(src.get("points", [])) - 1
+        src["through"] = through[:max(n, 0)]
+    elif f.op == "curve_dim":
+        dim = int(value)
+        src = get_at(model, key[:-1])
+        if src.get("dim") != dim:
+            src["dim"] = dim
+            fit = lambda p: (list(p) + [0.0] * dim)[:dim]          # noqa: E731
+            src["points"] = [fit(p) for p in src.get("points", [])]
+            src["through"] = [fit(p) if p is not None else None for p in src.get("through", [])]
+            _fit_dimension(model, key[1], dim)
     elif f.op == "csg_dim":
         dim = int(value)
         src = get_at(model, key[:-1])
@@ -1384,12 +1473,13 @@ def apply(model: dict, f: Field, value) -> Path | None:
         sel = get_at(model, key[:-1])
         sel["kind"] = value
         if value not in M.CRITERIA.get(sel.get("criteria", {}).get("type"), ()):
-            dim = geometry_dim(model, key[1])
+            dim = M.selection_dim(model, model["geometries"][key[1]]) or geometry_dim(model, key[1])
             sel["criteria"] = _default_criteria("in_box", dim, value)
     elif f.op == "criteria_type":
         sel = get_at(model, key[:-2])
         if sel.get("criteria", {}).get("type") != value:
-            sel["criteria"] = _default_criteria(value, geometry_dim(model, key[1]), sel.get("kind"))
+            sel["criteria"] = _default_criteria(value, M.selection_dim(model, model["geometries"][key[1]])
+                                                or geometry_dim(model, key[1]), sel.get("kind"))
     elif f.op == "mesher":
         mesh = get_at(model, key[:-1])
         if mesh.get("mesher") != value:
@@ -1469,7 +1559,7 @@ def _fit_dimension(model: dict, gi: int, dim: int) -> None:
     for sel in geom.get("selections", {}).values():
         crit = sel.get("criteria", {})
         for k, v in list(crit.items()):
-            if isinstance(v, list) and k not in ("of", "edges", "regions"):
+            if isinstance(v, list) and k not in ("of", "edges", "regions", "faces"):
                 crit[k] = (list(v) + [0.0] * dim)[:dim]
     for md in model.get("models", []):
         if M.model_geometry(model, md) is not geom:
@@ -1633,6 +1723,34 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
     md = owner(model, path)
     dim = item_dim(model, path) if md is not None else \
         ((M.geometry_dim(model, model["geometries"][0]) if model.get("geometries") else None) or 2)
+    if action.split(":")[0] in ("insert_point", "remove_point") and path[:1] == ("geometries",) \
+            and len(path) == 2:
+        verb, i = action.split(":")
+        src, i = model["geometries"][path[1]]["source"], int(i)
+        pts = src.setdefault("points", [])
+        through = list(src.get("through") or [])
+        through += [None] * (len(pts) - len(through))
+        if verb == "remove_point":
+            if len(pts) <= 2:
+                raise ValueError("a curve keeps at least two points")
+            del pts[i]
+            del through[min(i, len(through) - 1)]
+        else:                          # a point in the middle of the piece after the point i
+            r = P.resolved(model)["geometries"][path[1]]["source"]["points"]
+            a = r[i]
+            if i + 1 < len(r) or src.get("closed"):
+                b = r[(i + 1) % len(r)]
+                new = [(x + y) / 2 for x, y in zip(a, b)]
+            else:                      # after the last point: one further on
+                prev = r[i - 1] if i > 0 else [x - 1.0 for x in a]
+                new = [2 * x - y for x, y in zip(a, prev)]
+            pts.insert(i + 1, [float(f"{x:.6g}") for x in new])
+            through.insert(i + 1, None)
+            if i < len(through) - 1:
+                through[i] = None          # an arc there is split into segments
+        n = len(pts) if src.get("closed") else len(pts) - 1
+        src["through"] = through[:n]
+        return path
     if action.split(":")[0] in ("insert_vertex", "remove_vertex"):
         verb, i = action.split(":")
         pts, i = get_at(model, path + ("points",)), int(i)
@@ -1714,15 +1832,14 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         geom = model["geometries"][gi]
         table = M.selection_table(model, geom)
         sname = unique_name(name or "selection", table)
-        gdim = geometry_dim(model, gi)
+        gdim = M.selection_dim(model, geom) or geometry_dim(model, gi)
         geom.setdefault("selections", {})[sname] = {
             "kind": M.BOUNDARY, "criteria": _default_criteria("plane", gdim, M.BOUNDARY)}
         return ("geometries", gi, "selections", sname)
     if action.startswith("add_shape:"):
         shape = get_at(model, path)
         t = action.split(":", 1)[1]
-        new = _shape_in_geometry(model, path[1], t) if shape_dim(model, path) == geometry_dim(model, path[1]) \
-            else _shape_in_profile(model, path, t)
+        new = _shape_in_profile(model, path, t) if "profile" in path[4:] else _shape_in_geometry(model, path[1], t)
         shape.setdefault("of", []).append(new)
         return path + ("of", len(shape["of"]) - 1)
     if action == "add_mesh":

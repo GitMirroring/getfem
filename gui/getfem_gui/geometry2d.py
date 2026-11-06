@@ -55,6 +55,8 @@ def shape_of(source: dict) -> dict | None:
         return {"type": "rectangle", "min": list(o), "max": [o[0] + s[0], o[1] + s[1]]}
     if t == "csg" and source.get("dim") == 2:
         return source.get("shape")
+    if t == "surface":                   # the flat domain of a surface in 3D
+        return source.get("shape")
     return None
 
 

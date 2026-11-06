@@ -195,6 +195,22 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
             _resolve(src, BOX_KEYS, where, vals, errors)
         elif src.get("type") == "csg":
             _resolve_shape(src.get("shape"), f"{where}.shape", vals, errors)
+        elif src.get("type") == "surface":
+            _resolve_shape(src.get("shape"), f"{where}.shape", vals, errors)
+            _resolve(src, ("origin",), where, vals, errors)
+            for j, ax in enumerate(src.get("axes") or []):
+                if isinstance(ax, list):
+                    holder = {"v": ax}
+                    _resolve(holder, ("v",), f"{where}.axes[{j}]", vals, errors)
+                    src["axes"][j] = holder["v"]
+        elif src.get("type") in ("curve", "swept_surface"):
+            _resolve(src, ("z", "angle"), where, vals, errors)
+            for key in ("points", "through"):
+                for j, pt in enumerate(src.get(key) or []):
+                    if isinstance(pt, list):
+                        holder = {"v": pt}
+                        _resolve(holder, ("v",), f"{where}.{key}[{j}]", vals, errors)
+                        src[key][j] = holder["v"]
         for name, sel in (g.get("selections") or {}).items():
             if isinstance(sel, dict) and isinstance(sel.get("criteria"), dict):
                 _resolve(sel["criteria"], CRITERIA_KEYS, f"{prefix}geometries[{i}].selections.{name}.criteria",

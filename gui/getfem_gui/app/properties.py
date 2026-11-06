@@ -147,6 +147,10 @@ class PropertiesPanel(QScrollArea):
             if f.kind == "material_table":
                 form.addRow(self._material_table(model, f, errors))
                 continue
+            if f.kind == "chain_table":
+                form.addRow(QLabel(f.label))
+                form.addRow(self._chain_table(model, f, errors))
+                continue
             if f.kind == "vertex_table":
                 form.addRow(QLabel(f.label))
                 form.addRow(self._vertex_table(model, f, errors))
@@ -247,6 +251,73 @@ class PropertiesPanel(QScrollArea):
         col.addWidget(table)
         col.addLayout(bar)
         table.setMinimumHeight(min(80 + 30 * len(rows), 420))
+        self._fields[f.key] = table
+        return holder
+
+    def _chain_table(self, model, f: E.Field, errors) -> QWidget:
+        """The points of a curve (or of the curve of a swept surface): their
+        coordinates, and the point an arc to the next one goes through."""
+        gi = f.key[1]
+        dim, rows = E.chain_rows(model, gi)
+        heads = ["x", "y", "z"][:dim] if model["geometries"][gi]["source"].get("type") == "curve" \
+            or model["geometries"][gi]["source"].get("sweep") != "revolution" else ["r", "z"]
+        table = QTableWidget(len(rows), dim + 1)
+        table.setObjectName("chain_table")
+        table.setHorizontalHeaderLabels(heads + ["arc to the next point through"])
+        table.setVerticalHeaderLabels([str(i + 1) for i in range(len(rows))])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        base = f.key[:-1]
+        for i, r in enumerate(rows):
+            for j in range(dim + 1):
+                item = QTableWidgetItem(E.format_value(r[j]) if j < dim else r[j])
+                item.setFont(_mono())
+                key = base + (("points", i, j) if j < dim else ("through", i))
+                msgs = E.errors_at(errors, key) or (E.errors_at(errors, base + ("points", i)) if j < dim else [])
+                if msgs:
+                    item.setBackground(Qt.GlobalColor.yellow)
+                    item.setToolTip("\n".join(msgs))
+                table.setItem(i, j, item)
+        if E.errors_at(errors, base + ("points",)):
+            table.setToolTip("\n".join(E.errors_at(errors, base + ("points",))))
+            table.setStyleSheet(ERROR_STYLE)
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column()
+            if i >= len(rows):
+                return
+            self._last_cell = (f.key, i, j)
+            if j < dim:
+                value = E.parse_value(item.text().strip())
+                if value != rows[i][j]:
+                    self._commit(E.Field(base + ("points", i, j), f"point {i + 1}", "value"), value)
+            elif item.text().strip() != rows[i][dim]:
+                self._commit(E.Field(base + ("through", i), f"arc {i + 1}", "text", op="chain_through"),
+                             item.text().strip())
+        table.itemChanged.connect(edited)
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        for ident, text, tip in (("insert_point", "Insert", "Insert a point after the selected one"),
+                                 ("remove_point", "Remove", "Remove the selected point")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"table:{ident}")
+            b.clicked.connect(lambda _=False, v=ident: table.currentRow() >= 0
+                              and self._row_action(f.key, v, table.currentRow()))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(table)
+        col.addLayout(bar)
+        table.setMinimumHeight(min(60 + 30 * len(rows), 360))
         self._fields[f.key] = table
         return holder
 

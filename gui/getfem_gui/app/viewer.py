@@ -348,6 +348,21 @@ class Viewer(QWidget):
                 self._faces = (surf, refs)
         self.plotter.render()
 
+    def show_manifold(self, src: dict, values: dict, status: str = "", key: str | None = None) -> None:
+        """Preview of a curve or of a surface in 3D, without meshing."""
+        self._leave_field()
+        self.status.setText(status)
+        self._last = ("manifold", src, values, status, key)
+        self._pieces, self._regions_of, self._hover, self._faces = [], None, None, None
+        if self.plotter is None:
+            self._placeholder(status)
+            return
+        from . import scene
+        key = ("manifold", key if key is not None else repr(src))
+        scene.show_manifold(self.plotter, src, values, reset=key != self._shown_key)
+        self._shown_key = key
+        self.plotter.render()
+
     def face_at_display(self, x: float, y: float):
         """(face id, reference) of the face of the 3D preview at the display
         point (VTK display coordinates), or None."""

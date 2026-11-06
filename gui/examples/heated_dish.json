@@ -1,0 +1,63 @@
+{
+  "format_version": 3,
+  "name": "Heated dish: a thin paraboloid surface (shell geometry)",
+  "parameters": [
+    {"name": "R", "value": 0.5, "description": "radius of the dish (m)"},
+    {"name": "r", "value": 0.2, "description": "radius of the central hole (m)"},
+    {"name": "f", "value": 0.4, "description": "focal length (m)"},
+    {"name": "e", "value": 0.002, "description": "thickness (m)"}
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "dish",
+      "source": {
+        "type": "surface",
+        "shape": {
+          "type": "difference",
+          "of": [
+            {"type": "ball", "center": [0, 0], "radius": "R"},
+            {"type": "ball", "center": [0, 0], "radius": "r"}
+          ]
+        },
+        "origin": [0, 0, 0],
+        "axes": [[1, 0, 0], [0, 1, 0]],
+        "height": "(sqr(x) + sqr(y))/(4*f)"
+      },
+      "selections": {
+        "hole": {
+          "kind": "boundary",
+          "criteria": {"type": "edges", "edges": [{"shape": [1], "side": "circle"}]}
+        },
+        "rim": {
+          "kind": "boundary",
+          "criteria": {"type": "edges", "edges": [{"shape": [0], "side": "circle"}]}
+        }
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "dish", "mesher": "getfem", "h": 0.02, "order": 2}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "value": "237*e"}]},
+          "sources": [],
+          "conditions": [
+            {"type": "temperature", "selection": "hole", "value": 80},
+            {"type": "temperature", "selection": "rim", "value": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "heat_flow", "expr": "k*Grad_T.Normal", "selection": "hole"},
+        {"name": "area", "expr": "1", "selection": "all"}
+      ],
+      "vtu": "dish.vtu"
+    }
+  ]
+}

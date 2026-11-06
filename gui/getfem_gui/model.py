@@ -162,6 +162,8 @@ import json
 import re
 from pathlib import Path
 
+import numpy as np
+
 from . import parameters as P
 
 FORMAT_VERSION = 3
@@ -173,12 +175,12 @@ DOMAIN = "domain"
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _AXES = "xyz"
 
-GEOMETRY_SOURCES = ("box", "csg", "cad", "mesh_file")
+GEOMETRY_SOURCES = ("box", "csg", "cad", "mesh_file", "curve", "surface", "swept_surface")
 MESHERS = {
     "structured": ("box",),
-    "getfem": ("box", "csg"),
-    "gmsh": ("box", "csg", "cad"),
-    "netgen": ("box", "csg", "cad"),
+    "getfem": ("box", "csg", "curve", "surface", "swept_surface"),
+    "gmsh": ("box", "csg", "cad", "surface"),
+    "netgen": ("box", "csg", "cad", "surface"),
     "import": ("mesh_file",),
 }
 FREE_MESHERS = ("getfem", "gmsh", "netgen")    # unstructured meshers: element size, order
@@ -596,7 +598,11 @@ def main_solver(model: dict) -> dict:
 
 
 def geometry_dim(model: dict, geom: dict) -> int | None:
+    """Dimension of the space of a geometry (3 for a surface in 3D)."""
     src = geom.get("source", {})
+    if src.get("type") in ("curve", "surface", "swept_surface"):
+        from . import manifold
+        return manifold.space_dim(src)
     if src.get("type") == "box":
         return len(src.get("size", []))
     if src.get("type") in ("csg", "cad"):
@@ -605,6 +611,21 @@ def geometry_dim(model: dict, geom: dict) -> int | None:
         dims = [d for d, _ in read_gmsh_physical_names(resolve_file(model, src["file"])).values()]
         return max(dims) if dims else None
     return None
+
+
+def topological_dim(model: dict, geom: dict) -> int | None:
+    """Dimension of the elements of a geometry (1 for a curve, 2 for a surface)."""
+    src = geom.get("source", {})
+    from . import manifold
+    return manifold.TOPOLOGICAL_DIM.get(src.get("type"), geometry_dim(model, geom))
+
+
+def selection_dim(model: dict, geom: dict) -> int | None:
+    """Dimension of the points of the selection criteria: that of the space,
+    but 2 for a surface (its selections are defined on its flat domain)."""
+    if geom.get("source", {}).get("type") == "surface":
+        return 2
+    return geometry_dim(model, geom)
 
 
 def selection_table(model: dict, geom: dict) -> dict[str, dict]:
@@ -629,6 +650,20 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
                 point[axis] = origin[axis] + size[axis]
             table[name] = {"kind": BOUNDARY, "builtin": True,
                            "criteria": {"type": "plane", "point": point, "normal": normal}}
+    elif src.get("type") == "curve":
+        from . import manifold
+        try:
+            ends = manifold.chain_ends(P.resolved({"parameters": model.get("parameters", []),
+                                                   "geometries": [geom]})["geometries"][0]["source"])
+            pts = np.asarray([[float(x) for x in p] for p in P.resolved(
+                {"parameters": model.get("parameters", []), "geometries": [geom]})["geometries"][0]
+                ["source"]["points"]])
+            radius = 1e-6 * (float(np.ptp(pts, axis=0).max()) or 1.0)
+        except (KeyError, TypeError, ValueError, P.ParameterError):
+            ends = []
+        for name, point in zip(("start", "end"), ends):
+            table[name] = {"kind": BOUNDARY, "builtin": True,
+                           "criteria": {"type": "in_ball", "center": point, "radius": radius}}
     elif src.get("type") == "mesh_file" and "file" in src:
         names = read_gmsh_physical_names(resolve_file(model, src["file"]))
         top = max((d for d, _ in names.values()), default=0)
@@ -765,6 +800,64 @@ def _validate_geometry(model, geom, where, errors):
             errors.append(f"{where}.source.dim: 2 or 3 expected")
         else:
             _check_shape(src.get("shape"), dim, f"{where}.source.shape", errors)
+    elif t in ("curve", "swept_surface"):
+        from . import manifold
+        dim = manifold.chain_dim(src)
+        if t == "curve" and dim not in (2, 3):
+            errors.append(f"{where}.source.dim: 2 or 3 expected")
+        pts = src.get("points")
+        if not isinstance(pts, list) or len(pts) < 2:
+            errors.append(f"{where}.source.points: at least two points expected")
+        elif all(_check_vec(p, dim, f"{where}.source.points[{i}]", errors) for i, p in enumerate(pts)):
+            through = src.get("through") or []
+            n = len(pts) if src.get("closed") else len(pts) - 1
+            ok = isinstance(through, list) and len(through) <= n
+            if not ok:
+                errors.append(f"{where}.source.through: at most one point per piece ({n})")
+            else:
+                ok = all(tp is None or _check_vec(tp, dim, f"{where}.source.through[{i}]", errors)
+                         for i, tp in enumerate(through))
+            problem = manifold.chain_problem(src) if ok else None
+            if problem:
+                errors.append(f"{where}.source: {problem}")
+            if ok and not problem and t == "swept_surface":
+                if src.get("sweep") not in ("extrusion", "revolution"):
+                    errors.append(f"{where}.source.sweep: 'extrusion' or 'revolution' expected")
+                elif src["sweep"] == "extrusion":
+                    if _check_vec(src.get("z", [0.0, 1.0]), 2, f"{where}.source.z", errors) \
+                            and src.get("z", [0.0, 1.0])[0] >= src.get("z", [0.0, 1.0])[1]:
+                        errors.append(f"{where}.source.z: z0 < z1 expected")
+                else:
+                    ang = src.get("angle", [0.0, 360.0])
+                    if _check_vec(ang, 2, f"{where}.source.angle", errors) and \
+                            not 0 < abs(ang[1] - ang[0]) <= 360:
+                        errors.append(f"{where}.source.angle: an angle between 0 and 360 degrees expected")
+                    if np.min(manifold.chain_polyline(src)[:, 0]) <= 0:
+                        errors.append(f"{where}.source.points: the curve of a revolution must not touch "
+                                      "the axis (r > 0)")
+        if not isinstance(src.get("closed", False), bool):
+            errors.append(f"{where}.source.closed: true or false expected")
+    elif t == "surface":
+        _check_shape(src.get("shape"), 2, f"{where}.source.shape", errors)
+        _check_vec(src.get("origin", [0.0, 0.0, 0.0]), 3, f"{where}.source.origin", errors)
+        axes = src.get("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        if not (isinstance(axes, list) and len(axes) == 2
+                and all(_check_vec(a, 3, f"{where}.source.axes", errors) for a in axes)):
+            errors.append(f"{where}.source.axes: two 3D vectors expected")
+        elif np.linalg.norm(np.cross(np.asarray(axes[0], float), np.asarray(axes[1], float))) <= \
+                1e-12 * np.linalg.norm(axes[0]) * np.linalg.norm(axes[1]):
+            errors.append(f"{where}.source.axes: two independent vectors expected")
+        hgt = src.get("height", 0.0)
+        if isinstance(hgt, bool) or not isinstance(hgt, (int, float, str)):
+            errors.append(f"{where}.source.height: number or expression of x, y expected")
+        elif isinstance(hgt, str):
+            from . import manifold
+            try:
+                vals, _ = P.values(model)
+                manifold.height_code(hgt, vals)
+                P.evaluate(hgt, dict(vals, x=0.1, y=0.2))
+            except (ValueError, SyntaxError) as exc:
+                errors.append(f"{where}.source.height: {exc}")
     elif t in ("cad", "mesh_file"):
         if "file" not in src:
             errors.append(f"{where}.source.file: missing file path")
@@ -785,7 +878,7 @@ def _validate_geometry(model, geom, where, errors):
         return
 
     table = selection_table(model, geom)
-    dim = geometry_dim(model, geom)
+    dim = selection_dim(model, geom)
     for name, sel in geom.get("selections", {}).items():
         w = f"{where}.selections.{name}"
         if not _IDENT.match(name):
@@ -935,7 +1028,8 @@ def _validate_mesh(model, mesh, where, errors):
     if mesher not in FREE_MESHERS:
         return
     src = geom.get("source", {})
-    dim = src.get("dim") if stype == "csg" else len(src.get("size", [])) if stype == "box" else None
+    dim = src.get("dim") if stype == "csg" else len(src.get("size", [])) if stype == "box" \
+        else 2 if stype == "surface" else None
     layers = mesh.get("layers", 0)
     swept = stype == "csg" and dim == 3 and src.get("shape", {}).get("type") in SHAPES_SWEPT
     if layers:

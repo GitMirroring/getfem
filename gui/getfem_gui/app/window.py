@@ -740,6 +740,31 @@ class MainWindow(QMainWindow):
             title += ": click edges to add or remove them"
         return title, shape, pieces, highlighted, domain, pickable
 
+    def _show_manifold(self, path) -> bool:
+        """The preview of a curve or a surface in 3D for the node of its
+        geometry (its other nodes show the flat domain of a surface, in 2D,
+        or the mesh): False if none applies."""
+        from .. import manifold
+        if path[:1] != ("geometries",) or len(path) != 2 or not self.viewer.available:
+            return False
+        model = P.resolved(self.model)
+        geom = model["geometries"][path[1]]
+        src = geom.get("source", {})
+        if src.get("type") not in manifold.SOURCES:
+            return False
+        if any(e.startswith(f"geometries[{path[1]}]") or e.startswith("parameters") for e in self.errors):
+            self.viewer.show_message("The geometry has errors: see the panel.")
+            return True
+        vals, _ = P.values(model)
+        what = {"curve": "curve", "surface": "surface (the flat domain below: its selections)",
+                "swept_surface": "swept surface"}[src["type"]]
+        try:
+            self.viewer.show_manifold(src, vals, status=f"{geom['name']}: {what} (preview, no mesh)",
+                                      key=geom.get("name"))
+        except Exception as exc:  # noqa: BLE001
+            self.viewer.show_message(f"Cannot display the geometry: {exc}")
+        return True
+
     def _show_preview_3d(self, path) -> bool:
         """The preview of a 3D box or CSG geometry for a node (False if none
         applies): its surface, the selection or the support of the node,
@@ -961,6 +986,10 @@ class MainWindow(QMainWindow):
         path = self.current_path()
         if path[:1] == (E.RESULTS,):
             return
+        if self._show_manifold(path):
+            self.viewer.set_drawing(False)
+            self.viewer.set_handles([])
+            return
         preview = self._preview(path)
         if preview is None and self._show_preview_3d(path):
             self.viewer.set_drawing(False)
@@ -1118,7 +1147,7 @@ class MainWindow(QMainWindow):
         from .properties import ERROR_STYLE
         for f in self._panel_fields:
             w = self.props.editor(f.key)
-            if w is None or f.kind in ("info", "parameter_table", "material_table", "vertex_table"):
+            if w is None or f.kind in ("info", "parameter_table", "material_table", "vertex_table", "chain_table"):
                 continue
             msgs = E.errors_at(self.errors, f.key) if f.op != "rename_selection" else []
             w.setStyleSheet(ERROR_STYLE if msgs else "")

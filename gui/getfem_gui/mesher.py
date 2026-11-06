@@ -45,7 +45,7 @@ import numpy as np
 from . import geometry2d as G, geometry3d as G3, model as M, parameters as P
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 13
+SCRIPT_VERSION = 14
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -355,6 +355,72 @@ def _build_layered(model, geom, mesh, w, basename):
     w("m = mr")
 
 
+def _build_curve(model, geom, mesh, w):
+    """A curve: its chain divided into elements of the element size."""
+    from . import manifold
+    src = geom["source"]
+    K = int(mesh.get("order", 1))
+    for line in manifold.script_functions():
+        w(line)
+    w(f"pieces = {manifold.chain_pieces(src)!r}")
+    w(f"X = chain_elements(pieces, {float(mesh['h'])!r}, {K})")
+    w(f"m = gf.Mesh('empty', {int(src['dim'])})")
+    w(f"m.add_convex(gf.GeoTrans('GT_PK(1,{K})'), X)")
+
+
+def _build_swept(model, geom, mesh, w):
+    """A swept surface: the 1D mesh of its curve (in the plane (a, b)), in
+    layers along t (gf.Mesh('prismatic')), mapped to the extrusion or the
+    revolution (the seam of a whole turn merged)."""
+    from . import manifold
+    src = geom["source"]
+    K, h = int(mesh.get("order", 1)), float(mesh["h"])
+    n = max(3 if manifold.full_turn(src) else 1, int(math.ceil(manifold.sweep_length(src) / h)))
+    _build_curve(model, {"source": dict(src, type="curve", dim=2)}, mesh, w)
+    w(manifold.REMESH_CODE)
+    w(f"m = gf.Mesh('prismatic', m, {n}, {K})")
+    w("P = m.pts()")
+    w("a, b, t = P")
+    if src["sweep"] == "revolution":
+        a0, a1 = (math.radians(float(v)) for v in src.get("angle", [0.0, 360.0]))
+        w(f"th = {a0!r} + {a1 - a0!r} * t")
+        w("Q = np.vstack([a * np.cos(th), a * np.sin(th), b])")
+    else:
+        z0, z1 = (float(v) for v in src.get("z", [0.0, 1.0]))
+        w(f"Q = np.vstack([a, b, {z0!r} + {z1 - z0!r} * t])")
+    w("m, _ = remesh(m, Q, 3)")
+
+
+def _build_flat(model, geom, mesh, w, basename):
+    """The flat domain of a surface, meshed in 2D (mapped to 3D after the
+    selections, which are defined on it)."""
+    g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": geom["source"]["shape"]},
+          "selections": geom.get("selections", {})}
+    w("# The flat domain (local coordinates x, y)")
+    if mesh["mesher"] == "getfem":
+        _build_getfem(model, g2, mesh, w)
+    elif mesh["mesher"] == "gmsh":
+        _build_gmsh(model, g2, mesh, w, f"{basename}_gmsh.msh")
+    else:
+        _build_netgen(model, g2, mesh, w, f"{basename}_netgen.msh")
+
+
+def _map_flat(model, geom, w):
+    from . import manifold
+    src = geom["source"]
+    vals, _ = P.values(model)
+    o, e1, e2, n = manifold.frame(src)
+    w("")
+    w("# The flat domain mapped to the surface: origin + x e1 + y e2 + height(x, y) n")
+    w(manifold.REMESH_CODE)
+    w("x, y = m.pts()")
+    w(f"height = {manifold.height_code(src.get('height', 0.0), vals)}")
+    w(f"o, e1, e2, n = (np.array(v)[:, None] for v in ({o.tolist()!r}, {e1.tolist()!r}, {e2.tolist()!r}, "
+      f"{n.tolist()!r}))")
+    w("m, new = remesh(m, o + e1 * x + e2 * y + n * height, 3)")
+    w("SEL = remap_selections(SEL, new)")
+
+
 def _build_import(model, geom, mesh, w):
     w(f"m = gf.Mesh('import', 'gmsh', {str(M.resolve_file(model, geom['source']['file']))!r})")
     _drop_z(w)
@@ -381,20 +447,20 @@ def _selection_code(name, sel, w, shape=None):
     if name == M.ALL:
         return
     if name == M.BOUNDARY:
-        w(f"SEL[{name!r}] = ('boundary', m.outer_faces())")
+        w(f"SEL[{name!r}] = ('boundary', m.outer_faces(TDIM))")
     elif t == "plane":
         w(f"SEL[{name!r}] = ('boundary', faces_in_plane({_floats(c['point'])}, {_floats(c['normal'])}))")
     elif t == "normal":
         angle = float(c.get("angle", 1.0))
         w(f"SEL[{name!r}] = ('boundary', m.outer_faces_with_direction("
-          f"{_floats(c['direction'])}, np.radians({angle!r})))")
+          f"{_floats(c['direction'])}, np.radians({angle!r}), TDIM))")
     elif t == "in_box" and kind == M.BOUNDARY:
-        w(f"SEL[{name!r}] = ('boundary', m.outer_faces_in_box({_floats(c['min'])}, {_floats(c['max'])}))")
+        w(f"SEL[{name!r}] = ('boundary', m.outer_faces_in_box({_floats(c['min'])}, {_floats(c['max'])}, TDIM))")
     elif t == "in_box":
         w(f"SEL[{name!r}] = ('domain', cvs(m.convexes_in_box({_floats(c['min'])}, {_floats(c['max'])})))")
     elif t == "in_ball":
         w(f"SEL[{name!r}] = ('boundary', m.outer_faces_in_ball({_floats(c['center'])}, "
-          f"{float(c['radius'])!r}))")
+          f"{float(c['radius'])!r}, TDIM))")
     elif t == "physical":
         tag = int(c["tag"])
         w(f"if {tag} not in imported:")
@@ -470,8 +536,8 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    n = np.asarray(normal, float) / np.linalg.norm(normal)")
     w("    P = m.pts()")
     w("    tol = 1e-6 * max(np.ptp(P, axis=1).max(), 1e-300)")
-    w("    faces = m.outer_faces_with_direction(n, np.radians(1.0))")
-    w("    faces = np.hstack([faces, m.outer_faces_with_direction(-n, np.radians(1.0))])")
+    w("    faces = m.outer_faces_with_direction(n, np.radians(1.0), TDIM)")
+    w("    faces = np.hstack([faces, m.outer_faces_with_direction(-n, np.radians(1.0), TDIM)])")
     w("    keep = [j for j in range(faces.shape[1])")
     w("            if np.all(np.abs((P[:, m.pid_in_faces(faces[:, j:j+1])].T - point) @ n) < tol)]")
     w("    return faces[:, keep]")
@@ -515,7 +581,7 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    \"\"\"Boundary faces lying on one of the faces described by specs.\"\"\"")
     w("    P = m.pts()")
     w("    tol = 1e-6 * max(np.ptp(P, axis=1).max(), 1e-300)")
-    w("    faces = m.outer_faces()")
+    w("    faces = m.outer_faces(TDIM)")
     w("    if faces.size == 0:")
     w("        return faces")
     w("    normals = m.normal_of_faces(faces)")
@@ -527,7 +593,7 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    \"\"\"Boundary faces whose nodes all lie on one of the pieces.\"\"\"")
     w("    P = m.pts()")
     w("    tol = 1e-6 * max(np.ptp(P, axis=1).max(), 1e-300)")
-    w("    faces = m.outer_faces()")
+    w("    faces = m.outer_faces(TDIM)")
     w("    keep = [j for j in range(faces.shape[1])")
     w("            if any(on_piece(P[:, m.pid_in_faces(faces[:, j:j+1])].T, pc, tol) for pc in pieces)]")
     w("    return faces[:, keep]")
@@ -572,7 +638,14 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     else:
         w.section(f"Mesh ({mesh['mesher']})")
         mesher = mesh["mesher"]
-        if mesh.get("layers"):
+        stype = geom.get("source", {}).get("type")
+        if stype == "curve":
+            _build_curve(model, geom, mesh, w)
+        elif stype == "swept_surface":
+            _build_swept(model, geom, mesh, w)
+        elif stype == "surface":
+            _build_flat(model, geom, mesh, w, basename)
+        elif mesh.get("layers"):
             _build_layered(model, geom, mesh, w, basename)
         elif mesher == "structured":
             _build_structured(model, geom, mesh, w)
@@ -591,6 +664,10 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
             w(f"    json.dump({{'key': {raw_key!r}}}, f)")
 
     w.section("Selections -> regions")
+    from . import manifold
+    tdim = manifold.TOPOLOGICAL_DIM.get(geom.get("source", {}).get("type"))
+    w("TDIM = " + (f"{tdim}   # the dimension of the elements (lower than that of the space)"
+                   if tdim and geom["source"]["type"] != "surface" else "m.dim()"))
     w("# Regions possibly present after an import (physical groups)")
     w("imported = {int(rg): m.region(int(rg)) for rg in np.atleast_1d(m.regions())}")
     w("SEL = {}")
@@ -604,6 +681,8 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
         else:
             _selection_code(name, table[name], w, shape)
     user = [n for n, s in table.items() if not s["builtin"]]
+    if geom.get("source", {}).get("type") == "surface":
+        _map_flat(model, geom, w)
     w("")
     w(f"for name in {user!r}:")
     w("    if SEL[name][1].size == 0:")

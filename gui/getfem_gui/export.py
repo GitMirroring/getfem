@@ -297,6 +297,9 @@ ELEMENTS["GT_PRODUCT(GT_PK(2,1),GT_PK(1,1))"] = (6, [0, 1, 2, 3, 4, 5], "C3D6", 
                                                  list(range(6)))          # prisms (meshes in layers)
 ELEMENTS["GT_PRODUCT(GT_LINEAR_PRODUCT(GT_PK(1,1),GT_PK(1,1)),GT_PK(1,1))"] = ELEMENTS["GT_QK(3,1)"]
 ELEMENTS["GT_LINEAR_PRODUCT(GT_PK(1,1),GT_PK(1,1))"] = ELEMENTS["GT_QK(2,1)"]
+ELEMENTS["GT_PRODUCT(GT_PK(1,1),GT_PK(1,1))"] = ELEMENTS["GT_QK(2,1)"]
+ELEMENTS["GT_QK(2,2)"] = (10, [0, 2, 8, 6, 1, 5, 7, 3, 4], "CPS8", [0, 2, 8, 6, 1, 5, 7, 3], [0, 2, 6, 8])
+ELEMENTS["GT_PRODUCT(GT_PK(1,2),GT_PK(1,2))"] = ELEMENTS["GT_QK(2,2)"]
 ELEMENTS["GT_LINEAR_PRODUCT(GT_LINEAR_PRODUCT(GT_PK(1,1),GT_PK(1,1)),GT_PK(1,1))"] = ELEMENTS["GT_QK(3,1)"]
 # Gmsh element types of the faces: (number of vertices, order) -> type
 FACE_TYPES = {(1, 1): 15, (2, 1): 1, (2, 2): 8, (3, 1): 2, (3, 2): 9, (4, 1): 3}
@@ -381,6 +384,11 @@ def export_mesh(model: dict, name: str, workdir: str | Path, out: str | Path, py
     return out
 
 
+def _element_dim(gt: str) -> int:
+    gmsh_type = _element(gt)[0]
+    return {1: 1, 8: 1, 2: 2, 9: 2, 3: 2, 10: 2}.get(gmsh_type, 3)
+
+
 def _element(gt: str) -> tuple:
     gt = gt.replace(" ", "")
     if gt not in ELEMENTS:
@@ -422,7 +430,9 @@ def msh(data: dict) -> str:
     """Gmsh 2.2 ASCII file: the elements of the mesh (physical group 1,
     "domain", or the first domain selection that contains them), then the
     boundary faces of each boundary selection (a physical group each)."""
-    dim, P = data["dim"], np.asarray(data["points"], float)
+    P = np.asarray(data["points"], float)
+    # the dimension of the elements (lower than that of the space for curves and surfaces)
+    dim = max((_element_dim(gt) for gt, _ in data["cells"]), default=data["dim"])
     names = [n for n in data["regions"] if n not in ("all", "boundary") or data["regions"][n]["kind"] == "boundary"]
     groups = {name: k + 2 for k, name in enumerate(names)}
     cell_group = [1] * len(data["cells"])
@@ -468,12 +478,16 @@ def inp(data: dict) -> str:
     dim, P = data["dim"], np.asarray(data["points"], float)
     if dim == 1:
         raise ExportError("1D meshes cannot be written in the Abaqus format")
+    # elements of a lower dimension than the space: shells and beams
+    lower = {(2, 3): "S3", (9, 3): "STRI65", (3, 3): "S4", (10, 3): "S8R", (1, 2): "B21", (8, 2): "B22",
+             (1, 3): "B31", (8, 3): "B32"}
     lines = ["*HEADING", "Mesh exported by the GetFEM GUI", "*NODE"]
     for i, p in enumerate(P):
         lines.append(f"{i + 1}, " + ", ".join(f"{x:.16g}" for x in p))
     by_type: dict[str, list[int]] = {}
     for c, (gt, _) in enumerate(data["cells"]):
-        by_type.setdefault(_element(gt)[2], []).append(c)
+        e = _element(gt)
+        by_type.setdefault(lower.get((e[0], dim), e[2]) if _element_dim(gt) < dim else e[2], []).append(c)
     for etype, cells in by_type.items():
         lines.append(f"*ELEMENT, TYPE={etype}, ELSET=domain")
         for c in cells:

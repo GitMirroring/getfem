@@ -155,6 +155,27 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   other primitives), so that the faces stay flat and the edges sharp; the
   boundary selections (plane, normal, box, ball criteria) and the shape
   selected in the tree are shown on it. See `examples/block_with_hole_3d.json`.
+- **Curves and surfaces** (beams, cables, shells, membranes: geometries of
+  a lower dimension than their space):
+  - `curve` (2D or 3D): a chain of segments and arcs of circle (an arc goes
+    through a point given in the last column of the point table); its ends
+    are the built-in selections `start` and `end`;
+  - `surface` (3D): a flat domain, a 2D CSG shape edited and drawn as a 2D
+    geometry, placed by an origin and two axes, plus a height along the
+    normal, a number or an expression of the local coordinates
+    (`"(sqr(x) + sqr(y))/(4*f)"`); its selections are defined on the flat
+    domain (edges, regions, criteria in local coordinates), which the tree
+    shows below the geometry;
+  - `swept_surface` (3D): a 2D curve extruded along z or turned about the z
+    axis (an angle range; the curve must not touch the axis), meshed in
+    quadrangles.
+
+  Their meshes are built by the meshing script (a curve: elements of the
+  element size, the nodes of the arcs on them; a surface: the mesh of its
+  flat domain, by any 2D mesher, mapped to 3D, curved with order 2; a swept
+  surface: its curve meshed and extruded or turned in layers), and the
+  models use them as any mesh (the gradients are then tangential). The
+  modules for beams and shells are to come. See `examples/heated_dish.json`.
 - **Export** (File menu, or *Export...* on a geometry or a mesh in the
   tree): a box or CSG geometry as SVG or DXF outlines (2D), STL, OBJ, PLY or
   VTP surfaces (3D, the exact preview surface), STEP, IGES or BREP solids
@@ -240,6 +261,7 @@ widget itself needs a real display.
 | `getfem_gui/codegen.py` | GetFEM solve script (loads the prepared mesh) |
 | `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
 | `getfem_gui/cli.py` | command line interface |
+| `getfem_gui/manifold.py` | curves and surfaces: chains of segments and arcs, maps of the surfaces |
 | `getfem_gui/export.py` | export of geometries (SVG, DXF, STL, STEP...) and meshes (VTK, Gmsh, Abaqus) |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
@@ -261,6 +283,7 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
+| `tests/test_manifolds.py` | curves and surfaces: format, meshes, solves, editing, preview, export |
 | `tests/test_meshers.py` | Netgen, quadrangles, meshes in layers (prisms, hexahedra) |
 | `tests/test_export.py` | export of geometries and meshes (read back by GetFEM) |
 | `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |

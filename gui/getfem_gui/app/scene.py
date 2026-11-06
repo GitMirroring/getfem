@@ -651,6 +651,76 @@ def show_geometry_3d(plotter, shape: dict, highlighted=None, part: dict | None =
         plotter.reset_camera()
 
 
+def manifold_preview(src: dict, values: dict, n: int = 120) -> pv.PolyData:
+    """The preview of a curve (lines) or of a surface in 3D (triangles or
+    quadrangles) of a resolved source."""
+    from .. import geometry3d as G3, manifold
+    t = src["type"]
+    if t == "curve":
+        X = manifold.chain_polyline(src)
+        X = np.column_stack([X, np.zeros((len(X), 3 - X.shape[1]))]) if X.shape[1] < 3 else X
+        return pv.lines_from_points(X)
+    if t == "surface":
+        prim = {"type": "extrusion", "profile": src["shape"], "z": [0.0, 1.0]}
+        from .. import geometry2d as G2
+        h = G2.size(src["shape"]) / n
+        curves = G3.profile_curves(prim, h)
+        face = _profile_face(src["shape"], curves, h)
+        P = manifold.map_surface(np.asarray(face.points)[:, :2].T, src, values).T
+        return pv.PolyData(P, np.asarray(face.faces))
+    # a swept surface: the polyline of its curve times the sweep
+    X = manifold.chain_polyline(src)
+    m = max(24, int(np.ceil(n * manifold.sweep_length(src) / max(float(np.ptp(X, axis=0).max()), 1e-300))))
+    m = min(m, 4 * n)
+    t_ = np.linspace(0.0, 1.0, m + 1)
+    A = np.repeat(X[:, 0:1], len(t_), axis=1)
+    B = np.repeat(X[:, 1:2], len(t_), axis=1)
+    T = np.repeat(t_[None, :], len(X), axis=0)
+    Q = manifold.map_swept(np.vstack([A.ravel(), B.ravel(), T.ravel()]), src)
+    grid = pv.StructuredGrid(*(Q[k].reshape(A.shape)[:, :, None] for k in range(3)))
+    return grid.extract_surface()
+
+
+def show_manifold(plotter, src: dict, values: dict, title: str = "", reset: bool = True) -> None:
+    """Preview of a curve or of a surface in 3D (its flat domain for the
+    selections, as a 2D geometry)."""
+    clear(plotter)
+    surf = manifold_preview(src, values)
+    if src["type"] == "curve":
+        plotter.add_mesh(surf, color=OUTLINE, line_width=4, lighting=False, name="surface")
+        from .. import manifold
+        ends = np.asarray([list(p) + [0.0] * (3 - len(p)) for p in manifold.chain_ends(src)])
+        if len(ends):
+            plotter.add_mesh(pv.PolyData(ends), color=HIGHLIGHT, point_size=12, style="points",
+                             render_points_as_spheres=True, lighting=False, name="ends")
+    else:
+        try:
+            plotter.remove_all_lights()
+            plotter.enable_lightkit()
+        except (AttributeError, TypeError):
+            pass
+        plotter.add_mesh(surf, color=SURFACE, smooth_shading=True, ambient=0.3, diffuse=0.7, specular=0.1,
+                         name="surface")
+        edges = surf.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False,
+                                           non_manifold_edges=False)
+        if edges.n_points:
+            plotter.add_mesh(edges, color=OUTLINE, line_width=2, lighting=False, name="feature_edges")
+    if title:
+        plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
+    if reset:
+        flat = src["type"] == "curve" and src.get("dim") == 2
+        if flat:
+            plotter.enable_parallel_projection()
+            plotter.view_xy()
+        else:
+            plotter.disable_parallel_projection()
+            plotter.view_isometric()
+            plotter.camera.azimuth = 20
+            plotter.camera.elevation = 10
+        set_style(plotter, flat)
+        plotter.reset_camera()
+
+
 def show_face_hover(plotter, surf, face_id) -> None:
     """Highlight a face of a 3D preview surface (None: remove)."""
     plotter.remove_actor("hover")
