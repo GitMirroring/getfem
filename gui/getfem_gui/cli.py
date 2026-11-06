@@ -57,7 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     cmd("run", "mesh then solve")
     pe = cmd("export", "write a standalone Python script (meshing and solving)")
     pe.add_argument("-o", "--output", help="output file (default: standard output)")
-    for sp in (pm, pg, sub.choices["run"]):
+    pxg = cmd("export-geometry", "write a geometry as SVG, DXF (2D), STL, OBJ, PLY, VTP (3D), STEP, IGES, BREP")
+    pxg.add_argument("geometry", help="geometry name")
+    pxg.add_argument("output", help="output file; its suffix gives the format")
+    pxm = cmd("export-mesh", "write a mesh as GetFEM (.mesh), VTK (.vtu, .vtk), Gmsh (.msh), Abaqus (.inp)")
+    pxm.add_argument("mesh", help="mesh name")
+    pxm.add_argument("output", help="output file; its suffix gives the format")
+    for sp in (pm, pg, sub.choices["run"], pxm, pxg):
         sp.add_argument("-w", "--workdir", help="working directory (default: <model>_run/)")
         sp.add_argument("--python", help="Python interpreter that provides GetFEM")
 
@@ -108,6 +114,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     workdir = _workdir(args)
+
+    if args.cmd in ("export-geometry", "export-mesh"):
+        from . import export
+        try:
+            if args.cmd == "export-geometry":
+                out = export.export_geometry(model, args.geometry, args.output, python=args.python)
+            else:
+                out = export.export_mesh(model, args.mesh, workdir, args.output, python=args.python, build=True)
+        except export.ExportError as exc:
+            print(f"export failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"written to {out}")
+        return 0
 
     if args.cmd == "mesh":
         names = args.mesh or [m["name"] for m, _ in M.all_meshes(model)]

@@ -178,6 +178,11 @@ class MainWindow(QMainWindow):
         self.a_save_as = self._action("Save &as...", self.save_as, QKeySequence.StandardKey.SaveAs)
         self.a_export = self._action("&Export as a Python script...", self.export_script, None, None,
                                      "A standalone GetFEM script that meshes and solves the model")
+        self.a_export_geometry = self._action("Export the &geometry...", lambda: self.export_geometry(), None,
+                                              None, "The geometry of the selected node as SVG, DXF, STL, "
+                                                    "STEP...")
+        self.a_export_mesh = self._action("Export the &mesh...", lambda: self.export_mesh(), None, None,
+                                          "The mesh of the selected node as GetFEM, VTK, Gmsh, Abaqus...")
         self.a_quit = self._action("&Quit", self.close, QKeySequence.StandardKey.Quit)
         self.a_undo = self._action("&Undo", self.undo, QKeySequence.StandardKey.Undo, SP.SP_ArrowBack)
         self.a_redo = self._action("&Redo", self.redo, QKeySequence.StandardKey.Redo, SP.SP_ArrowForward)
@@ -199,7 +204,7 @@ class MainWindow(QMainWindow):
         for p in sorted(EXAMPLES_DIR.glob("*.json")):
             ex.addAction(self._action(p.stem, lambda _=False, p=p: self.open_example(p)))
         m.addSeparator()
-        for a in (self.a_save, self.a_save_as, self.a_export):
+        for a in (self.a_save, self.a_save_as, self.a_export, self.a_export_geometry, self.a_export_mesh):
             m.addAction(a)
         m.addSeparator()
         m.addAction(self.a_quit)
@@ -1048,7 +1053,10 @@ class MainWindow(QMainWindow):
     def _node_actions(self, path):
         actions = E.actions(self.model, path)
         if path[:1] == ("meshes",) and len(path) == 2:
-            actions = [("cmd:build_mesh", "Build mesh")] + actions
+            actions = [("cmd:build_mesh", "Build mesh"), ("cmd:export_mesh", "Export...")] + actions
+        if path[:1] == ("geometries",) and len(path) == 2 \
+                and self.model["geometries"][path[1]].get("source", {}).get("type") in ("box", "csg"):
+            actions = actions + [("cmd:export_geometry", "Export...")]
         if path[:1] == ("models",) and len(path) == 2 or path == ("solvers",):
             actions = actions + [("cmd:compute", "Compute")]
         return actions
@@ -1123,6 +1131,12 @@ class MainWindow(QMainWindow):
             return
         if ident == "cmd:compute":
             self.compute()
+            return
+        if ident == "cmd:export_mesh":
+            self.export_mesh(E.get_at(self.model, path + ("name",)))
+            return
+        if ident == "cmd:export_geometry":
+            self.export_geometry(E.get_at(self.model, path + ("name",)))
             return
         if ident == "cmd:save_material":
             from .. import library
@@ -1351,6 +1365,104 @@ class MainWindow(QMainWindow):
             return False
         self._log(f"Script written to {path} (run it with a Python that provides GetFEM)")
         self.state.setText(f"Script written to {path}")
+        return True
+
+    def _selected_geometry(self) -> str | None:
+        path = self.current_path()
+        gi = E.preview_geometry(self.model, path) if path else None
+        if gi is None and path[:1] == ("meshes",) and len(path) >= 2:
+            g = M.find_geometry(self.model, self.model["meshes"][path[1]].get("geometry"))
+            return g["name"] if g else None
+        geoms = self.model.get("geometries", [])
+        if gi is None:
+            return geoms[0]["name"] if geoms else None
+        return geoms[gi]["name"]
+
+    def _selected_mesh(self) -> str | None:
+        path = self.current_path() or ()
+        meshes = self.model.get("meshes", [])
+        if path[:1] == ("meshes",) and len(path) >= 2:
+            return meshes[path[1]]["name"]
+        md = E.owner(self.model, path)
+        if md is not None:
+            mesh = M.model_mesh(self.model, md)
+            if mesh:
+                return mesh.get("name")
+        if path[:1] == ("geometries",) and len(path) >= 2:
+            gname = self.model["geometries"][path[1]]["name"]
+            for m in meshes:
+                if m.get("geometry") == gname:
+                    return m["name"]
+        return meshes[0]["name"] if meshes else None
+
+    def _export_target(self, title: str, stem: str, formats: dict, path) -> str | None:
+        from .. import export
+        if path is not None:
+            return str(path)
+        start = str((self.path.parent if self.path else Path.cwd()) / f"{stem}{next(iter(formats))}")
+        path, _ = QFileDialog.getSaveFileName(self, title, start, export.file_filters(formats))
+        return path or None
+
+    def export_geometry(self, name: str | None = None, path=None) -> bool:
+        """Write a geometry (that of the selected node by default) in another format."""
+        from .. import export
+        name = name or self._selected_geometry()
+        geom = M.find_geometry(self.model, name) if name else None
+        if geom is None or geom.get("source", {}).get("type") not in ("box", "csg"):
+            QMessageBox.information(self, APP_NAME, "Select a box or constructive (csg) geometry to export.")
+            return False
+        src = geom["source"]
+        dim = len(src["size"]) if src["type"] == "box" else src.get("dim", 2)
+        formats = export.geometry_formats(dim)
+        path = self._export_target(f"Export the geometry {name!r}", name, formats, path)
+        if not path:
+            return False
+        if Path(path).suffix.lower() not in formats:
+            path = str(Path(path).with_suffix(next(iter(formats))))
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            export.export_geometry(self.model, name, path, python=self.jobs.python)
+        except export.ExportError as exc:
+            QMessageBox.critical(self, APP_NAME, f"Cannot export the geometry:\n{exc}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._log(f"Geometry {name!r} written to {path}")
+        self.state.setText(f"Geometry {name!r} written to {path}")
+        return True
+
+    def export_mesh(self, name: str | None = None, path=None, build: bool | None = None) -> bool:
+        """Write a mesh (that of the selected node by default) in another format;
+        a mesh not built (or not up to date) is built first, if accepted."""
+        from .. import export
+        name = name or self._selected_mesh()
+        if name is None or M.find_mesh(self.model, name) is None:
+            QMessageBox.information(self, APP_NAME, "Select a mesh to export.")
+            return False
+        if not self._check():
+            return False
+        if mesher.cached_mesh(self.model, name, self.workdir) is None:
+            if build is None:
+                build = QMessageBox.question(
+                    self, APP_NAME, f"The mesh {name!r} is not built or not up to date. Build it now?") \
+                    == QMessageBox.StandardButton.Yes
+            if not build:
+                return False
+        path = self._export_target(f"Export the mesh {name!r}", name, export.MESH_FORMATS, path)
+        if not path:
+            return False
+        if Path(path).suffix.lower() not in export.MESH_FORMATS:
+            path = str(Path(path).with_suffix(".msh"))
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            export.export_mesh(self.model, name, self.workdir, path, python=self.jobs.python, build=True)
+        except export.ExportError as exc:
+            QMessageBox.critical(self, APP_NAME, f"Cannot export the mesh:\n{exc}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._log(f"Mesh {name!r} written to {path}")
+        self.state.setText(f"Mesh {name!r} written to {path}")
         return True
 
     def show_script(self):

@@ -155,6 +155,17 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   other primitives), so that the faces stay flat and the edges sharp; the
   boundary selections (plane, normal, box, ball criteria) and the shape
   selected in the tree are shown on it. See `examples/block_with_hole_3d.json`.
+- **Export** (File menu, or *Export...* on a geometry or a mesh in the
+  tree): a box or CSG geometry as SVG or DXF outlines (2D), STL, OBJ, PLY or
+  VTP surfaces (3D, the exact preview surface), STEP, IGES or BREP solids
+  (2D and 3D, built with OpenCASCADE by the Gmsh Python module); a mesh as
+  GetFEM (`.mesh`), VTK (`.vtu`, `.vtk`), Gmsh 2.2 (`.msh`: each element in
+  the physical group of its first domain selection, `domain` otherwise, and
+  the faces of the boundary selections in physical groups of their own) or
+  Abaqus (`.inp`: element sets for the domain selections, node sets for the
+  boundary ones), linear or quadratic elements. A mesh not up to date is
+  built first. Command line: `export-geometry model.json NAME out.step`,
+  `export-mesh model.json NAME out.msh`.
 - **Picking 3D faces**: with a boundary selection of a 3D box or CSG
   geometry, or an item on a boundary (condition, term, output), selected,
   the face under the mouse is highlighted and a click adds or removes it
@@ -229,6 +240,7 @@ widget itself needs a real display.
 | `getfem_gui/codegen.py` | GetFEM solve script (loads the prepared mesh) |
 | `getfem_gui/runner.py` | runs meshing then solving in subprocesses |
 | `getfem_gui/cli.py` | command line interface |
+| `getfem_gui/export.py` | export of geometries (SVG, DXF, STL, STEP...) and meshes (VTK, Gmsh, Abaqus) |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
 | `getfem_gui/library.py`, `data/materials.json` | material libraries (built-in, user's), copies into the model |
@@ -249,6 +261,7 @@ widget itself needs a real display.
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
+| `tests/test_export.py` | export of geometries and meshes (read back by GetFEM) |
 | `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |
 | `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
