@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Yves Renard.
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
 #
 # This file is a part of GetFEM
 #
@@ -21,7 +21,7 @@ __version__ = "0.1"
 DESCRIPTION = ("a framework for rapid prototyping of complex multiphysics "
                "finite element models")
 
-LICENSE = """Copyright (C) 2026 Yves Renard.
+LICENSE = """Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
 
 GetFEM GUI is a part of GetFEM. GetFEM is free software; you can
 redistribute it and/or modify it under the terms of the GNU Lesser General

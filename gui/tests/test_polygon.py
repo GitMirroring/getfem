@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Yves Renard.
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
 #
 # This file is a part of GetFEM
 #
@@ -153,6 +153,39 @@ def test_side_references_follow_the_edits():
     assert edges() == ["side4", "side3"] and M.validate(m) == []
     E.do_action(m, rect, "remove_vertex:0")              # (0, 0): sides 4 and 1 merged
     assert edges() == ["side3", "side2"] and M.validate(m) == []
+
+
+def test_removing_shapes():
+    """Any part of a boolean can be removed; a boolean left with one part is
+    replaced by it; the edge and region references follow."""
+    m = model_with({"type": "difference", "of": [{"type": "polygon", "points": L_SHAPE},
+                                                 {"type": "ball", "center": [0.25, 0.25], "radius": 0.1}]})
+    sels = m["geometries"][0]["selections"]
+    sels["notch"] = {"kind": "boundary", "criteria": {"type": "edges", "edges": [
+        {"shape": [0], "side": "side3"}, {"shape": [1], "side": "circle"}]}}
+    sels["plate"] = {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0]]]}}
+    # a polygon drawn (union): the root moves under a boolean of two shapes
+    E.add_shape_2d(m, 0, {"type": "polygon", "points": [[1, 0], [1.5, 0], [1.5, 0.5]]}, "union")
+    assert E.get_at(m, ROOT)["type"] == "union" and M.validate(m) == []
+    assert ("remove", "Remove") in E.actions(m, ROOT + ("of", 1))
+    assert E.do_action(m, ROOT + ("of", 1), "remove") == ROOT
+    assert E.get_at(m, ROOT)["type"] == "difference"
+    assert sels["notch"]["criteria"]["edges"] == [{"shape": [0], "side": "side3"}, {"shape": [1], "side": "circle"}]
+    assert sels["plate"]["criteria"]["regions"] == [[[0]]] and M.validate(m) == []
+    # the hole removed: the difference becomes the polygon; its references with it
+    E.do_action(m, ROOT + ("of", 1), "remove")
+    assert E.get_at(m, ROOT)["type"] == "polygon"
+    assert sels["notch"]["criteria"]["edges"] == [{"shape": [], "side": "side3"}]
+    assert sels["plate"]["criteria"]["regions"] == [[[]]] and M.validate(m) == []
+    # in a union of three, the references after the removed part shift
+    m = model_with({"type": "union", "of": [{"type": "rectangle", "min": [0, 0], "max": [1, 1]},
+                                            {"type": "ball", "center": [1, 0.5], "radius": 0.3},
+                                            {"type": "polygon", "points": [[0, 1], [1, 1], [0.5, 1.5]]}]})
+    m["geometries"][0]["selections"] = {"top": {"kind": "boundary", "criteria": {"type": "edges", "edges": [
+        {"shape": [1], "side": "circle"}, {"shape": [2], "side": "side2"}]}}}
+    E.do_action(m, ROOT + ("of", 1), "remove")
+    assert m["geometries"][0]["selections"]["top"]["criteria"]["edges"] == [{"shape": [1], "side": "side2"}]
+    assert M.validate(m) == []
 
 
 def _solve(m):

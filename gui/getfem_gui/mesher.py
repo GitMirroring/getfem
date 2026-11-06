@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Yves Renard.
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
 #
 # This file is a part of GetFEM
 #
@@ -569,12 +569,29 @@ def error_line(stderr: str) -> str:
     always the last line: GetFEM may print warnings to stderr after it.
     """
     lines = [l.strip() for l in stderr.strip().splitlines() if l.strip()]
+    line = lines[-1] if lines else ""
     for i in range(len(lines) - 1, -1, -1):
         if _EXCEPTION_LINE.match(lines[i]):
             # keep the continuation of multi-line messages, not GetFEM's noise
             rest = [l for l in lines[i + 1:] if not _NOISE_LINE.match(l)]
-            return " ".join([lines[i]] + rest)
-    return lines[-1] if lines else ""
+            line = " ".join([lines[i]] + rest)
+            break
+    missing = _MISSING_OBJECT.search(line)
+    if missing and missing.group(1) in RECENT_MESHER_OBJECTS:
+        line += (f" — this GetFEM has no '{missing.group(1)}' mesher object: it needs the patch "
+                 f"\"{RECENT_MESHER_OBJECTS[missing.group(1)]}\" (rebuild and reinstall GetFEM, "
+                 "its Python interface included), or mesh with Gmsh")
+    return line
+
+
+# Mesher objects added to GetFEM for the interface, and the patch that adds each one
+RECENT_MESHER_OBJECTS = {
+    "extrusion": "mesher: extrusion and revolution of 2D objects",
+    "revolution": "mesher: extrusion and revolution of 2D objects",
+    "polygon": "mesher: polygons (not necessarily convex)",
+    "ellipse": "mesher: a working ellipse",
+}
+_MISSING_OBJECT = re.compile(r"Bad command name: (\w+)")
 
 
 _EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(Error|Exception|Interrupt)\b.*:")

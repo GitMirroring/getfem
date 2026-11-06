@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Yves Renard.
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
 #
 # This file is a part of GetFEM
 #
@@ -1476,8 +1476,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         if shape.get("type") in M.SHAPES_BOOLEAN:
             out += [(f"add_shape:{t}", f"Add a{'n' if t[0] in 'aeiou' else ''} {t}")
                     for t in primitives_of_dim(shape_dim(model, path))]
-        parent = get_at(model, path[:-2], {})
-        if path[-2] == "of" and len(parent.get("of", [])) > 2:
+        if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
             out.append(("remove", "Remove"))
     elif path[:1] == ("geometries",) and n == 3 and path[2] == "selections":
         out.append(("add_selection", "Add a selection"))
@@ -1600,6 +1599,9 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         elif verb == "move_down" and i + 1 < len(items):
             items[i + 1], items[i] = items[i], items[i + 1]
         return path
+    if action == "remove" and path[:1] == ("geometries",) and len(path) > 5 and path[2] == "source" \
+            and path[-2] == "of":
+        return _remove_shape(model, path)
     if action == "remove":
         parent = get_at(model, path[:-1])
         if isinstance(parent, list):
@@ -2124,6 +2126,69 @@ def can_draw(model: dict, path: Path) -> int | None:
     if src.get("type") == "csg" and src.get("dim") == 2:
         return gi
     return None
+
+
+def _remove_shape(model: dict, path: Path) -> Path:
+    """Remove a part of a boolean; a boolean left with one part is replaced
+    by it. The references to primitives (edges, faces, regions) follow."""
+    bpath, j = path[:-2], path[-1]
+    boolean = get_at(model, bpath)
+    del boolean["of"][j]
+    unwrap = len(boolean["of"]) == 1
+    if unwrap:
+        set_at(model, bpath, boolean["of"][0])
+    geom = model["geometries"][path[1]]
+    if "profile" in path[4:]:                 # in the profile of an extrusion or a revolution
+        k = path.index("profile", 4)
+        swept, inner = tuple(path[5:k:2]), tuple(path[k + 2::2])
+    else:
+        swept, inner = None, tuple(path[5::2])
+    bidx = inner[:-1]
+
+    def moved(p):
+        p = tuple(p)
+        if p[:len(bidx)] != bidx or len(p) == len(bidx):
+            return p
+        rest = p[len(bidx):]
+        if rest[0] == j:
+            return None                       # the removed shape (or a part of it)
+        if unwrap:
+            return bidx + rest[1:]
+        return bidx + (rest[0] - (rest[0] > j),) + rest[1:]
+    _remap_shape_refs(geom, moved, swept)
+    return bpath
+
+
+def _remap_shape_refs(geom: dict, moved, swept=None) -> None:
+    """Paths of primitives changed (moved(path) -> new path, or None if gone):
+    update the edges, faces and regions of the selections. swept: the path of
+    the extrusion or revolution whose profile changed (the profile sides of
+    its faces are then updated) or None (the CSG tree itself changed)."""
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        t = crit.get("type")
+        if swept is not None:
+            if t == "faces":
+                out = []
+                for ref in crit.get("faces", []):
+                    if tuple(ref.get("shape", [])) == swept and ref.get("profile"):
+                        new = moved(ref["profile"].get("shape", []))
+                        if new is None:
+                            continue
+                        ref = dict(ref, profile=dict(ref["profile"], shape=list(new)))
+                    out.append(ref)
+                crit["faces"] = out
+            continue
+        if t in ("edges", "faces"):
+            out = []
+            for ref in crit.get(t, []):
+                new = moved(ref.get("shape", []))
+                if new is not None:
+                    out.append(dict(ref, shape=list(new)))
+            crit[t] = out
+        elif t == "regions":
+            crit["regions"] = [[list(q) for q in (moved(p) for p in reg) if q is not None]
+                               for reg in crit.get("regions", [])]
 
 
 def _prefix_edge_refs(geom: dict, prefix: tuple) -> None:

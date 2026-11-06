@@ -1,4 +1,4 @@
-# Copyright (C) 2026 Yves Renard.
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
 #
 # This file is a part of GetFEM
 #
