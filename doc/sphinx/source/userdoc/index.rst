@@ -4,8 +4,8 @@
 
 .. _ud:
 
-User Documentation
-##################
+User documentation of the library
+#################################
 
 .. toctree::
    :maxdepth: 2

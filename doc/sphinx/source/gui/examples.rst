@@ -1,0 +1,111 @@
+.. include:: ../replaces.txt
+
+.. _gui-examples:
+
+Examples
+========
+
+The examples are in ``gui/examples`` (and in *File ▸ Open an example*).
+Each of them is solved by the tests of the interface
+(``tests/test_doc.py``), which check the balances quoted below between the
+outputs of the examples.
+
+.. include:: reference/examples_table.inc
+
+.. _gui-example-plate:
+
+Heated plate (``plate.json``)
+-----------------------------
+
+A rectangular plate (a ``box``, structured mesh) heated by a Gaussian
+source, at a fixed temperature on its left side and cooled by convection on
+the others (a ``union`` selection). The outputs compare the injected power
+with the heat flowing out through the sides: they balance.
+
+.. _gui-example-plate_with_hole:
+
+Plate with a heated hole (``plate_with_hole.json``)
+---------------------------------------------------
+
+A ``csg`` plate with a hole, heated by a flux on the hole, at a fixed
+temperature on the left and cooled by convection on the right. Two meshes
+of the same geometry (``getfem`` and ``gmsh``); the selections use the
+``plane`` and ``in_ball`` criteria.
+
+.. _gui-example-plate_hole_tension:
+
+Plate with a hole in tension (``plate_hole_tension.json``)
+----------------------------------------------------------
+
+A quarter of a plate with a hole, in linear elasticity: ``roller``
+conditions on the two symmetry planes, a traction ``S`` on the right side.
+It is written with parameters (the radius ``a`` of the hole can be changed
+by dragging the circle). The applied force (``S`` times the half height,
+:math:`5\cdot 10^6` N/m) is balanced by the reaction on the symmetry plane;
+the von Mises stress shows the concentration at the hole.
+
+.. _gui-example-plate_inclusion:
+
+Plate with a conductive inclusion (``plate_inclusion.json``)
+------------------------------------------------------------
+
+A plate with a disk of another material: the disk is united with the plate,
+and the two materials are given on ``regions`` selections (picked in the
+view). The |gf| mesher follows the circle, so that the jump of conductivity
+is represented exactly.
+
+.. _gui-example-thermoelastic_plate:
+
+Heated plate that expands (``thermoelastic_plate.json``)
+--------------------------------------------------------
+
+Two models solved in sequence: a thermal model computes the temperature,
+which a mechanical model imports for its thermal expansion module. The
+output is the elongation of the plate.
+
+.. _gui-example-l_bracket:
+
+L-shaped bracket (``l_bracket.json``)
+-------------------------------------
+
+A ``polygon`` with a hole, fixed at its top and loaded by a vertical
+traction at its end, the two sides being picked ``edges`` selections. The
+reaction on the top balances the applied force (the traction ``F`` times
+the width ``W``).
+
+.. _gui-example-block_with_hole_3d:
+
+Block with a hole (``block_with_hole_3d.json``)
+-----------------------------------------------
+
+A 3D block minus a cylinder, at a fixed temperature on the face of the hole
+(a ``faces`` selection, picked in the view) and cooled by convection on the
+whole boundary. The output is the power injected through the hole.
+
+.. _gui-example-heat_sink_3d:
+
+Heat sink (``heat_sink_3d.json``)
+---------------------------------
+
+An ``extrusion`` of a finned profile, meshed in 12 layers of prisms, heated
+under its base (``qin``) and cooled by convection in the air. The injected
+power (``qin`` times the area of the base, 30 W) is balanced by the
+convected power.
+
+.. _gui-example-pulley_3d:
+
+Grooved pulley (``pulley_3d.json``)
+-----------------------------------
+
+A ``revolution`` of a profile with a groove, at a fixed temperature in its
+bore (the face swept by a side of the profile) and cooled by convection.
+
+.. _gui-example-heated_dish:
+
+Heated dish (``heated_dish.json``)
+----------------------------------
+
+A ``surface``: an annulus mapped to a paraboloid by its height, at fixed
+temperatures on the hole and on the rim (``edges`` selections of the flat
+domain). The temperature is solved on the surface (tangential gradients);
+the ``area`` output gives the area of the paraboloid.
