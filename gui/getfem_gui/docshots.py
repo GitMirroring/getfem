@@ -1,0 +1,200 @@
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
+#
+# This file is a part of GetFEM
+#
+# GetFEM  is  free software;  you  can  redistribute  it  and/or modify it
+# under  the  terms  of the  GNU  Lesser General Public License as published
+# by  the  Free Software Foundation;  either version 3 of the License,  or
+# (at your option) any later version along with the GCC Runtime Library
+# Exception either version 3.1 or (at your option) any later version.
+# This program  is  distributed  in  the  hope  that it will be useful,  but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or  FITNESS  FOR  A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+# License and GCC Runtime Library Exception for more details.
+# You  should  have received a copy of the GNU Lesser General Public License
+# along  with  this program. If not, see https://www.gnu.org/licenses/.
+
+"""Screenshots of the user documentation.
+
+The window is drawn without a screen (Qt "offscreen" platform) and its 3D
+view by an off-screen PyVista plotter, pasted where the view is. Requires
+PySide6 and PyVista, and an OpenGL context for VTK (with a server such as
+Xvfb when there is no display):
+
+    xvfb-run -a python -m getfem_gui.docshots [directory] [name ...]
+
+writes the PNG files (by default into doc/sphinx/source/gui/images of the
+GetFEM sources); names select some of the shots.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ["GETFEM_GUI_OFFSCREEN_3D"] = "1"
+os.environ.pop("GETFEM_GUI_NO_3D", None)
+
+from . import editing as E  # noqa: E402
+
+DEFAULT_DIR = Path(__file__).resolve().parents[2] / "doc" / "sphinx" / "source" / "gui" / "images"
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+SIZE = (1280, 760)
+
+
+def _app():
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
+
+
+def _settle(seconds: float = 0.5):
+    app = _app()
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        app.processEvents()
+        time.sleep(0.01)
+
+
+def _wait(condition, timeout: float = 300.0) -> bool:
+    app = _app()
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        app.processEvents()
+        if condition():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _window(example: str, tmp: str):
+    from .app.window import MainWindow
+    _app()
+    path = Path(shutil.copy(EXAMPLES / example, Path(tmp) / example))
+    win = MainWindow(path)
+    win.resize(*SIZE)
+    win.show()
+    _settle()
+    return win
+
+
+def _grab(win, out: Path):
+    """The window, with the off-screen 3D view pasted on its placeholder."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtWidgets import QLabel
+    _settle()
+    pix = win.grab()
+    label = next((w for w in win.viewer.findChildren(QLabel) if w.text() == "(off-screen 3D view)"), None)
+    plotter = win.viewer.plotter
+    if label is not None and plotter is not None:
+        ratio = pix.devicePixelRatio()
+        w, h = label.width(), label.height()
+        plotter.window_size = [int(w * ratio), int(h * ratio)]
+        plotter.render()
+        img = plotter.screenshot(None, return_img=True)
+        img = img.copy(order="C")
+        qimg = QImage(img.data, img.shape[1], img.shape[0], 3 * img.shape[1], QImage.Format_RGB888)
+        qimg.setDevicePixelRatio(ratio)
+        painter = QPainter(pix)
+        painter.drawImage(label.mapTo(win, QPoint(0, 0)), qimg)
+        painter.end()
+    pix.save(str(out))
+
+
+def _condition_path(model, ctype):
+    for k, md in enumerate(model["models"]):
+        for i, mod in enumerate(md.get("modules", [])):
+            for j, c in enumerate(mod.get("conditions", [])):
+                if c["type"] == ctype:
+                    return ("models", k, "modules", i, "conditions", j)
+    return None
+
+
+def window_2d(win):
+    """The window: a boundary condition selected, its support highlighted."""
+    win.select(_condition_path(win.model, "traction"))
+
+
+def polygon_handles(win):
+    """A polygon selected in the tree: its handles."""
+    shape = win.model["geometries"][0]["source"]["shape"]
+    path = next((p for p, s in _shapes(shape, ("geometries", 0, "source", "shape")) if s["type"] == "polygon"))
+    win.select(path)
+
+
+def _shapes(shape, path):
+    yield path, shape
+    for i, s in enumerate(shape.get("of", [])):
+        yield from _shapes(s, path + ("of", i))
+
+
+def preview_3d(win):
+    """A 3D CSG geometry previewed without meshing."""
+    win.select(("geometries", 0))
+
+
+def faces_3d(win):
+    """A selection of picked faces of a 3D geometry."""
+    win.select(("geometries", 0, "selections", "hole"))
+
+
+def surface(win):
+    """A surface: its flat domain and height."""
+    win.select(("geometries", 0))
+
+
+def mesh_layers(win):
+    """A mesh in layers (prisms) of an extrusion."""
+    win.select(("meshes", 0))
+    win.build_mesh()
+    _wait(lambda: not win.jobs.running and win.viewer is not None)
+    _settle(1.0)
+    win.select(("meshes", 0))
+
+
+def results(win):
+    """The von Mises stress of the plate with a hole."""
+    win.compute()
+    _wait(lambda: win.results is not None and not win.jobs.running)
+    win.log.clear()                     # the traces of GetFEM name the build folders
+    win.select((E.RESULTS, "mechanics", "von_mises"))
+
+
+SHOTS = {
+    "window.png": ("plate_hole_tension.json", window_2d),
+    "polygon_handles.png": ("l_bracket.json", polygon_handles),
+    "preview_3d.png": ("heat_sink_3d.json", preview_3d),
+    "faces_3d.png": ("block_with_hole_3d.json", faces_3d),
+    "surface.png": ("heated_dish.json", surface),
+    "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
+    "results.png": ("plate_hole_tension.json", results),
+}
+
+
+def make(directory: str | Path = DEFAULT_DIR, names=None) -> list[Path]:
+    d = Path(directory)
+    d.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name, (example, action) in SHOTS.items():
+        if names and name not in names and name.removesuffix(".png") not in names:
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            win = _window(example, tmp)
+            action(win)
+            _grab(win, d / name)
+            win.setWindowModified(False)
+            win.close()
+            out.append(d / name)
+    return out
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    directory = args.pop(0) if args and not args[0].endswith(".png") and "/" in args[0] else DEFAULT_DIR
+    for p in make(directory, args):
+        print("written:", p)

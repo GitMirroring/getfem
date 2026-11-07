@@ -37,7 +37,8 @@ def _workdir(args) -> Path:
     return Path(args.workdir or Path(args.model).with_suffix("").name + "_run")
 
 
-def main(argv: list[str] | None = None) -> int:
+def parser() -> argparse.ArgumentParser:
+    """The parser of the command line (also used to document it)."""
     p = argparse.ArgumentParser(prog="getfem_gui")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -71,8 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     pgui.add_argument("model", nargs="?")
     pgui.add_argument("--python", help="Python interpreter that provides GetFEM")
     pgui.add_argument("--no-splash", action="store_true", help="no start-up window")
+    return p
 
-    args = p.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
 
     if args.cmd == "gui":
         from .app import main as gui_main

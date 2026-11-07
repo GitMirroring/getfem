@@ -17,6 +17,12 @@ is optional. The graphical interface needs PySide6, and PyVista with
 pyvistaqt for the 3D view (`pip install pyside6 pyvista pyvistaqt`); the core
 and the command line do not.
 
+The user documentation is part of the GetFEM documentation
+(`doc/sphinx/source/gui`, "User documentation of the graphical interface").
+Its reference pages are generated from the code (`python -m getfem_gui.docref`)
+and its screenshots by `xvfb-run -a python -m getfem_gui.docshots`;
+`tests/test_doc.py` checks that they are up to date.
+
 ## Getting started from the repository
 
 ```bash
@@ -264,6 +270,7 @@ widget itself needs a real display.
 | `getfem_gui/manifold.py` | curves and surfaces: chains of segments and arcs, maps of the surfaces |
 | `getfem_gui/export.py` | export of geometries (SVG, DXF, STL, STEP...) and meshes (VTK, Gmsh, Abaqus) |
 | `getfem_gui/editing.py` | model tree, forms and editing operations (no GUI toolkit) |
+| `getfem_gui/docref.py`, `docshots.py` | reference pages and screenshots of the user documentation |
 | `getfem_gui/gwfl.py` | check of the GWFL expressions by GetFEM, in a subprocess |
 | `getfem_gui/library.py`, `data/materials.json` | material libraries (built-in, user's), copies into the model |
 | `getfem_gui/geometry3d.py` | 3D shapes as distance functions, selections on the preview surface |
@@ -284,6 +291,7 @@ widget itself needs a real display.
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
 | `tests/test_scene.py` | the 3D scenes rendered off screen (requires PyVista) |
 | `tests/test_manifolds.py` | curves and surfaces: format, meshes, solves, editing, preview, export |
+| `tests/test_doc.py` | user documentation: reference up to date, structure, quoted results, Sphinx build |
 | `tests/test_meshers.py` | Netgen, quadrangles, meshes in layers (prisms, hexahedra) |
 | `tests/test_export.py` | export of geometries and meshes (read back by GetFEM) |
 | `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |
