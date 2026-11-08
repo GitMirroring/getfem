@@ -30,7 +30,8 @@ A module is a predefined physics acting on variables
 ``heat_conduction``
    stationary heat conduction, of conductivity ``k``; conditions
    ``temperature``, ``heat_flux``, ``convection``; macro ``q`` (the heat
-   flux).
+   flux). With its option ``"conductivity": "anisotropic"``, ``k`` is a
+   matrix (see below).
 ``linear_elasticity``
    of Young's modulus ``E`` and Poisson's ratio ``nu``, in plane strain or
    plane stress in 2D; conditions ``fixed``, ``displacement``, ``roller``
@@ -49,6 +50,27 @@ volume sources per domain selection, the **conditions** apply on boundary
 selections. A boundary without condition is free (zero flux, zero
 traction). The interface warns when nothing fixes the solution (no imposed
 temperature, no displacement constraint).
+
+Anisotropic properties
+----------------------
+
+.. image:: images/anisotropic.png
+   :width: 100%
+   :alt: The temperature in a fibre composite plate: isotherms along the fibres
+
+Some properties are tensors for an option of their module: the
+conductivity of a heat conduction module with ``"conductivity":
+"anisotropic"`` is a matrix of the dimension of the space. Each of its
+values is then ``[a, b; c, d]`` (by rows, as in GWFL), a matrix parameter, a
+GWFL matrix expression, a list of rows in the file, or a number, standing
+for that number times the identity; a material may give a matrix too. In
+``examples/anisotropic_plate.json``, the conductivity tensor of a fibre
+composite is built from the direction ``d`` of the fibres:
+
+.. code-block:: text
+
+  {"name": "K", "value": "[k1*sqr(d(1)) + k2*sqr(d(2)), (k1 - k2)*d(1)*d(2);
+                           (k1 - k2)*d(1)*d(2), k1*sqr(d(2)) + k2*sqr(d(1))]"}
 
 The heat conduction module can be *unfolded* (tree action) into the
 equivalent terms and generic conditions, a starting point to write a

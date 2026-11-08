@@ -450,13 +450,19 @@ first one is also used to check the user expressions.
   `pow`, `exp`, `log`, trigonometric and hyperbolic functions, `abs`, `min`,
   `max`; it is evaluated without `eval`.
 - A parameter may be a **vector** (`[0, 0, -9.81]`, `"[L/2, H/2]"`) or a
-  **matrix** (`"[1, 0; 0, 2]"` by rows, as in GWFL, or `[[1, 0], [0, 2]]`).
+  **matrix** (`"[1, 0; 0, 2]"` by rows, as in GWFL, or `[[1, 0], [0, 2]]` in
+  the file; a text `[[1, 0], [0, 2]]` is refused: GWFL reads columns).
   Components are `C(1)`, `K(1, 2)` (numbered from 1, as in GWFL); the
   expressions know `u.v`, `K*u`, `K*M`, `Norm`, `Norm_sqr`, `Trace`, `Det`,
   `Inv`, `Transpose`, `Id(n)`. A vector parameter gives a point or a
   direction of a geometry as a whole (`"center": "C"`, typed in the first
   box of the field; its handle then changes the parameter). In the physics,
-  they are GetFEM data of their sizes (`K*Grad_T`, `g(3)`).
+  they are GetFEM data of their sizes (`K*Grad_T`, `g(3)`). The vertices of
+  a polygon and the points of a curve take them too (first column).
+- **Fields** may be vectors or matrices (`"kind": "vector" | "matrix"`); the
+  conductivity of a heat conduction module with `"conductivity":
+  "anisotropic"` is a matrix (a number stands for its multiple of the
+  identity). See `examples/anisotropic_plate.json`.
 - **Fields** have a value per domain selection of a geometry (the last one
   listed wins); they may use the coordinates, the parameters and the fields
   defined before them, are usable in every expression of the models on that

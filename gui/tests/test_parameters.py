@@ -211,7 +211,8 @@ def test_vector_and_matrix_evaluation():
     for bad, msg in [("C*C", "dot product u.v"), ("C[0]", "numbered from 1"), ("C(3)", "out of range"),
                      ("K(1)", "2 indices expected"), ("L(1)", "is a number"), ("sqrt(C)", "takes numbers"),
                      ("C + g", "cannot add"), ("1/C", "cannot divide"), ("g.C", "two vectors of the same size"),
-                     ("[1, [2, 3]]", "a vector holds numbers"), ("[[1, 2], [3]]", "rows of the same length"),
+                     ("[1, [2, 3]]", "write a matrix [a, b; c, d]"), ("[[1, 2], [3, 4]]", "rows separated by"),
+                     ("[1, 2; 3]", "rows of the same length"),
                      ("Inv([1, 1; 1, 1])", "cannot evaluate")]:
         try:
             P.evaluate(bad, vals)
@@ -295,7 +296,7 @@ def test_vector_and_matrix_parameters_in_the_physics():
 
 def test_editing_vector_and_matrix_parameters():
     assert E.parse_parameter("[1, 0, 0]") == [1, 0, 0]
-    assert E.parse_parameter("[[1, 0], [0, 2]]") == [[1, 0], [0, 2]]
+    assert E.parse_parameter("[[1, 0], [0, 2]]") == "[[1, 0], [0, 2]]"         # refused when evaluated
     assert E.parse_parameter("[1, 0; 0, 2]") == "[1, 0; 0, 2]"
     assert E.parse_parameter("[L, 0]") == "[L, 0]" and E.parse_parameter("2.5") == 2.5
     m = load("plate.json")
@@ -307,6 +308,108 @@ def test_editing_vector_and_matrix_parameters():
     assert m["parameters"][1]["value"] == [3, 4]
     assert P.format_value(rows[0]["number"]) == "[1, 0; 0, 2]" and P.format_value(rows[1]["number"]) == "[3, 4]"
     assert M.validate(m) == []
+
+
+def test_anisotropic_conduction_and_tensor_fields():
+    """A conductivity tensor: k Id gives the isotropic solution; the fibres
+    of the example carry more heat along them; vector and matrix fields."""
+    m = load("anisotropic_plate.json")
+    assert M.validate(m) == []
+    q = solve(m)["quantities"]
+    assert abs(q["outflow"] / q["injected_power"] - 1) < 1e-3
+    assert q["flux_along_fibres"] > 3 * q["flux_across_fibres"]
+    iso = load("anisotropic_plate.json")
+    iso["parameters"][1]["value"] = 10.0                                   # k2 = k1: k1 Id
+    aniso = solve(iso)["quantities"]
+    del iso["models"][0]["modules"][0]["conductivity"]
+    iso["models"][0]["modules"][0]["properties"]["k"] = [{"selection": "all", "value": 10.0}]
+    plain = solve(iso)["quantities"]
+    assert abs(aniso["outflow"] - plain["outflow"]) < 1e-9 * abs(plain["outflow"])
+    assert abs(aniso["flux_along_fibres"] - plain["flux_along_fibres"]) < 1e-8 * plain["flux_along_fibres"]
+    # a number for a tensor is that number times the identity; a list of rows; a matrix field
+    m = load("anisotropic_plate.json")
+    mod = m["models"][0]["modules"][0]
+    mod["properties"]["k"] = [{"selection": "all", "value": [[10.0, 0.0], [0.0, 10.0]]}]
+    m["models"][0]["fields"].append({"name": "Kf", "kind": "matrix", "values": [{"selection": "all", "value": 2.0}]})
+    m["models"][0]["outputs"].append({"name": "kf12", "expr": "Kf(1, 1) + Kf(1, 2)", "selection": "all"})
+    q = solve(m)["quantities"]
+    assert abs(q["outflow"] - plain["outflow"]) < 1e-9 * abs(plain["outflow"])
+    assert abs(q["kf12"] - 2 * 0.01) < 1e-12
+    # errors
+    bad = load("anisotropic_plate.json")
+    bad["models"][0]["modules"][0]["properties"]["k"] = [{"selection": "all", "value": [[1, 0, 0], [0, 1, 0]]}]
+    bad["models"][0]["fields"][0]["kind"] = "tensor"
+    errors = M.validate(bad)
+    assert any("properties.k[0].value: a 2x2 matrix expected" in e for e in errors), errors
+    assert any("fields[0].kind: scalar, vector, matrix expected" in e for e in errors)
+    bad = load("anisotropic_plate.json")
+    del bad["models"][0]["modules"][0]["conductivity"]
+    bad["models"][0]["modules"][0]["properties"]["k"] = [{"selection": "all", "value": [[1, 0], [0, 1]]}]
+    assert any("anisotropic option" in e for e in M.validate(bad))
+    bad = load("anisotropic_plate.json")
+    bad["materials"] = [{"name": "composite", "properties": {"k": [[10, 0], [0, 1]]}}]
+    bad["models"][0]["modules"][0]["properties"]["k"] = [{"selection": "all", "material": "composite"}]
+    assert M.validate(bad) == []
+    del bad["models"][0]["modules"][0]["conductivity"]
+    assert any("is a matrix: the module needs its anisotropic option" in e for e in M.validate(bad))
+
+
+def test_tensor_values_checked_by_getfem():
+    from getfem_gui import gwfl
+    m = load("anisotropic_plate.json")
+    m["models"][0]["modules"][0]["properties"]["k"] = [{"selection": "all", "value": "d"}]
+    m["models"][0]["fields"][0]["values"][0]["value"] = "K"
+    errors = gwfl.check(m)
+    assert "models[0].modules[0].properties.k[0].value: a 2x2 matrix is expected, got 2 components" in errors
+    assert "models[0].fields[0].values[0].value: a vector of 2 components is expected, got 4 components" in errors
+
+
+def test_editing_tensor_fields():
+    m = load("anisotropic_plate.json")
+    path = ("models", 0, "fields", 0)
+    fields = {f.key[-1]: f for f in E.fields(m, path)}
+    assert fields["kind"].op == "field_kind" and fields["value"].kind == "vector" and fields["value"].size == 2
+    E.apply(m, fields["kind"], "matrix")
+    assert m["models"][0]["fields"][0]["kind"] == "matrix"
+    value = next(f for f in E.fields(m, path) if f.key[-1] == "value")
+    assert value.kind == "value" and "by rows" in value.help
+    E.apply(m, value, "[1, 0; 0, 2]")
+    E.apply(m, next(f for f in E.fields(m, path) if f.key[-1] == "kind"), "scalar")
+    assert "kind" not in m["models"][0]["fields"][0]
+    assert E.format_value([[1, 0], [0, 2.5]]) == "[1, 0; 0, 2.5]"
+    piece = next(f for f in E.fields(m, ("models", 0, "modules", 0, "properties", "k", 0)) if f.key[-1] == "value")
+    assert "by rows" in piece.help
+    opt = next(f for f in E.fields(m, ("models", 0, "modules", 0)) if f.key[-1] == "conductivity")
+    assert [v for v, _ in opt.choices] == ["isotropic", "anisotropic"]
+
+
+def test_vector_parameters_for_vertices_and_curve_points():
+    m = load("l_bracket.json")
+    m["parameters"].append({"name": "V", "value": [0.0, 0.0]})
+    pts_path = ("geometries", 0, "source", "shape", "of", 0, "points")
+    assert E.get_at(m, pts_path)[0] == [0, 0]
+    cell = lambda i, j: E.Field(pts_path + (i, j), "v", "value", size=2, op="point_component")  # noqa: E731
+    E.apply(m, cell(0, 0), "V")
+    assert E.get_at(m, pts_path)[0] == "V" and M.validate(m) == []
+    assert E.vertex_rows(m, pts_path)[0] == ("V", "", 0.0, 0.0)
+    assert E.move_handle(m, pts_path[:-1], "v0", (0.001, 0.002)) == ["parameter V(1) = 0.001",
+                                                                       "parameter V(2) = 0.002"]
+    E.do_action(m, pts_path[:-1], "insert_vertex:0")
+    assert E.get_at(m, pts_path)[0] == "V" and M.validate(m) == []
+    E.apply(m, cell(0, 1), 0.5)                        # a number: the components again
+    assert E.get_at(m, pts_path)[0] == [0.001, 0.5]
+    # the points of a curve, and the point an arc goes through
+    m = M.default_model()
+    m["geometries"][0]["source"] = E._default_source("curve", 2)
+    m["parameters"] = [{"name": "P", "value": [1.0, 0.0]}, {"name": "Q", "value": "[1.2, 0.5]"}]
+    E.apply(m, E.Field(("geometries", 0, "source", "points", 1, 0), "p", "value", size=2,
+                       op="point_component"), "P")
+    E.apply(m, E.Field(("geometries", 0, "source", "through", 1), "a", "text", op="chain_through"), "Q")
+    src = m["geometries"][0]["source"]
+    assert src["points"][1] == "P" and src["through"][1] == "Q"
+    assert E.chain_rows(m, 0)[1][1] == ("P", "", "Q")
+    r = P.resolved(m)["geometries"][0]["source"]
+    assert r["points"][1] == [1.0, 0.0] and r["through"][1] == [1.2, 0.5]
 
 
 if __name__ == "__main__":

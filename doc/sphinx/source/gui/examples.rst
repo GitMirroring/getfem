@@ -109,3 +109,17 @@ A ``surface``: an annulus mapped to a paraboloid by its height, at fixed
 temperatures on the hole and on the rim (``edges`` selections of the flat
 domain). The temperature is solved on the surface (tangential gradients);
 the ``area`` output gives the area of the paraboloid.
+
+.. _gui-example-anisotropic_plate:
+
+Fibre composite plate (``anisotropic_plate.json``)
+--------------------------------------------------
+
+Anisotropic conduction: the conductivity is a matrix parameter ``K``, built
+from the conductivities along and across the fibres and their direction
+``d`` (a vector parameter), and the heat conduction module has the
+``anisotropic`` option. A heat source in the middle, the boundary at a
+fixed temperature: the isotherms are stretched along the fibres. The
+direction of the fibres is also a vector field, written to the results.
+The outflow balances the injected power, and the heat flows mostly along
+the fibres (``flux_along_fibres`` and ``flux_across_fibres``).

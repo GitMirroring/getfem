@@ -128,6 +128,9 @@ def test_examples_quoted_results():
     f, r0, r1 = 0.4, 0.2, 0.5                                           # area of the paraboloid
     area = 2 * math.pi * (2 * f) ** 2 / 3 * ((1 + (r1 / (2 * f)) ** 2) ** 1.5 - (1 + (r0 / (2 * f)) ** 2) ** 1.5)
     assert _close(q["area"], area, 1e-3), (q["area"], area)
+    q = _solve("anisotropic_plate.json")["heat"]
+    assert _close(q["injected_power"], q["outflow"], 1e-3)
+    assert q["flux_along_fibres"] > 3 * q["flux_across_fibres"]
     for name in ("plate_with_hole.json", "plate_inclusion.json", "thermoelastic_plate.json",
                  "block_with_hole_3d.json", "pulley_3d.json"):
         assert all(v for v in _solve(name).values())

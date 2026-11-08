@@ -1,0 +1,152 @@
+{
+  "format_version": 3,
+  "name": "Fibre composite plate: anisotropic conduction",
+  "parameters": [
+    {
+      "name": "k1",
+      "value": 10.0,
+      "description": "conductivity along the fibres"
+    },
+    {
+      "name": "k2",
+      "value": 1.0,
+      "description": "conductivity across the fibres"
+    },
+    {
+      "name": "theta",
+      "value": "pi/6",
+      "description": "angle of the fibres (radians)"
+    },
+    {
+      "name": "d",
+      "value": "[cos(theta), sin(theta)]",
+      "description": "direction of the fibres"
+    },
+    {
+      "name": "K",
+      "value": "[k1*sqr(d(1)) + k2*sqr(d(2)), (k1 - k2)*d(1)*d(2); (k1 - k2)*d(1)*d(2), k1*sqr(d(2)) + k2*sqr(d(1))]",
+      "description": "conductivity tensor: k1 d dT + k2 (I - d dT)"
+    },
+    {
+      "name": "q0",
+      "value": 100000.0,
+      "description": "peak of the heat source"
+    },
+    {
+      "name": "r0",
+      "value": 0.01,
+      "description": "radius of the heat source"
+    }
+  ],
+  "geometries": [
+    {
+      "name": "plate",
+      "source": {
+        "type": "box",
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "size": [
+          0.1,
+          0.1
+        ]
+      },
+      "selections": {}
+    }
+  ],
+  "meshes": [
+    {
+      "name": "mesh",
+      "geometry": "plate",
+      "mesher": "structured",
+      "divisions": [
+        40,
+        40
+      ],
+      "element": "simplex"
+    }
+  ],
+  "models": [
+    {
+      "name": "heat",
+      "fields": [
+        {
+          "name": "fibre",
+          "kind": "vector",
+          "description": "direction of the fibres",
+          "values": [
+            {
+              "selection": "all",
+              "value": "d"
+            }
+          ]
+        }
+      ],
+      "variables": [
+        {
+          "name": "T",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 2
+        }
+      ],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "conductivity": "anisotropic",
+          "properties": {
+            "k": [
+              {
+                "selection": "all",
+                "value": "K"
+              }
+            ]
+          },
+          "sources": [
+            {
+              "selection": "all",
+              "value": "q0*exp(-(sqr(x - 0.05) + sqr(y - 0.05))/sqr(r0))"
+            }
+          ],
+          "conditions": [
+            {
+              "type": "temperature",
+              "selection": "boundary",
+              "value": 0.0
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "injected_power",
+          "expr": "q0*exp(-(sqr(x - 0.05) + sqr(y - 0.05))/sqr(r0))",
+          "selection": "all"
+        },
+        {
+          "name": "outflow",
+          "expr": "q.Normal",
+          "selection": "boundary"
+        },
+        {
+          "name": "flux_along_fibres",
+          "expr": "abs(q.fibre)",
+          "selection": "all"
+        },
+        {
+          "name": "flux_across_fibres",
+          "expr": "abs(q.[-fibre(2), fibre(1)])",
+          "selection": "all"
+        }
+      ],
+      "vtu": "anisotropic_plate.vtu"
+    }
+  ]
+}

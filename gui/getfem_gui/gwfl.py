@@ -39,7 +39,7 @@ from pathlib import Path
 
 from . import codegen, model as M, parameters as P
 
-SCALAR, VECTOR = M.SCALAR, M.VECTOR
+SCALAR, VECTOR, MATRIX = M.SCALAR, M.VECTOR, M.MATRIX
 
 
 def expressions(model: dict) -> list[dict]:
@@ -50,20 +50,27 @@ def expressions(model: dict) -> list[dict]:
     out: list[dict] = []
 
     def add(k, where, value, kind, on):
-        if isinstance(value, list):              # vector given per component
+        if isinstance(value, list):              # vector given per component, matrix by rows
             for j, c in enumerate(value):
-                add(k, f"{where}[{j}]", c, SCALAR, on)
+                if isinstance(c, list):
+                    for jj, cc in enumerate(c):
+                        add(k, f"{where}[{j}][{jj}]", cc, SCALAR, on)
+                else:
+                    add(k, f"{where}[{j}]", c, SCALAR, on)
         elif isinstance(value, str) and value.strip():
             out.append({"model": k, "where": where, "expr": value, "kind": kind, "on": on})
 
     users: dict[str, int] = {}
+    tensor_materials = {(pc["material"], p) for md in model["models"] for mod in md["modules"]
+                        for p, pieces in mod.get("properties", {}).items() for pc in pieces
+                        if "material" in pc and M.property_kind(mod, p) == MATRIX}
     for k, md in enumerate(model["models"]):
         w = f"models[{k}]"
         geom = M.model_geometry(model, md) or {}
         table = M.selection_table(model, geom) if geom else {}
         for i, f in enumerate(md["fields"]):
             for j, v in enumerate(f.get("values", [])):
-                add(k, f"{w}.fields[{i}].values[{j}].value", v.get("value"), SCALAR, M.DOMAIN)
+                add(k, f"{w}.fields[{i}].values[{j}].value", v.get("value"), M.field_kind(f), M.DOMAIN)
         for i, f in enumerate(model["fields"]):
             if f in M.model_fields(model, md):
                 users.setdefault(f"fields[{i}]", k)
@@ -74,7 +81,8 @@ def expressions(model: dict) -> list[dict]:
                 for j, pc in enumerate(pieces):
                     if "material" in pc:
                         users.setdefault(pc["material"], k)
-                    add(k, f"{mw}.properties.{p}[{j}].value", pc.get("value"), SCALAR, M.DOMAIN)
+                    add(k, f"{mw}.properties.{p}[{j}].value", pc.get("value"), M.property_kind(mod, p),
+                        M.DOMAIN)
             for key, kind in spec.get("values", {}).items():
                 add(k, f"{mw}.{key}", mod.get(key), kind, M.DOMAIN)
             for j, src in enumerate(mod.get("sources", [])):
@@ -95,11 +103,12 @@ def expressions(model: dict) -> list[dict]:
             add(k, f"{w}.outputs[{i}].expr", q.get("expr"), SCALAR, on)
     for i, f in enumerate(model["fields"]):
         for j, v in enumerate(f.get("values", [])):
-            add(users.get(f"fields[{i}]", 0), f"fields[{i}].values[{j}].value", v.get("value"), SCALAR,
-                M.DOMAIN)
+            add(users.get(f"fields[{i}]", 0), f"fields[{i}].values[{j}].value", v.get("value"),
+                M.field_kind(f), M.DOMAIN)
     for i, mat in enumerate(model["materials"]):
         for p, v in (mat.get("properties") or {}).items():
-            add(users.get(mat.get("name"), 0), f"materials[{i}].properties.{p}", v, SCALAR, M.DOMAIN)
+            add(users.get(mat.get("name"), 0), f"materials[{i}].properties.{p}", v,
+                MATRIX if (mat.get("name"), p) in tensor_materials else SCALAR, M.DOMAIN)
     return out
 
 
@@ -120,6 +129,16 @@ def _sample(model, md, name) -> float:
             nums = [v["value"] for v in f.get("values", []) if isinstance(v.get("value"), (int, float))]
             return float(nums[0]) if nums else 1.0
     return 1.0
+
+
+def _data(w, name: str, sample: float, kind: str, dim: int) -> None:
+    """A field or a property in the check: data of its kind."""
+    if kind == MATRIX:
+        w(f"md.add_initialized_data({name!r}, {sample!r}*np.eye({dim}).flatten(), [{dim}, {dim}])")
+    elif kind == VECTOR:
+        w(f"md.add_initialized_data({name!r}, {sample!r}*np.ones({dim}))")
+    else:
+        w(f"md.add_initialized_data({name!r}, [{sample!r}])")
 
 
 def check_script(model: dict, items: list[dict]) -> str:
@@ -164,9 +183,10 @@ def check_script(model: dict, items: list[dict]) -> str:
         codegen.parameters(model, md, w, "md")
         w("# fields and properties: their names, with a representative value")
         for f in M.model_fields(model, md):
-            w(f"md.add_initialized_data({f['name']!r}, [{_sample(model, md, f['name'])!r}])")
+            _data(w, f["name"], _sample(model, md, f["name"]), M.field_kind(f), dim)
         for p in M.model_properties(md):
-            w(f"md.add_initialized_data({p!r}, [{_sample(model, md, p)!r}])")
+            kind = MATRIX if any(M.property_kind(mod, p) == MATRIX for mod in md["modules"]) else SCALAR
+            _data(w, p, _sample(model, md, p), kind, dim)
         w(f"{c.m} = m")
         w(f"{c.mf_data} = gf.MeshFem(m, 1)")
         w(f"{c.mf_data}.set_classical_discontinuous_fem(0)")
@@ -231,12 +251,13 @@ for it in ITEMS:
         continue
     size = int(np.size(value))
     DIM = ctx[3]
-    expected = 1 if it["kind"] == "scalar" else DIM
+    expected = 1 if it["kind"] == "scalar" else DIM * DIM if it["kind"] == "matrix" else DIM
     if size == 0:
         errors.append({"where": it["where"],
                        "message": "a value is expected, not an expression with a test function"})
     elif size != expected:
-        what = "a scalar" if expected == 1 else f"a vector of {DIM} components"
+        what = "a scalar" if expected == 1 else f"a {DIM}x{DIM} matrix" if it["kind"] == "matrix" \
+            else f"a vector of {DIM} components"
         got = "a scalar" if size == 1 else f"{size} components"
         errors.append({"where": it["where"], "message": f"{what} is expected, got {got}"})
 print("GWFL_CHECK " + json.dumps(errors))

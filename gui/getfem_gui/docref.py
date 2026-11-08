@@ -295,6 +295,9 @@ def modules() -> str:
         for opt, values in spec.get("options", {}).items():
             out += f"Option {_lit(opt)}: " + ", ".join(_lit(v) for v in values) + \
                 (" (2D models only)" if opt == "plane" else "") + ".\n\n"
+        for prop, (opt, value) in spec.get("tensor_properties", {}).items():
+            out += (f"With {_lit(opt)} set to {_lit(value)}, {_lit(prop)} is a matrix of the dimension of "
+                    "the space (a number stands for its multiple of the identity).\n\n")
         for key, kind in spec.get("values", {}).items():
             out += f"Value {_lit(key)}: {_value_kind(kind)}, default " \
                    f"{_lit(spec.get('value_defaults', {}).get(key, 0))}.\n\n"

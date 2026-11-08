@@ -165,6 +165,14 @@ def results(win):
     win.select((E.RESULTS, "mechanics", "von_mises"))
 
 
+def anisotropic(win):
+    """The temperature in a fibre composite plate."""
+    win.compute()
+    _wait(lambda: win.results is not None and not win.jobs.running)
+    win.log.clear()
+    win.select((E.RESULTS, "heat", "T"))
+
+
 SHOTS = {
     "window.png": ("plate_hole_tension.json", window_2d),
     "polygon_handles.png": ("l_bracket.json", polygon_handles),
@@ -173,6 +181,7 @@ SHOTS = {
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
     "results.png": ("plate_hole_tension.json", results),
+    "anisotropic.png": ("anisotropic_plate.json", anisotropic),
 }
 
 

@@ -87,6 +87,9 @@ Module
    * - Temperature
      - ``variable``
      - one of ``T``
+   * - conductivity
+     - ``conductivity``
+     - one of ``isotropic``, ``anisotropic``
 
 Properties: k (thermal conductivity), each given per domain (the last one listed wins).
 
@@ -298,6 +301,9 @@ Field
    * - Geometry
      - ``geometry``
      - one of ``geometry``
+   * - Kind
+     - ``kind``
+     - one of ``scalar``, ``vector``, ``matrix`` (matrix (dim x dim))
    * - Domain 1
      - ``values.0.selection``
      - one of ``all``

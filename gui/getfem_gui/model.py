@@ -200,6 +200,8 @@ SHAPES_SWEPT = ("extrusion", "revolution")        # 3D shapes made of a 2D profi
 
 SCALAR = "scalar"
 VECTOR = "vector"
+MATRIX = "matrix"          # dim x dim: a number stands for itself times the identity
+FIELD_KINDS = (SCALAR, VECTOR, MATRIX)
 
 # Space coordinates, defined in every expression (GWFL macros x = X(1), ...,
 # up to the dimension of the mesh); these names cannot be used for anything else.
@@ -247,7 +249,9 @@ MODULE_SPECS = {
         "variables": {"variable": {"name": "T", "kind": SCALAR, "degree": 2, "label": "temperature"}},
         "properties": {"k": "thermal conductivity"},
         "property_defaults": {"k": 1.0},
-        "options": {},
+        "options": {"conductivity": ("isotropic", "anisotropic")},
+        # properties that are dim x dim matrices for a value of an option
+        "tensor_properties": {"k": ("conductivity", "anisotropic")},
         "values": {},
         "source": SCALAR,
         "conditions": {
@@ -308,6 +312,20 @@ MODULE_SPECS = {
 def box_boundary_names(dim: int) -> list[str]:
     """Names of the faces of a box: xmin, xmax, ymin, ..."""
     return [f"{_AXES[i]}{side}" for i in range(dim) for side in ("min", "max")]
+
+
+def property_kind(mod: dict, prop: str) -> str:
+    """SCALAR, or MATRIX for a property that is a tensor with the options of
+    its module (the conductivity of an anisotropic heat conduction)."""
+    spec = MODULE_SPECS.get(mod.get("type"), {})
+    opt = spec.get("tensor_properties", {}).get(prop)
+    if opt and mod.get(opt[0], spec["options"][opt[0]][0]) == opt[1]:
+        return MATRIX
+    return SCALAR
+
+
+def field_kind(f: dict) -> str:
+    return f.get("kind", SCALAR)
 
 
 def new_module(mtype: str, dim: int = 2, names: dict | None = None) -> dict:
@@ -702,6 +720,21 @@ def _check_value(v, where: str, errors: list[str], kind: str = SCALAR,
         for i, c in enumerate(v):
             _check_value(c, f"{where}[{i}]", errors)
         return
+    if kind == MATRIX and isinstance(v, list):          # by rows
+        if not all(isinstance(r, list) for r in v) or (dim is not None and (
+                len(v) != dim or any(len(r) != dim for r in v))):
+            errors.append(f"{where}: a {dim or 'square'}{'x' + str(dim) if dim else ''} matrix expected "
+                          "(a list of rows)")
+            return
+        for i, r in enumerate(v):
+            for j, c in enumerate(r):
+                _check_value(c, f"{where}[{i}][{j}]", errors)
+        return
+    if kind != MATRIX and isinstance(v, list) and v and all(isinstance(r, list) for r in v):
+        errors.append(f"{where}: a matrix is not expected here"
+                      + (" (an anisotropic property needs the anisotropic option of its module)"
+                         if ".properties." in where else ""))
+        return
     if isinstance(v, bool) or not isinstance(v, (int, float, str)):
         what = "list of components or GWFL expression" if kind == VECTOR \
             else "number or GWFL expression"
@@ -1092,7 +1125,7 @@ def _validate_parameter_list(params, prefix, errors, taken: dict[str, str]) -> N
             taken[name] = "parameter"
 
 
-def _validate_fields(fields, prefix, table_of, errors, taken: dict[str, str]) -> None:
+def _validate_fields(fields, prefix, table_of, errors, taken: dict[str, str], dim=None) -> None:
     """Fields defined per domain selection; table_of(field) gives the
     selection table, or None (an error was reported)."""
     for i, f in enumerate(fields):
@@ -1101,13 +1134,17 @@ def _validate_fields(fields, prefix, table_of, errors, taken: dict[str, str]) ->
             taken[f["name"]] = "field"
         table = table_of(f, where)
         values = f.get("values", [])
+        kind = field_kind(f)
+        if kind not in FIELD_KINDS:
+            errors.append(f"{where}.kind: {', '.join(FIELD_KINDS)} expected, got {kind!r}")
+            kind = SCALAR
         if not values:
             errors.append(f"{where}.values: at least one value (on a domain selection) is required")
         for j, v in enumerate(values):
             if table is not None:
                 _check_selection(table, v.get("selection", ALL), DOMAIN, f"{where}.values[{j}].selection",
                                  errors)
-            _check_value(v.get("value"), f"{where}.values[{j}].value", errors)
+            _check_value(v.get("value"), f"{where}.values[{j}].value", errors, kind, dim)
 
 
 def _check_selection(table, name, kind, where, errors) -> None:
@@ -1155,7 +1192,7 @@ def validate(model: dict) -> list[str]:
         for prop, v in (mat.get("properties") or {}).items():
             if not _IDENT.match(str(prop)):
                 errors.append(f"{where}.properties: invalid name {prop!r}")
-            _check_value(v, f"{where}.properties.{prop}", errors)
+            _check_value(v, f"{where}.properties.{prop}", errors, MATRIX if isinstance(v, list) else SCALAR)
 
     # --- Geometries and meshes (names unique in the whole file)
     for key, items in (("geometries", all_geometries(model)), ("meshes", all_meshes(model))):
@@ -1325,7 +1362,7 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
         known_kinds[im.get("name")] = variable_kind(var)
 
     # --- Local fields
-    _validate_fields(md.get("fields", []), f"{w}.fields", lambda f, where: table, errors, taken)
+    _validate_fields(md.get("fields", []), f"{w}.fields", lambda f, where: table, errors, taken, dim)
 
     # --- Modules: their properties and macros join the names of the model
     macro_owner: dict[str, int] = {}
@@ -1517,8 +1554,13 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
                     errors.append(f"{where}[{j}].material: unknown material {pc['material']!r}")
                 elif prop not in (mat.get("properties") or {}):
                     errors.append(f"{where}[{j}].material: {pc['material']!r} has no {prop!r}")
+                elif isinstance(mat["properties"][prop], list) and property_kind(mod, prop) != MATRIX:
+                    errors.append(f"{where}[{j}].material: {prop!r} of {pc['material']!r} is a matrix: "
+                                  "the module needs its anisotropic option")
+                elif isinstance(mat["properties"][prop], list) and dim is not None:
+                    _check_value(mat["properties"][prop], f"{where}[{j}].material", errors, MATRIX, dim)
             else:
-                _check_value(pc.get("value"), f"{where}[{j}].value", errors)
+                _check_value(pc.get("value"), f"{where}[{j}].value", errors, property_kind(mod, prop), dim)
     for prop in props:
         if prop not in spec["properties"]:
             errors.append(f"{w}.properties.{prop}: not a property of {mtype!r}")

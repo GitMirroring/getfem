@@ -272,6 +272,9 @@ class PropertiesPanel(QScrollArea):
             for j in range(dim + 1):
                 item = QTableWidgetItem(E.format_value(r[j]) if j < dim else r[j])
                 item.setFont(_mono())
+                if 0 < j < dim and isinstance(r[0], str):          # the point is a vector parameter
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setToolTip(f"given by {r[0]}: type numbers in the first column to edit it")
                 key = base + (("points", i, j) if j < dim else ("through", i))
                 msgs = E.errors_at(errors, key) or (E.errors_at(errors, base + ("points", i)) if j < dim else [])
                 if msgs:
@@ -291,7 +294,8 @@ class PropertiesPanel(QScrollArea):
             if j < dim:
                 value = E.parse_value(item.text().strip())
                 if value != rows[i][j]:
-                    self._commit(E.Field(base + ("points", i, j), f"point {i + 1}", "value"), value)
+                    self._commit(E.Field(base + ("points", i, j), f"point {i + 1}", "value", size=dim,
+                                         op="point_component"), value)
             elif item.text().strip() != rows[i][dim]:
                 self._commit(E.Field(base + ("through", i), f"arc {i + 1}", "text", op="chain_through"),
                              item.text().strip())
@@ -336,11 +340,16 @@ class PropertiesPanel(QScrollArea):
                 item = QTableWidgetItem(E.format_value(r[j]))
                 item.setFont(_mono())
                 msgs = E.errors_at(errors, f.key + (i, j)) or E.errors_at(errors, f.key + (i,))
+                if j == 1 and isinstance(r[0], str):            # the vertex is a vector parameter
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setText("")
                 if msgs:
                     item.setBackground(Qt.GlobalColor.yellow)
                     item.setToolTip("\n".join(msgs))
                 elif isinstance(r[j], str) and r[j + 2] is not None:
-                    item.setToolTip(f"= {E.format_number(float(r[j + 2]))}")
+                    tip = f"= {E.format_number(float(r[j + 2]))}" if j == 1 or not isinstance(r[0], str) or \
+                        r[3] is None else f"= [{E.format_number(float(r[2]))}, {E.format_number(float(r[3]))}]"
+                    item.setToolTip(tip)
                 table.setItem(i, j, item)
         if E.errors_at(errors, f.key):
             table.setToolTip("\n".join(E.errors_at(errors, f.key)))
@@ -355,7 +364,8 @@ class PropertiesPanel(QScrollArea):
             if value == rows[i][j]:
                 return
             self._last_cell = (f.key, i, j)
-            self._commit(E.Field(f.key + (i, j), f"vertex {i + 1}", "value"), value)
+            self._commit(E.Field(f.key + (i, j), f"vertex {i + 1}", "value", size=2, op="point_component"),
+                         value)
         table.itemChanged.connect(edited)
         last = getattr(self, "_last_cell", None)
         if last and last[0] == f.key and last[1] < len(rows):

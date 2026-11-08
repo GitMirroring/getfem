@@ -68,6 +68,20 @@ def gwfl_vec(value, dim: int) -> str:
     return gwfl(value)
 
 
+def gwfl_mat(value) -> str:
+    """Matrix model value -> GWFL matrix: a list of rows gives [a, b; c, d]
+    (rows, as in GWFL), a number its multiple of the identity."""
+    if isinstance(value, list):
+        return "[" + "; ".join(", ".join(gwfl(c) for c in row) for row in value) + "]"
+    if isinstance(value, (int, float)):
+        return f"({float(value)!r}*Id(meshdim))"
+    return gwfl(value)
+
+
+def gwfl_kind(value, kind: str) -> str:
+    return gwfl_mat(value) if kind == M.MATRIX else gwfl_vec(value, 0) if kind == M.VECTOR else gwfl(value)
+
+
 def ident(name: str) -> str:
     return re.sub(r"\W", "_", name)
 
@@ -170,16 +184,18 @@ def parameters(model: dict, md: dict, w: ScriptWriter, md_py: str) -> None:
               f"  # {P.format_value(v)}{comment.replace('  # ', ', ')}")
 
 
-def _piecewise(c: Ctx, name: str, pieces: list[tuple[str, object, str]], what: str, w: ScriptWriter) -> None:
+def _piecewise(c: Ctx, name: str, pieces: list[tuple[str, object, str]], what: str, w: ScriptWriter,
+               kind: str = M.SCALAR) -> None:
     """`name` defined by (selection, value, comment) pieces; the last one wins.
 
     Numbers give finite element data (discontinuous, per element). With an
     expression, `name` is a macro instead, sum of the expressions times the
     indicators of where each one applies: it may then depend on the
-    coordinates and on the variables (a conductivity depending on T)."""
+    coordinates and on the variables (a conductivity depending on T).
+    Vectors and matrices (kind) are always macros."""
     w("")
     py = f"{c.py}_{ident(name)}"
-    numeric = all(isinstance(v, (int, float)) for _, v, _ in pieces)
+    numeric = kind == M.SCALAR and all(isinstance(v, (int, float)) for _, v, _ in pieces)
     w(f"covered = np.zeros({c.mf_data}.nbdof(), bool)")
     if numeric:
         w(f"{py} = np.zeros({c.mf_data}.nbdof())")
@@ -195,7 +211,8 @@ def _piecewise(c: Ctx, name: str, pieces: list[tuple[str, object, str]], what: s
             w(f"{chi} = np.zeros({c.mf_data}.nbdof())")
             w(f"{chi}[dofs] = 1.0")
             w(f"{c.py}.add_initialized_fem_data({chi!r}, {c.mf_data}, {chi})")
-            parts.insert(0, gwfl(value) if len(pieces) == 1 and selection == M.ALL else f"{chi}*{gwfl(value)}")
+            text = gwfl_kind(value, kind)
+            parts.insert(0, text if len(pieces) == 1 and selection == M.ALL else f"{chi}*{text}")
         w("covered[dofs] = True")
     w("if not covered.all():")
     w(f"    raise RuntimeError(\"{what} '{name}' of model {c.md['name']} is undefined on part of the domain\")")
@@ -208,7 +225,7 @@ def _piecewise(c: Ctx, name: str, pieces: list[tuple[str, object, str]], what: s
 def _fields(c: Ctx, w: ScriptWriter) -> None:
     for f in M.model_fields(c.model, c.md):
         pieces = [(v["selection"], v["value"], v["selection"]) for v in f.get("values", [])]
-        _piecewise(c, f["name"], pieces, "field", w)
+        _piecewise(c, f["name"], pieces, "field", w, M.field_kind(f))
 
 
 def _properties(c: Ctx, w: ScriptWriter) -> None:
@@ -224,7 +241,7 @@ def _properties(c: Ctx, w: ScriptWriter) -> None:
                                    f"{pc['selection']}: {pc['material']}"))
                 else:
                     pieces.append((pc["selection"], pc["value"], pc["selection"]))
-            _piecewise(c, prop, pieces, "property", w)
+            _piecewise(c, prop, pieces, "property", w, M.property_kind(mod, prop))
 
 
 # ---------------------------------------------------------------- modules
@@ -599,7 +616,14 @@ def _post(c: Ctx, w: ScriptWriter) -> None:
             w(f"R['quantities'][{q['name']!r}] = float(gf.asm('generic', {c.mim}, 0, {str(q['expr'])!r}, "
               f"{c.rg(q['selection'])}, {md}))")
     for f in M.model_fields(c.model, c.md):
-        exports += [c.mf_data, f"{md}.interpolation({f['name']!r}, {c.mf_data})", repr(f["name"])]
+        kind = M.field_kind(f)
+        if kind == M.SCALAR:
+            exports += [c.mf_data, f"{md}.interpolation({f['name']!r}, {c.mf_data})", repr(f["name"])]
+        elif kind == M.VECTOR:                    # (matrices are not written to the VTU files)
+            mfv = f"mf_vdata_{ident(c.md['name'])}"
+            w(f"{mfv} = gf.MeshFem({c.m}, {c.m}.dim())")
+            w(f"{mfv}.set_classical_discontinuous_fem(0)")
+            exports += [mfv, f"{md}.interpolation({f['name']!r}, {mfv})", repr(f["name"])]
     if c.md.get("vtu"):
         first = exports[0]
         w(f"{first}.export_to_vtu({c.md['vtu']!r}, " + ", ".join(exports) + ")")

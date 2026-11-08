@@ -41,6 +41,10 @@ Properties:
      - W/(m·K)
      - ``1.0``
 
+Option ``conductivity``: ``isotropic``, ``anisotropic``.
+
+With ``conductivity`` set to ``anisotropic``, ``k`` is a matrix of the dimension of the space (a number stands for its multiple of the identity).
+
 Sources: scalar values per domain selection.
 
 Conditions:

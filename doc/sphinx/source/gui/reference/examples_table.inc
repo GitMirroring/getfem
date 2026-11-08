@@ -9,6 +9,11 @@
      - Geometries
      - Meshers
      - Modules
+   * - :ref:`anisotropic_plate.json <gui-example-anisotropic_plate>`
+     - Fibre composite plate: anisotropic conduction
+     - box
+     - structured
+     - heat_conduction
    * - :ref:`block_with_hole_3d.json <gui-example-block_with_hole_3d>`
      - Block with a hole, heated inside (3D)
      - csg 3D

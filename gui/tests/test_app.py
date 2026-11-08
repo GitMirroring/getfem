@@ -366,6 +366,23 @@ def test_vector_parameters_in_the_window():
     close(win)
 
 
+def test_vector_parameter_for_a_vertex_in_the_window():
+    win = window("l_bracket.json")
+    win.model["parameters"].append({"name": "V", "value": [0.0, 0.0]})
+    poly = ("geometries", 0, "source", "shape", "of", 0)
+    win.select(poly)
+    table = win.props.editor(poly + ("points",))
+    table.item(0, 0).setText("V")
+    assert E.get_at(win.model, poly + ("points", 0)) == "V" and win.errors == []
+    table = win.props.editor(poly + ("points",))
+    assert table.item(0, 0).text() == "V" and table.item(0, 1).text() == ""
+    from PySide6.QtCore import Qt
+    assert not table.item(0, 1).flags() & Qt.ItemFlag.ItemIsEditable
+    table.item(0, 0).setText("0.01")
+    assert E.get_at(win.model, poly + ("points", 0)) == [0.01, 0.0]
+    close(win)
+
+
 def test_change_of_type_rebuilds_the_form():
     win = window()
     path = ("models", 0, "modules", 0, "conditions", 0)

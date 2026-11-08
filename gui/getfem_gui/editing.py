@@ -192,6 +192,8 @@ def format_number(x) -> str:
 def format_value(v) -> str:
     if isinstance(v, (int, float)):
         return format_number(v)
+    if isinstance(v, list) and v and all(isinstance(r, list) for r in v):     # a matrix, by rows
+        return "[" + "; ".join(", ".join(format_value(c) for c in r) for r in v) + "]"
     if isinstance(v, list):
         return "[" + ", ".join(format_value(c) for c in v) + "]"
     return "" if v is None else str(v)
@@ -211,8 +213,8 @@ def parse_value(text: str):
 
 
 def parse_parameter(text: str):
-    """The value of a parameter: a number, a list (a vector, or a matrix by
-    rows) when the text is one of numbers, otherwise an expression (text)."""
+    """The value of a parameter: a number, a list when the text is a vector
+    of numbers, otherwise an expression (text, e.g. a matrix [1, 0; 0, 2])."""
     text = text.strip()
     v = parse_value(text)
     if isinstance(v, str) and text.startswith("[") and ";" not in text:
@@ -222,8 +224,7 @@ def parse_parameter(text: str):
         except (ValueError, SyntaxError):
             return v
         ok = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)     # noqa: E731
-        if isinstance(lit, list) and lit and (all(ok(x) for x in lit) or all(
-                isinstance(r, list) and r and all(ok(x) for x in r) for r in lit)):
+        if isinstance(lit, list) and lit and all(ok(x) for x in lit):
             return lit
     return v
 
@@ -676,12 +677,22 @@ def _field_fields(model, path) -> list[Field]:
     if path[:1] == ("fields",):
         out.append(Field(path + ("geometry",), "Geometry", "choice",
                          _choices(g.get("name") for g in model.get("geometries", []))))
-    domains = _choices(selections_of_kind(model, M.DOMAIN, item_geometry(model, path)))
+    geom = item_geometry(model, path)
+    domains = _choices(selections_of_kind(model, M.DOMAIN, geom))
+    out.append(Field(path + ("kind",), "Kind", "choice",
+                     ((M.SCALAR, "scalar"), (M.VECTOR, "vector"), (M.MATRIX, "matrix (dim x dim)")),
+                     op="field_kind"))
+    kind = M.field_kind(get_at(model, path, {}))
+    dim = (M.geometry_dim(model, geom) if geom else None) or 2
     for j, _ in enumerate(get_at(model, path + ("values",), [])):
         out += [Field(path + ("values", j, "selection"), f"Domain {j + 1}", "choice", domains),
-                Field(path + ("values", j, "value"), f"Value {j + 1}", "value",
-                      remove=path + ("values", j))]
+                Field(path + ("values", j, "value"), f"Value {j + 1}", "vector" if kind == M.VECTOR else "value",
+                      size=dim if kind == M.VECTOR else None, remove=path + ("values", j),
+                      help=MATRIX_HELP if kind == M.MATRIX else "")]
     return out
+
+
+MATRIX_HELP = "a matrix [a, b; c, d] (by rows, as in GWFL), a matrix parameter, or a number (times the identity)"
 
 
 def _value_field(key, label, kind, dim) -> Field:
@@ -778,7 +789,9 @@ def _model_fields(model, path) -> list[Field]:
                          (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
                          op="piece_source")]
             if "material" not in pc:
-                out.append(Field(path + ("value",), f"{p} ({spec['properties'].get(p, p)})", "value"))
+                tensor = M.property_kind(get_at(model, mpath, {}), p) == M.MATRIX
+                out.append(Field(path + ("value",), f"{p} ({spec['properties'].get(p, p)})", "value",
+                                 help=MATRIX_HELP if tensor else ""))
             return out
         if rest[2] == "sources":
             if n == 3:
@@ -1164,8 +1177,9 @@ def chain_rows(model: dict, gi: int) -> tuple[int, list[tuple]]:
     rows = []
     for i, p in enumerate(src.get("points", [])):
         t = through[i] if i < len(through) else None
-        rows.append(tuple((list(p) + [0.0] * dim)[:dim])
-                    + (", ".join(format_value(x) for x in t) if t is not None else "",))
+        coords = (p,) + ("",) * (dim - 1) if isinstance(p, str) else tuple((list(p) + [0.0] * dim)[:dim])
+        rows.append(coords + (", ".join(format_value(x) for x in t) if isinstance(t, list)
+                              else t if isinstance(t, str) else "",))
     return dim, rows
 
 
@@ -1180,7 +1194,10 @@ def vertex_rows(model: dict, path: Path) -> list[tuple]:
     out = []
     for i, p in enumerate(pts):
         v = vals[i] if i < len(vals) and isinstance(vals[i], list) else [None, None]
-        out.append((p[0] if len(p) > 0 else 0.0, p[1] if len(p) > 1 else 0.0, v[0], v[1]))
+        if isinstance(p, str):             # a vector parameter: the whole vertex
+            out.append((p, "", v[0], v[1]))
+        else:
+            out.append((p[0] if len(p) > 0 else 0.0, p[1] if len(p) > 1 else 0.0, v[0], v[1]))
     return out
 
 
@@ -1389,8 +1406,38 @@ def apply(model: dict, f: Field, value) -> Path | None:
     if f.op is None:
         set_at(model, key, value)
         return None
+    if f.op == "point_component":
+        # a component j of the point key[:-1] (a vertex, a point of a curve):
+        # a vector parameter typed in the first one gives the whole point
+        pkey, j, n = key[:-1], key[-1], f.size
+        point = get_at(model, pkey)
+        if isinstance(point, str):
+            vals, _ = M.parameter_values(model, owner(model, pkey))
+            try:
+                comps = P.vector(point, vals, n)
+            except P.ParameterError:
+                comps = [0.0] * n
+        else:
+            comps = (list(point) + [0.0] * n)[:n]
+        comps[j] = value
+        set_at(model, pkey, vector_entry(model, pkey, comps, n))
+        return None
     if f.op == "numbers":
         set_at(model, key, vector_entry(model, key, value, f.size, f.kind == "ints"))
+        return None
+    if f.op == "field_kind":
+        f_ = get_at(model, key[:-1])
+        if value == M.SCALAR:
+            f_.pop("kind", None)
+        else:
+            f_["kind"] = value
+        dim = (M.geometry_dim(model, item_geometry(model, key[:-1])) if item_geometry(model, key[:-1])
+               else None) or 2
+        for v in f_.get("values", []):        # a number: zero vector, or the number times the identity
+            if value == M.VECTOR and not isinstance(v.get("value"), (list, str)):
+                v["value"] = [0.0] * dim
+            elif value == M.SCALAR and isinstance(v.get("value"), list):
+                v["value"] = 0.0
         return None
     if f.op == "parameter_value":
         set_at(model, key, parse_parameter(value) if isinstance(value, str) else value)
@@ -1477,9 +1524,12 @@ def apply(model: dict, f: Field, value) -> Path | None:
         if text:
             parts = [parse_value(x.strip()) for x in text.split(",")]
             from . import manifold
-            if len(parts) != manifold.chain_dim(src):
+            if len(parts) == 1 and isinstance(parts[0], str):       # a vector parameter
+                through[i] = parts[0]
+            elif len(parts) != manifold.chain_dim(src):
                 raise ValueError(f"{manifold.chain_dim(src)} coordinates expected")
-            through[i] = parts
+            else:
+                through[i] = parts
         else:
             through[i] = None
         n = len(src.get("points", [])) if src.get("closed") else len(src.get("points", [])) - 1
@@ -1865,8 +1915,12 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         fields_.append(f)
         return (("models", path[1]) if md is not None else ()) + ("fields", len(fields_) - 1)
     if action == "add_field_value":
-        fpath = path if path[-2] == "fields" else path
-        get_at(model, fpath).setdefault("values", []).append({"selection": M.ALL, "value": 0.0})
+        f_ = get_at(model, path)
+        value = 0.0
+        if M.field_kind(f_) == M.VECTOR:
+            geom = item_geometry(model, path)
+            value = [0.0] * ((M.geometry_dim(model, geom) if geom else None) or 2)
+        f_.setdefault("values", []).append({"selection": M.ALL, "value": value})
         return path
     if action.startswith("add_from_library:"):
         from . import library

@@ -27,9 +27,12 @@ A parameter is a number, a vector or a matrix, given by a number or an
 expression of the parameters listed before it:
 
     {"name": "g", "value": [0, 0, -9.81]}             a vector
-    {"name": "K", "value": [[1, 0], [0, "k2"]]}       a matrix, by rows
     {"name": "C", "value": "[L/2, H/2]"}              an expression
-    {"name": "K2", "value": "[1, 0; 0, 2]"}           a matrix (GWFL syntax)
+    {"name": "K", "value": "[1, 0; 0, k2]"}           a matrix (GWFL syntax, by rows)
+    {"name": "K2", "value": [[1, 0], [0, "k2"]]}      a matrix in JSON: a list of rows
+
+In a text, a matrix is written [a, b; c, d] only: GWFL reads [[a, b], [c, d]]
+as a list of columns, so that this form is refused.
 
 They are used in two ways:
 
@@ -183,6 +186,14 @@ def evaluate(expr, values: dict):
         return _check_finite(_array([evaluate(x, values) for x in expr]), expr)
     if not isinstance(expr, str) or not expr.strip():
         raise ParameterError("number or expression expected")
+    try:
+        tree = ast.parse(expr.strip(), mode="eval")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.List) and any(isinstance(e, ast.List) for e in node.elts):
+                # in GWFL, [[a, b], [c, d]] lists the columns: ambiguous, so refused
+                raise ParameterError(f"{expr!r}: write a matrix [a, b; c, d] (rows separated by ';')")
+    except SyntaxError:
+        pass
     try:
         tree = ast.parse(_semicolons(expr.strip()), mode="eval")
     except SyntaxError as exc:
