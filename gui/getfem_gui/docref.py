@@ -48,8 +48,8 @@ KINDS = {
     "ident": "name",
     "value": "number or GWFL expression",
     "vector": "vector: one value per component, or a GWFL vector expression",
-    "numbers": "numbers or expressions of parameters, one per coordinate",
-    "ints": "integers, one per coordinate",
+    "numbers": "numbers or expressions of parameters, one per coordinate, or a vector parameter",
+    "ints": "integers, one per coordinate, or a vector parameter",
     "int": "integer",
     "number": "number or expression of parameters",
     "names": "list of names",
@@ -107,7 +107,8 @@ def _describe(f: E.Field) -> str:
         text = "one of " + what if what else "a name"
     else:
         text = KINDS.get(f.kind, f.kind)
-    return text + (". " + _esc(f.help) if f.help else "")
+    hlp = "\n".join(x for x in f.help.split("\n") if x != E.VECTOR_TIP)
+    return text + (". " + _esc(hlp) if hlp else "")
 
 
 def _fields_doc(model: dict, path: tuple, base: tuple | None = None, skip=()) -> str:

@@ -210,6 +210,54 @@ def parse_value(text: str):
         return text
 
 
+def parse_parameter(text: str):
+    """The value of a parameter: a number, a list (a vector, or a matrix by
+    rows) when the text is one of numbers, otherwise an expression (text)."""
+    text = text.strip()
+    v = parse_value(text)
+    if isinstance(v, str) and text.startswith("[") and ";" not in text:
+        import ast as _ast
+        try:
+            lit = _ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return v
+        ok = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)     # noqa: E731
+        if isinstance(lit, list) and lit and (all(ok(x) for x in lit) or all(
+                isinstance(r, list) and r and all(ok(x) for x in r) for r in lit)):
+            return lit
+    return v
+
+
+def vector_entry(model: dict, key: Path, value, size: int | None, integer: bool = False):
+    """The value of a vector field (a point, a direction, sizes): a list of
+    numbers or expressions, or a vector expression as a whole ("C"): typed
+    in the first component when its value is a vector of the right size, or
+    typed as a line "1, 2" / "[1, 2]"."""
+    md = owner(model, key)
+    vals, _ = M.parameter_values(model, md)
+
+    def whole(text):
+        try:
+            v = P.evaluate(text, vals)
+        except P.ParameterError:
+            return False
+        return len(P.shape_of(v)) == 1 and (size is None or P.shape_of(v)[0] == size)
+    if isinstance(value, list):
+        if value and isinstance(value[0], str) and whole(value[0]):
+            return value[0].strip()
+        return [parse_number(x, integer) if isinstance(x, str) else x for x in value]
+    if isinstance(value, str):
+        text = value.strip()
+        if whole(text) and not (text.startswith("[") and text.endswith("]")):
+            return text
+        inner = text[1:-1] if text.startswith("[") and text.endswith("]") else text
+        parts = split_vector(f"[{inner}]", size) if size else None
+        if parts is not None:
+            return [parse_number(str(x), integer) if isinstance(x, str) else x for x in parts]
+        return text
+    return value
+
+
 def parse_number(text: str, integer: bool = False):
     """A number, or an expression of the parameters (kept as text, evaluated
     when meshing; validation reports the errors)."""
@@ -465,7 +513,13 @@ def errors_at(errors: list[str], key: Path) -> list[str]:
 
 # ------------------------------------------------------------------ fields
 
+VECTOR_TIP = "a vector parameter (or expression) in the first box gives all the components"
+
+
 def _vec_field(key, label, kind, dim, help=""):
+    if kind in ("numbers", "ints"):
+        help = f"{help}\n{VECTOR_TIP}" if help else VECTOR_TIP
+        return Field(key, label, kind, size=dim, help=help, op="numbers")
     return Field(key, label, kind, size=dim, help=help)
 
 
@@ -574,11 +628,13 @@ def _param_fields(model, path) -> list[Field]:
     vals, _ = M.parameter_values(model, md)
     name = get_at(model, path + ("name",))
     out = [Field(path + ("name",), "Name", "ident", op="rename_parameter"),
-           Field(path + ("value",), "Value", "value",
-                 help="number or expression: + - * /, pi, " + ", ".join(sorted(P.FUNCTIONS))),
+           Field(path + ("value",), "Value", "value", op="parameter_value",
+                 help="number, vector [1, 0, 0], matrix [1, 0; 0, 2] (by rows), or expression: "
+                      "+ - * /, pi, components C(1), K(1, 2) (from 1), dot product u.v, "
+                      + ", ".join(sorted(set(P.FUNCTIONS) | set(P.TENSOR_FUNCTIONS)))),
            Field(path + ("description",), "Description", "text")]
     if isinstance(get_at(model, path + ("value",)), str) and name in vals:
-        out.append(Field(path, "", "info", help=f"= {format_number(vals[name])}"))
+        out.append(Field(path, "", "info", help=f"= {P.format_value(vals[name])}"))
     return out
 
 
@@ -609,7 +665,7 @@ def parameter_rows(model: dict, path: Path) -> list[dict]:
         rows.append({"name": name, "value": p.get("value"), "number": vals.get(name),
                      "description": p.get("description", ""),
                      "fields": (Field(base + ("name",), "Name", "ident", op="rename_parameter"),
-                                Field(base + ("value",), "Value", "value"),
+                                Field(base + ("value",), "Value", "value", op="parameter_value"),
                                 Field(base + ("description",), "Description", "text"))})
     return rows
 
@@ -1332,6 +1388,12 @@ def apply(model: dict, f: Field, value) -> Path | None:
     key = f.key
     if f.op is None:
         set_at(model, key, value)
+        return None
+    if f.op == "numbers":
+        set_at(model, key, vector_entry(model, key, value, f.size, f.kind == "ints"))
+        return None
+    if f.op == "parameter_value":
+        set_at(model, key, parse_parameter(value) if isinstance(value, str) else value)
         return None
     if f.op == "rename_geometry":
         old = get_at(model, key)
@@ -2400,8 +2462,10 @@ def _box_to_csg(model: dict, gi: int) -> list[str]:
         if mesh.get("geometry") == geom.get("name") and mesh.get("mesher") == "structured":
             vals, _ = P.values(model)
             try:
-                sizes = [P.evaluate(x, vals) for x in s]
-                h = min(si / max(int(P.evaluate(d, vals)), 1) for si, d in zip(sizes, mesh["divisions"]))
+                sizes = P.vector(s, vals) if isinstance(s, str) else [P.scalar(x, vals) for x in s]
+                divs = mesh["divisions"]
+                divs = P.vector(divs, vals) if isinstance(divs, str) else [P.scalar(d, vals) for d in divs]
+                h = min(si / max(int(d), 1) for si, d in zip(sizes, divs))
             except (P.ParameterError, KeyError, TypeError):
                 h = 0.1
             new = default_mesher("csg")
@@ -2485,6 +2549,17 @@ def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
 def _set_number(model: dict, key: Path, value: float, notes: list[str]) -> None:
     """Set a numerical value: a number is replaced; a bare parameter name sets
     that parameter (when it is a number itself); an expression is locked."""
+    parent = get_at(model, key[:-1])
+    if isinstance(parent, str) and isinstance(key[-1], int):        # a component of a vector parameter
+        name = parent.strip()
+        for p in model.get("parameters", []):
+            v = p.get("value")
+            if p.get("name") == name and isinstance(v, list) and key[-1] < len(v) \
+                    and isinstance(v[key[-1]], (int, float)) and not isinstance(v[key[-1]], bool):
+                v[key[-1]] = float(value)
+                notes.append(f"parameter {name}({key[-1] + 1}) = {format_number(float(value))}")
+                return
+        raise LockedValue(f"{parent!r} is an expression of parameters: change it in the properties")
     current = get_at(model, key)
     if current is None or isinstance(current, (int, float)) and not isinstance(current, bool):
         set_at(model, key, float(value))

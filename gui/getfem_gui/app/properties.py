@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QDoubleSpinBox, QFil
                                QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 
-from .. import editing as E, model as M
+from .. import editing as E, model as M, parameters as P
 
 ERROR_STYLE = "QLineEdit, QComboBox { background: #fde8e4; }"
 AXES = "xyz"
@@ -196,7 +196,7 @@ class PropertiesPanel(QScrollArea):
         table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         for i, r in enumerate(rows):
             texts = (r["name"] or "", E.format_value(r["value"]),
-                     "" if r["number"] is None else E.format_number(float(r["number"])), r["description"] or "")
+                     "" if r["number"] is None else P.format_value(r["number"]), r["description"] or "")
             for j, t in enumerate(texts):
                 item = QTableWidgetItem(t)
                 if j == 1:
@@ -221,7 +221,7 @@ class PropertiesPanel(QScrollArea):
                 return
             fld = rows[i]["fields"][0 if j == 0 else 1 if j == 1 else 2]
             text = item.text().strip()
-            value = E.parse_value(text) if j == 1 else text
+            value = E.parse_parameter(text) if j == 1 else text
             if value == (rows[i]["name"], rows[i]["value"], None, rows[i]["description"])[j]:
                 return
             self._last_cell = (f.key, i, j)
@@ -498,6 +498,8 @@ class PropertiesPanel(QScrollArea):
             return self._line(E.format_value(value), f, E.parse_number)
         if k == "int":
             return self._line(E.format_value(value), f, lambda s: E.parse_number(s, True))
+        if k in ("numbers", "ints") and isinstance(value, str):      # a vector parameter: C
+            return self._line(value, f, lambda s: s.strip(), mono=True)
         if k in ("numbers", "ints"):
             vals = list(value) if isinstance(value, list) else []
             vals = (vals + [0] * (f.size or len(vals)))[:f.size or len(vals)]

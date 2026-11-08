@@ -158,7 +158,16 @@ def parameters(model: dict, md: dict, w: ScriptWriter, md_py: str) -> None:
         notes = ([f"= {expr}"] if isinstance(expr, str) else []) + \
             ([p["description"]] if p.get("description") else [])
         comment = f"  # {', '.join(notes)}" if notes else ""
-        w(f"{md_py}.add_initialized_data({name!r}, [{values[name]!r}]){comment}")
+        v = values[name]
+        sh = P.shape_of(v)
+        if not sh:
+            w(f"{md_py}.add_initialized_data({name!r}, [{float(v)!r}]){comment}")
+        elif len(sh) == 1:
+            w(f"{md_py}.add_initialized_data({name!r}, {[float(x) for x in v]!r}){comment}")
+        else:                       # a matrix: its components by columns, and its sizes
+            cols = [float(x) for x in v.flatten(order="F")]
+            w(f"{md_py}.add_initialized_data({name!r}, {cols!r}, {list(sh)!r})"
+              f"  # {P.format_value(v)}{comment.replace('  # ', ', ')}")
 
 
 def _piecewise(c: Ctx, name: str, pieces: list[tuple[str, object, str]], what: str, w: ScriptWriter) -> None:

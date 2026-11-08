@@ -76,7 +76,7 @@ structured
      - Value
    * - Divisions
      - ``divisions``
-     - integers, one per coordinate
+     - integers, one per coordinate, or a vector parameter
    * - Elements
      - ``element``
      - one of ``simplex`` (triangles / tetrahedra), ``quad`` (quadrilaterals / hexahedra)

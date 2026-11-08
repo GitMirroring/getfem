@@ -254,7 +254,7 @@ Parameter
      - name
    * - Value
      - ``value``
-     - number or GWFL expression. number or expression: + - \* /, pi, abs, acos, asin, atan, atan2, cos, cosh, exp, log, log10, max, min, pow, sin, sinh, sqr, sqrt, tan, tanh
+     - number or GWFL expression. number, vector [1, 0, 0], matrix [1, 0; 0, 2] (by rows), or expression: + - \* /, pi, components C(1), K(1, 2) (from 1), dot product u.v, Det, Id, Inv, Norm, Norm\_sqr, Trace, Transpose, abs, acos, asin, atan, atan2, cos, cosh, exp, log, log10, max, min, pow, sin, sinh, sqr, sqrt, tan, tanh
    * - Description
      - ``description``
      - text

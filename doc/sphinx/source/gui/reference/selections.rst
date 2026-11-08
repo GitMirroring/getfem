@@ -66,10 +66,10 @@ plane
      - one of ``plane``, ``normal``, ``in_box``, ``in_ball``, ``physical``, ``union``, ``edges``
    * - Point
      - ``point``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Normal
      - ``normal``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 .. _gui-ref-criterion-normal:
 
@@ -94,7 +94,7 @@ normal
      - one of ``plane``, ``normal``, ``in_box``, ``in_ball``, ``physical``, ``union``, ``edges``
    * - Direction
      - ``direction``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Tolerance (degrees)
      - ``angle``
      - number or expression of parameters
@@ -122,10 +122,10 @@ in_box
      - one of ``plane``, ``normal``, ``in_box``, ``in_ball``, ``physical``, ``union``, ``edges``
    * - Lower corner
      - ``min``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Upper corner
      - ``max``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 .. _gui-ref-criterion-in_ball:
 
@@ -150,7 +150,7 @@ in_ball
      - one of ``plane``, ``normal``, ``in_box``, ``in_ball``, ``physical``, ``union``, ``edges``
    * - Center
      - ``center``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Radius
      - ``radius``
      - number or expression of parameters

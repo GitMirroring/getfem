@@ -22,7 +22,7 @@ replaces the format v2 of `model.py`, without compatibility.
 
 | Key | Content | GetFEM |
 | --- | --- | --- |
-| `parameters` | named constants, evaluated in order | Python values; fixed data in the models that use them |
+| `parameters` | named constants (numbers, vectors, matrices), evaluated in order | Python values; fixed data in the models that use them |
 | `materials` | named sets of property values (`copper`: k, E, nu, rho...) | values used by the modules |
 | `geometries` | sources (box, csg, cad, file) and named selections | `MesherObject`, Gmsh, or an imported mesh |
 | `meshes` | meshes of a geometry; selections become regions | `gf.Mesh` + `set_region` |

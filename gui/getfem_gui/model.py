@@ -684,7 +684,7 @@ def _numbers(model: dict, values: list) -> list:
     out = []
     for v in values:
         try:
-            out.append(P.evaluate(v, vals))
+            out.append(P.scalar(v, vals))
         except P.ParameterError:
             out.append(0.0)
     return out
@@ -855,7 +855,7 @@ def _validate_geometry(model, geom, where, errors):
             try:
                 vals, _ = P.values(model)
                 manifold.height_code(hgt, vals)
-                P.evaluate(hgt, dict(vals, x=0.1, y=0.2))
+                P.scalar(hgt, dict(vals, x=0.1, y=0.2))
             except (ValueError, SyntaxError) as exc:
                 errors.append(f"{where}.source.height: {exc}")
     elif t in ("cad", "mesh_file"):

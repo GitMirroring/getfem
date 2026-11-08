@@ -59,10 +59,10 @@ Meshers: ``structured``, ``getfem``, ``gmsh``, ``netgen``.
      - one of ``1`` (1D), ``2`` (2D), ``3`` (3D)
    * - Origin
      - ``origin``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Size
      - ``size``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 Built-in selections: ``all``, ``boundary``, ``xmin``, ``xmax``, ``ymin``, ``ymax``.
 
@@ -185,13 +185,13 @@ Meshers: ``getfem``, ``gmsh``, ``netgen``.
      - name
    * - Origin
      - ``origin``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Axis x
      - ``axes.0``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Axis y
      - ``axes.1``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Height
      - ``height``
      - number or GWFL expression. Height along the normal: a number or an expression of the local coordinates x, y and the parameters ("0.2\*sqr(x)").
@@ -222,7 +222,7 @@ Meshers: ``getfem``.
      - one of ``extrusion`` (extrusion along z (curve in the (x, y) plane)), ``revolution`` (revolution about z (curve in the (r, z) plane))
    * - From angle to angle (degrees)
      - ``angle``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Points
      - ``points``
      - table of the points: coordinates, and the point an arc goes through. The curve goes through the points in order: a segment to the next one, or an arc of circle through the point given in the last column ("x, y" or "x, y, z"; empty: a segment).

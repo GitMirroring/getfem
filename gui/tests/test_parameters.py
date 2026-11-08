@@ -43,7 +43,8 @@ def test_evaluation():
     assert P.evaluate("2*L + sqr(a) - pow(2, 3)", {"L": 1.5, "a": 3.0}) == 4.0
     assert abs(P.evaluate("sin(pi/2) + max(1, 2) + abs(-1)", {}) - 4.0) < 1e-15
     for bad, msg in [("L**2", "pow(a, b)"), ("2*(3", "syntax error"), ("b", "unknown parameter 'b'"),
-                     ("open('f')", "unknown function"), ("x.y", "not allowed"), ("1/0", "division"),
+                     ("open('f')", "unknown function"), ("x.y", "unknown parameter 'x'"), ("L.L", "two vectors"),
+                     ("lambda: 1", "not allowed"), ("1/0", "division"),
                      ("log(-1)", "cannot evaluate"), ("", "expected")]:
         try:
             P.evaluate(bad, {"L": 1.0})
@@ -191,6 +192,121 @@ def test_editing_nodes_and_actions():
     assert [x["name"] for x in m["parameters"]] == ["p2"]
     rows = E.parameter_rows(m, p)
     assert rows[0]["number"] == 1.0 and rows[0]["fields"][0].op == "rename_parameter"
+
+
+# ------------------------------------------------------------------ vectors and matrices
+
+def test_vector_and_matrix_evaluation():
+    vals, errors = P.values({"parameters": [
+        {"name": "L", "value": 2}, {"name": "g", "value": [0, 0, -9.81]},
+        {"name": "K", "value": [[1, 0], [0, "L"]]}, {"name": "K2", "value": "[1, 2; 3, L]"},
+        {"name": "C", "value": "[L/2, 1]"}, {"name": "u", "value": "K2*C"},
+        {"name": "d", "value": "C.C + Norm(g) + K(2, 2) + Det(K2) + Trace(Transpose(K2)*Inv(K))"}]})
+    assert errors == []
+    assert P.format_value(vals["g"]) == "[0, 0, -9.81]" and P.format_value(vals["K"]) == "[1, 0; 0, 2]"
+    assert P.format_value(vals["K2"]) == "[1, 2; 3, 2]" and P.format_value(vals["u"]) == "[3, 5]"
+    assert abs(vals["d"] - (2 + 9.81 + 2 - 4 + (1 + 1))) < 1e-12
+    assert P.describe(vals["K"]) == "a 2x2 matrix" and P.describe(vals["g"]) == "a vector of 3 components"
+    assert P.scalar("C(2) + K(1, 1)", vals) == 2.0 and P.vector("2*C", vals, 2) == [2.0, 2.0]
+    for bad, msg in [("C*C", "dot product u.v"), ("C[0]", "numbered from 1"), ("C(3)", "out of range"),
+                     ("K(1)", "2 indices expected"), ("L(1)", "is a number"), ("sqrt(C)", "takes numbers"),
+                     ("C + g", "cannot add"), ("1/C", "cannot divide"), ("g.C", "two vectors of the same size"),
+                     ("[1, [2, 3]]", "a vector holds numbers"), ("[[1, 2], [3]]", "rows of the same length"),
+                     ("Inv([1, 1; 1, 1])", "cannot evaluate")]:
+        try:
+            P.evaluate(bad, vals)
+            raise AssertionError(f"{bad!r} accepted")
+        except P.ParameterError as exc:
+            assert msg in str(exc), (bad, str(exc))
+    for expr, msg in [("C", "a number is expected"), ("K", "a 2x2 matrix")]:
+        try:
+            P.scalar(expr, vals)
+            raise AssertionError(expr)
+        except P.ParameterError as exc:
+            assert msg in str(exc)
+
+
+def test_vector_parameters_in_the_geometry():
+    """A point given by a vector parameter, or by its components; the
+    handles change the parameter."""
+    m = load("plate_hole_tension.json")
+    m["parameters"].append({"name": "C", "value": [0.0, 0.0]})
+    hole = m["geometries"][0]["source"]["shape"]["of"][1]
+    hole["center"] = "C"
+    m["geometries"][0]["source"]["shape"]["of"][0]["max"] = ["L", "H + C(2)"]
+    assert M.validate(m) == []
+    r = P.resolved(m)["geometries"][0]["source"]["shape"]
+    assert r["of"][1]["center"] == [0.0, 0.0] and r["of"][0]["max"] == [0.1, 0.05]
+    path = ("geometries", 0, "source", "shape", "of", 1)
+    notes = E.move_handle(m, path, "center", (0.001, 0.0))
+    assert m["parameters"][-1]["value"] == [0.001, 0.0] and hole["center"] == "C"
+    assert notes == ["parameter C(1) = 0.001"]
+    for value, msg in [([1, 2, 3], "2 numbers expected"), ([[1, 0], [0, 1]], "a 2x2 matrix")]:
+        bad = load("plate_hole_tension.json")
+        bad["parameters"].append({"name": "C", "value": value})
+        bad["geometries"][0]["source"]["shape"]["of"][1]["center"] = "C"
+        errors = M.validate(bad)
+        assert any(msg in e for e in errors), (msg, errors)
+    bad = load("plate_hole_tension.json")
+    bad["parameters"].append({"name": "C", "value": [1, 2]})
+    bad["geometries"][0]["source"]["shape"]["of"][1]["radius"] = "C"
+    bad["meshes"][0]["h"] = "C"
+    errors = M.validate(bad)
+    assert "geometries[0].source.shape.of[1].radius: a number is expected, 'C' is a vector of 2 components" \
+        in errors and any(e.startswith("meshes[0].h: a number is expected") for e in errors)
+    # the form: a vector parameter typed in the first box gives the whole vector
+    f = next(x for x in E.fields(m, path) if x.key[-1] == "center")
+    assert f.op == "numbers"
+    E.apply(m, f, ["C(1)", "0"])
+    assert hole["center"] == ["C(1)", 0.0]
+    E.apply(m, f, ["C", 0.0])
+    assert hole["center"] == "C"
+    E.apply(m, f, "0.01, 0.02")
+    assert hole["center"] == [0.01, 0.02]
+    # the height of a surface uses the components
+    from getfem_gui import manifold
+    vals = {"C": P.evaluate([1.0, 2.0], {})}
+    assert "2.0" in manifold.height_code("C(2)*x", vals)
+    try:
+        manifold.height_code("C*x", vals)
+        raise AssertionError("a vector accepted in a height")
+    except ValueError as exc:
+        assert "C(1)" in str(exc)
+
+
+def test_vector_and_matrix_parameters_in_the_physics():
+    """GetFEM data with their sizes: components, products, the solve script."""
+    m = load("plate_hole_tension.json")
+    m["parameters"] += [{"name": "g", "value": "[1, 2]"}, {"name": "K", "value": "[1, 2; 3, 4]"}]
+    m["models"][0]["outputs"] += [{"name": "k12", "expr": "K(1, 2)", "selection": "all"},
+                                  {"name": "kg2", "expr": "(K*g)(2)", "selection": "all"},
+                                  {"name": "gg", "expr": "g.g", "selection": "all"}]
+    assert M.validate(m) == []
+    q = solve(m)["quantities"]
+    area = q["area"]
+    assert abs(q["k12"] / area - 2) < 1e-10 and abs(q["kg2"] / area - 11) < 1e-10
+    assert abs(q["gg"] / area - 5) < 1e-10
+    from getfem_gui import codegen
+    w = codegen.ScriptWriter()
+    codegen.parameters(m, m["models"][0], w, "md")
+    script = w.text()
+    assert "add_initialized_data('K', [1.0, 3.0, 2.0, 4.0], [2, 2])  # [1, 2; 3, 4]" in script
+
+
+def test_editing_vector_and_matrix_parameters():
+    assert E.parse_parameter("[1, 0, 0]") == [1, 0, 0]
+    assert E.parse_parameter("[[1, 0], [0, 2]]") == [[1, 0], [0, 2]]
+    assert E.parse_parameter("[1, 0; 0, 2]") == "[1, 0; 0, 2]"
+    assert E.parse_parameter("[L, 0]") == "[L, 0]" and E.parse_parameter("2.5") == 2.5
+    m = load("plate.json")
+    p = E.do_action(m, ("parameters",), "add_parameter")
+    rows = E.parameter_rows(m, p)
+    E.apply(m, rows[0]["fields"][1], "[1, 0; 0, 2]")
+    E.apply(m, E.do_action(m, p, "add_parameter") and E.parameter_rows(m, p)[1]["fields"][1], "[3, 4]")
+    rows = E.parameter_rows(m, p)
+    assert m["parameters"][1]["value"] == [3, 4]
+    assert P.format_value(rows[0]["number"]) == "[1, 0; 0, 2]" and P.format_value(rows[1]["number"]) == "[3, 4]"
+    assert M.validate(m) == []
 
 
 if __name__ == "__main__":

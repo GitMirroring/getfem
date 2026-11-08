@@ -92,6 +92,29 @@ GWFL: numbers, ``+ - * /``, parentheses, ``pi``, ``sqr``, ``sqrt``, ``pow``,
 ``exp``, ``log``, the trigonometric and hyperbolic functions, ``abs``,
 ``min``, ``max``.
 
+A parameter may also be a **vector** or a **matrix**::
+
+  {"name": "g", "value": [0, 0, -9.81]}
+  {"name": "C", "value": "[L/2, H/2]"}
+  {"name": "K", "value": "[k1, 0; 0, k2]"}       (by rows; or [[k1, 0], [0, k2]])
+
+In the table of the parameters, ``[1, 0, 0]`` gives a vector and
+``[1, 0; 0, 2]`` a matrix, written as in GWFL; the column "=" shows their
+values. Their components are written ``C(1)``, ``K(1, 2)``, numbered from 1
+as in GWFL; the expressions of parameters also know the dot product of two
+vectors ``u.v``, the products ``K*u`` and ``K*M``, the sum and difference
+of values of the same size, and ``Norm``, ``Norm_sqr``, ``Trace``, ``Det``,
+``Inv``, ``Transpose``, ``Id(n)``.
+
+In the geometries and meshes, a component is a number like any other
+(``"radius": "C(1)/4"``), and a vector parameter can give a point or a
+direction as a whole (``"center": "C"``): typed in the first box of the
+field, it replaces the components, and the field becomes one line (typing
+``0.1, 0.2`` in it gives the components back). Dragging the handle of a
+point given by a vector parameter changes the parameter. In the physics,
+vectors and matrices are |gf| data of their sizes: ``g(3)``, ``K*Grad_T``,
+``g.Normal``.
+
 **Fields** have a value per domain selection of a geometry (the last one
 listed wins: a default on ``all``, then exceptions); they may use the
 coordinates, the parameters and the fields defined before them.

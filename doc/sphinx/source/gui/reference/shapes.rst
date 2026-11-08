@@ -25,10 +25,10 @@ rectangle (2D)
      - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Lower corner
      - ``min``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Upper corner
      - ``max``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 Sides: ``xmin``, ``xmax``, ``ymin``, ``ymax``.
 
@@ -49,7 +49,7 @@ ball (2D): disk
      - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Radius
      - ``radius``
      - number or expression of parameters
@@ -73,10 +73,10 @@ ellipse
      - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Semi-axes
      - ``radii``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Angle (degrees)
      - ``angle``
      - number or expression of parameters. Angle of the first semi-axis with the x axis
@@ -121,10 +121,10 @@ rectangle (3D): box
      - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Lower corner
      - ``min``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Upper corner
      - ``max``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 Faces: ``xmin``, ``xmax``, ``ymin``, ``ymax``, ``zmin``, ``zmax``.
 
@@ -145,7 +145,7 @@ ball (3D)
      - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Radius
      - ``radius``
      - number or expression of parameters
@@ -169,10 +169,10 @@ cylinder
      - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Origin
      - ``origin``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Axis
      - ``axis``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
    * - Length
      - ``length``
      - number or expression of parameters
@@ -199,7 +199,7 @@ extrusion
      - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - From z to z
      - ``z``
-     - numbers or expressions of parameters, one per coordinate
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 The profile (2D shape below) is extruded along z.
 

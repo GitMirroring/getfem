@@ -23,18 +23,32 @@
       {"name": "p", "value": "1e8"}
     ]
 
-A parameter is a number or an expression of the parameters listed before
-it. They are used in two ways:
+A parameter is a number, a vector or a matrix, given by a number or an
+expression of the parameters listed before it:
+
+    {"name": "g", "value": [0, 0, -9.81]}             a vector
+    {"name": "K", "value": [[1, 0], [0, "k2"]]}       a matrix, by rows
+    {"name": "C", "value": "[L/2, H/2]"}              an expression
+    {"name": "K2", "value": "[1, 0; 0, 2]"}           a matrix (GWFL syntax)
+
+They are used in two ways:
 
 - in the numerical fields of the geometries and meshes (sizes, positions,
   radii, element sizes, divisions...), which then hold an expression such as
-  "L/2". These are evaluated here, in Python, before meshing: a change of
-  parameter remeshes only if the geometry or the mesh actually changes;
-- in the GWFL expressions of the physics, where they are GetFEM data.
+  "L/2" or "C(1)", or a vector parameter where a point or a direction is
+  expected ("center": "C"). These are evaluated here, in Python, before
+  meshing: a change of parameter remeshes only if the geometry or the mesh
+  actually changes;
+- in the GWFL expressions of the physics, where they are GetFEM data
+  (vectors and matrices with their sizes: "K*Grad_T", "g(3)").
 
 The expression syntax is therefore the part common to Python and GWFL:
-numbers, + - * /, parentheses, pi and the functions of FUNCTIONS. It is
-evaluated without `eval` (through the syntax tree of the expression).
+numbers, + - * /, parentheses, pi, the functions of FUNCTIONS, vectors
+[a, b, c], matrices [a, b; c, d] (rows separated by ";"), the components
+of a vector or a matrix C(i), K(i, j) (numbered from 1, as in GWFL), the
+dot product of vectors u.v, the matrix-vector and matrix-matrix products
+K*u, and the functions of TENSOR_FUNCTIONS. It is evaluated without `eval`
+(through the syntax tree of the expression).
 """
 
 from __future__ import annotations
@@ -44,6 +58,8 @@ import copy
 import math
 import operator
 
+import numpy as np
+
 FUNCTIONS = {
     "sqr": lambda a: a * a, "sqrt": math.sqrt, "pow": math.pow, "exp": math.exp,
     "log": math.log, "log10": math.log10, "sin": math.sin, "cos": math.cos, "tan": math.tan,
@@ -51,9 +67,14 @@ FUNCTIONS = {
     "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh, "abs": abs, "min": min, "max": max,
 }
 CONSTANTS = {"pi": math.pi}
+TENSOR_FUNCTIONS = {
+    "Norm": lambda a: float(np.linalg.norm(a)), "Norm_sqr": lambda a: float(np.sum(a * a)),
+    "Trace": lambda a: float(np.trace(a)), "Det": lambda a: float(np.linalg.det(a)),
+    "Inv": np.linalg.inv, "Transpose": lambda a: a.T, "Id": lambda n: np.eye(int(n)),
+}
 
 # Names that a parameter (or a field) cannot take: GWFL functions and keywords.
-GWFL_NAMES = set(FUNCTIONS) | set(CONSTANTS) | {
+GWFL_NAMES = set(FUNCTIONS) | set(CONSTANTS) | set(TENSOR_FUNCTIONS) | {
     "X", "Normal", "Id", "meshdim", "element_size", "element_K", "element_B", "timestep", "t",
     "Grad", "Hess", "Div", "Test", "Test2", "Def", "Trace", "Deviator", "Sym", "Skew", "Norm",
     "Norm_sqr", "Det", "Inv", "Transpose", "Contract", "Reshape", "Index_move_last", "Swap_indices",
@@ -69,18 +90,117 @@ class ParameterError(ValueError):
     pass
 
 
-def evaluate(expr, values: dict[str, float]) -> float:
-    """Value of a number or of an expression of the parameters `values`."""
+def shape_of(value) -> tuple:
+    """() for a number, (n,) for a vector, (m, n) for a matrix."""
+    return np.shape(value)
+
+
+def describe(value) -> str:
+    """'a number', 'a vector of 3 components', 'a 2x2 matrix'."""
+    sh = shape_of(value)
+    return "a number" if not sh else f"a vector of {sh[0]} components" if len(sh) == 1 \
+        else f"a {sh[0]}x{sh[1]} matrix"
+
+
+def _semicolons(text: str) -> str:
+    """The GWFL matrices [a, b; c, d] written as lists of rows [[a, b], [c, d]]."""
+    if ";" not in text:
+        return text
+    out, i = [], 0
+    while i < len(text):
+        if text[i] != "[":
+            out.append(text[i])
+            i += 1
+            continue
+        depth, j = 0, i
+        while j < len(text):
+            depth += {"[": 1, "]": -1}.get(text[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        inner = _semicolons(text[i + 1:j])
+        rows, depth, cur = [], 0, ""
+        for ch in inner:
+            depth += {"[": 1, "(": 1, "]": -1, ")": -1}.get(ch, 0)
+            if ch == ";" and depth == 0:
+                rows.append(cur)
+                cur = ""
+            else:
+                cur += ch
+        rows.append(cur)
+        out.append("[" + ", ".join(f"[{r.strip()}]" for r in rows) + "]" if len(rows) > 1 else f"[{inner}]")
+        i = j + 1
+    return "".join(out)
+
+
+def _array(items: list):
+    """A vector of numbers, or a matrix from its rows."""
+    if all(not shape_of(x) for x in items):
+        return np.array([float(x) for x in items])
+    if all(len(shape_of(x)) == 1 for x in items) and len({len(x) for x in items}) == 1:
+        return np.array([[float(c) for c in x] for x in items])
+    raise ParameterError("a vector holds numbers, a matrix rows of the same length")
+
+
+def _mul(a, b):
+    sa, sb = shape_of(a), shape_of(b)
+    if not sa or not sb:
+        return a * b
+    if len(sa) == 2 and sa[1] == sb[0]:
+        return a @ b
+    if len(sa) == 1 and len(sb) == 1:
+        raise ParameterError("the product of two vectors: use the dot product u.v")
+    raise ParameterError(f"cannot multiply {describe(a)} by {describe(b)}")
+
+
+def _add(op):
+    def f(a, b):
+        if shape_of(a) != shape_of(b):
+            raise ParameterError(f"cannot add or subtract {describe(a)} and {describe(b)}")
+        return op(a, b)
+    return f
+
+
+def _div(a, b):
+    if shape_of(b):
+        raise ParameterError(f"cannot divide by {describe(b)}")
+    return a / b
+
+
+_TBINOPS = {ast.Add: _add(operator.add), ast.Sub: _add(operator.sub), ast.Mult: _mul, ast.Div: _div}
+
+
+def evaluate(expr, values: dict):
+    """Value of a number, of a list (a vector, or a matrix by rows) or of an
+    expression of the parameters `values`: a float or a numpy array."""
     if isinstance(expr, bool):
         raise ParameterError(f"number or expression expected, got {expr!r}")
     if isinstance(expr, (int, float)):
         return float(expr)
+    if isinstance(expr, list):
+        if not expr:
+            raise ParameterError("empty vector")
+        return _check_finite(_array([evaluate(x, values) for x in expr]), expr)
     if not isinstance(expr, str) or not expr.strip():
         raise ParameterError("number or expression expected")
     try:
-        tree = ast.parse(expr.strip(), mode="eval")
+        tree = ast.parse(_semicolons(expr.strip()), mode="eval")
     except SyntaxError as exc:
         raise ParameterError(f"syntax error in {expr!r} (at character {exc.offset or 0})") from None
+
+    def index(value, args, name):
+        sh = shape_of(value)
+        if not sh:
+            raise ParameterError(f"{name} is a number: it has no components")
+        if len(args) != len(sh):
+            raise ParameterError(f"{name} is {describe(value)}: {len(sh)} indices expected")
+        idx = []
+        for a, n in zip(args, sh):
+            i = ev(a)
+            if shape_of(i) or abs(i - round(i)) > 1e-12 or not 1 <= round(i) <= n:
+                raise ParameterError(f"index of {name} out of range (1 to {n}, numbered from 1)")
+            idx.append(int(round(i)) - 1)
+        return float(value[tuple(idx)])
 
     def ev(node):
         if isinstance(node, ast.Expression):
@@ -88,13 +208,26 @@ def evaluate(expr, values: dict[str, float]) -> float:
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) \
                 and not isinstance(node.value, bool):
             return float(node.value)
-        if isinstance(node, ast.BinOp) and type(node.op) in _BINOPS:
-            return _BINOPS[type(node.op)](ev(node.left), ev(node.right))
+        if isinstance(node, ast.List):
+            if not node.elts:
+                raise ParameterError("empty vector")
+            return _array([ev(e) for e in node.elts])
+        if isinstance(node, ast.BinOp) and type(node.op) in _TBINOPS:
+            return _TBINOPS[type(node.op)](ev(node.left), ev(node.right))
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
             raise ParameterError("'**' is not available (GWFL has no power operator): "
                                  "use pow(a, b) or sqr(a)")
         if isinstance(node, ast.UnaryOp) and type(node.op) in _UNOPS:
             return _UNOPS[type(node.op)](ev(node.operand))
+        if isinstance(node, ast.Attribute):          # u.v: the dot product of two vectors
+            a, b = ev(node.value), ev(ast.Name(node.attr, ast.Load()))
+            if len(shape_of(a)) != 1 or shape_of(a) != shape_of(b):
+                raise ParameterError(f"the dot product needs two vectors of the same size, "
+                                     f"got {describe(a)} and {describe(b)}")
+            return float(a @ b)
+        if isinstance(node, ast.Subscript):
+            raise ParameterError(f"{ast.unparse(node)!r}: the components are written C(1), "
+                                 "K(1, 2), numbered from 1")
         if isinstance(node, ast.Name):
             if node.id in values:
                 return values[node.id]
@@ -102,11 +235,20 @@ def evaluate(expr, values: dict[str, float]) -> float:
                 return CONSTANTS[node.id]
             raise ParameterError(f"unknown parameter {node.id!r}")
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
-            f = FUNCTIONS.get(node.func.id)
+            name = node.func.id
+            if name in values:
+                return index(values[name], node.args, name)
+            if name in TENSOR_FUNCTIONS:
+                return TENSOR_FUNCTIONS[name](*[ev(a) for a in node.args])
+            f = FUNCTIONS.get(name)
             if f is None:
-                raise ParameterError(f"unknown function {node.func.id!r} "
-                                     f"(available: {', '.join(sorted(FUNCTIONS))})")
-            return f(*[ev(a) for a in node.args])
+                raise ParameterError(f"unknown function {name!r} "
+                                     f"(available: {', '.join(sorted(set(FUNCTIONS) | set(TENSOR_FUNCTIONS)))})")
+            args = [ev(a) for a in node.args]
+            for a in args:
+                if shape_of(a):
+                    raise ParameterError(f"{name} takes numbers, got {describe(a)}")
+            return f(*args)
         raise ParameterError(f"not allowed in a parameter expression: {ast.unparse(node)!r}")
 
     try:
@@ -115,16 +257,47 @@ def evaluate(expr, values: dict[str, float]) -> float:
         raise
     except ZeroDivisionError:
         raise ParameterError("division by zero") from None
+    except np.linalg.LinAlgError as exc:
+        raise ParameterError(f"cannot evaluate {expr!r}: {exc}") from None
     except (ValueError, OverflowError, TypeError) as exc:
         raise ParameterError(f"cannot evaluate {expr!r}: {exc}") from None
-    if not math.isfinite(value):
+    return _check_finite(value, expr)
+
+
+def _check_finite(value, expr):
+    if not np.all(np.isfinite(value)):
         raise ParameterError(f"{expr!r} is not finite")
+    if isinstance(value, np.ndarray) and value.ndim > 2:
+        raise ParameterError(f"{expr!r}: only numbers, vectors and matrices")
     return value
 
 
-def values(model: dict) -> tuple[dict[str, float], list[str]]:
-    """Values of the parameters, evaluated in order, and the errors."""
-    out: dict[str, float] = {}
+def scalar(expr, values: dict) -> float:
+    """The value of a number or an expression that must be a number."""
+    v = evaluate(expr, values)
+    if shape_of(v):
+        raise ParameterError(f"a number is expected, {_text(expr)} is {describe(v)}")
+    return float(v)
+
+
+def vector(expr, values: dict, size: int | None = None) -> list[float]:
+    """The components of a vector expression (of `size` components)."""
+    v = evaluate(expr, values)
+    sh = shape_of(v)
+    if len(sh) != 1 or (size is not None and sh[0] != size):
+        what = "a vector" if size is None else f"a vector of {size} components"
+        raise ParameterError(f"{what} is expected, {_text(expr)} is {describe(v)}")
+    return [float(x) for x in v]
+
+
+def _text(expr) -> str:
+    return repr(expr) if isinstance(expr, str) else "the value"
+
+
+def values(model: dict) -> tuple[dict, list[str]]:
+    """Values of the parameters (floats, or numpy arrays for the vectors and
+    matrices), evaluated in order, and the errors."""
+    out: dict = {}
     errors: list[str] = []
     for i, p in enumerate(model.get("parameters", [])):
         name = p.get("name")
@@ -138,6 +311,17 @@ def values(model: dict) -> tuple[dict[str, float], list[str]]:
     return out, errors
 
 
+def format_value(v) -> str:
+    """A value as text: 0.5, [1, 0, 0], [1, 0; 0, 2] (GWFL syntax)."""
+    from .editing import format_number
+    sh = shape_of(v)
+    if not sh:
+        return format_number(float(v))
+    if len(sh) == 1:
+        return "[" + ", ".join(format_number(float(x)) for x in v) + "]"
+    return "[" + "; ".join(", ".join(format_number(float(x)) for x in row) for row in v) + "]"
+
+
 # ------------------------------------------------------------------ resolution
 
 # Numerical fields of geometries and meshes that may hold an expression
@@ -148,26 +332,43 @@ MESH_KEYS = ("h", "size")
 INTEGER_KEYS = ("divisions",)
 
 
-def _resolve(obj: dict, keys, where: str, vals, errors, integer=False):
+SCALAR_KEYS = ("radius", "length", "h")
+
+
+def _resolve(obj: dict, keys, where: str, vals, errors, integer=False, scalars=SCALAR_KEYS):
+    """The values of the keys evaluated: each component of a list must be a
+    number; a whole value may be a vector expression (a point given by a
+    vector parameter), which becomes the list of its components."""
     for k in keys:
         if k not in obj:
             continue
         v = obj[k]
+        if isinstance(v, str):
+            try:
+                x = evaluate(v, vals)
+            except ParameterError as exc:
+                errors.append(f"{where}.{k}: {exc}")
+                return
+            if len(shape_of(x)) > 1 or (shape_of(x) and k in scalars):
+                what = "a number" if k in scalars else "a number or a vector"
+                errors.append(f"{where}.{k}: {what} is expected, {v!r} is {describe(x)}")
+                return
+            v = [float(c) for c in x] if shape_of(x) else float(x)
         items = v if isinstance(v, list) else [v]
         res = []
         for j, x in enumerate(items):
             w = f"{where}.{k}[{j}]" if isinstance(v, list) else f"{where}.{k}"
             if isinstance(x, str):
                 try:
-                    x = evaluate(x, vals)
+                    x = scalar(x, vals)
                 except ParameterError as exc:
                     errors.append(f"{w}: {exc}")
                     return
-                if integer:
-                    if abs(x - round(x)) > 1e-9 * max(1.0, abs(x)):
-                        errors.append(f"{w}: integer expected, got {x:g}")
-                        return
-                    x = int(round(x))
+            if integer and isinstance(x, (int, float)):
+                if abs(x - round(x)) > 1e-9 * max(1.0, abs(x)):
+                    errors.append(f"{w}: integer expected, got {x:g}")
+                    return
+                x = int(round(x))
             res.append(x)
         obj[k] = res if isinstance(v, list) else res[0]
 
@@ -178,7 +379,7 @@ def _resolve_shape(shape, where, vals, errors):
     _resolve(shape, SHAPE_KEYS, where, vals, errors)
     if isinstance(shape.get("points"), list):
         for j, v in enumerate(shape["points"]):
-            if isinstance(v, list):
+            if isinstance(v, (list, str)):
                 holder = {"v": v}
                 _resolve(holder, ("v",), f"{where}.points[{j}]", vals, errors)
                 shape["points"][j] = holder["v"]
@@ -199,7 +400,7 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
             _resolve_shape(src.get("shape"), f"{where}.shape", vals, errors)
             _resolve(src, ("origin",), where, vals, errors)
             for j, ax in enumerate(src.get("axes") or []):
-                if isinstance(ax, list):
+                if isinstance(ax, (list, str)):
                     holder = {"v": ax}
                     _resolve(holder, ("v",), f"{where}.axes[{j}]", vals, errors)
                     src["axes"][j] = holder["v"]
@@ -207,7 +408,7 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
             _resolve(src, ("z", "angle"), where, vals, errors)
             for key in ("points", "through"):
                 for j, pt in enumerate(src.get(key) or []):
-                    if isinstance(pt, list):
+                    if isinstance(pt, (list, str)):
                         holder = {"v": pt}
                         _resolve(holder, ("v",), f"{where}.{key}[{j}]", vals, errors)
                         src[key][j] = holder["v"]
@@ -216,7 +417,7 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
                 _resolve(sel["criteria"], CRITERIA_KEYS, f"{prefix}geometries[{i}].selections.{name}.criteria",
                          vals, errors)
     for i, mesh in enumerate(meshes):
-        _resolve(mesh, MESH_KEYS, f"{prefix}meshes[{i}]", vals, errors)
+        _resolve(mesh, MESH_KEYS, f"{prefix}meshes[{i}]", vals, errors, scalars=MESH_KEYS)
         _resolve(mesh, INTEGER_KEYS, f"{prefix}meshes[{i}]", vals, errors, integer=True)
 
 

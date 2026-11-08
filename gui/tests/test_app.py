@@ -340,6 +340,32 @@ def test_parameters_and_fields_in_the_window():
     close(win)
 
 
+def test_vector_parameters_in_the_window():
+    """A matrix typed in the table; a point given by a vector parameter."""
+    win = window("plate_hole_tension.json")
+    n = len(win.model["parameters"])
+    win.select(("parameters",))
+    win._panel_action("add_parameter")
+    table = win.props.editor(("parameters",))
+    table.item(n, 1).setText("[1, 0; 0, 2]")
+    table = win.props.editor(("parameters",))
+    assert win.model["parameters"][n]["value"] == "[1, 0; 0, 2]"
+    assert table.item(n, 2).text() == "[1, 0; 0, 2]"
+    table.item(n, 1).setText("[0, 0]")
+    assert win.model["parameters"][n]["value"] == [0, 0] and win.errors == []
+    name = win.model["parameters"][n]["name"]
+    ball = ("geometries", 0, "source", "shape", "of", 1)
+    win.select(ball)
+    holder = win.props.editor(ball + ("center",))
+    edit(holder.edits[0], name)                                    # the whole vector
+    assert E.get_at(win.model, ball + ("center",)) == name and win.errors == []
+    line = win.props.editor(ball + ("center",))
+    assert isinstance(line, QLineEdit) and line.text() == name
+    edit(line, "0, 0.001")
+    assert E.get_at(win.model, ball + ("center",)) == [0.0, 0.001]
+    close(win)
+
+
 def test_change_of_type_rebuilds_the_form():
     win = window()
     path = ("models", 0, "modules", 0, "conditions", 0)

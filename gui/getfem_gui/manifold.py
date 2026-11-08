@@ -194,10 +194,18 @@ def height_code(height, values: dict) -> str:
             if node.id == "pi":
                 return ast.copy_location(ast.Constant(math.pi), node)
             if node.id in values:
+                if np.shape(values[node.id]):
+                    raise ValueError(f"{node.id} is not a number: use its components, {node.id}(1)...")
                 return ast.copy_location(ast.Constant(float(values[node.id])), node)
             raise ValueError(f"unknown name {node.id!r} in the height")
 
         def visit_Call(self, node):
+            if isinstance(node.func, ast.Name) and node.func.id in values:     # a component: C(1)
+                from . import parameters as P
+                value = P.evaluate(ast.unparse(node), values)
+                if np.shape(value):
+                    raise ValueError(f"{ast.unparse(node)} is not a number")
+                return ast.copy_location(ast.Constant(float(value)), node)
             if not isinstance(node.func, ast.Name) or node.func.id not in NUMPY_FUNCTIONS:
                 raise ValueError("unknown function in the height")
             node.args = [self.visit(a) for a in node.args]
