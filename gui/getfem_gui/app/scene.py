@@ -824,6 +824,40 @@ def show_grid(plotter, lo, hi, step: float) -> None:
                      pickable=False)
 
 
+def show_axes_2d(plotter, lo, hi, major: float | None) -> None:
+    """The x and y axes (through the origin, when in view) and the coordinates
+    of the major lines along the lower and left edges of [lo, hi] (None: remove)."""
+    for name in ("axes", "axes_labels"):
+        plotter.remove_actor(name)
+    if major is None:
+        return
+    lines = []
+    if lo[1] <= 0 <= hi[1]:
+        lines.append([[lo[0], 0.0, 0.0], [hi[0], 0.0, 0.0]])
+    if lo[0] <= 0 <= hi[0]:
+        lines.append([[0.0, lo[1], 0.0], [0.0, hi[1], 0.0]])
+    if lines:
+        pts = np.array(lines, float).reshape(-1, 3)
+        cells = np.hstack([[2, 2 * i, 2 * i + 1] for i in range(len(lines))])
+        plotter.add_mesh(pv.PolyData(pts, lines=cells), color="#5b6b78", line_width=1.5, lighting=False,
+                         name="axes", pickable=False)
+    dx, dy = hi[0] - lo[0], hi[1] - lo[1]
+    xs = np.arange(np.ceil(lo[0] / major), np.floor(hi[0] / major) + 1) * major
+    ys = np.arange(np.ceil(lo[1] / major), np.floor(hi[1] / major) + 1) * major
+    pts, labels = [], []
+    for x in xs:
+        if x > lo[0] + 0.04 * dx:
+            pts.append([x, lo[1] + 0.015 * dy, 0.0])
+            labels.append(f"{round(x, 12) + 0.0:g}")
+    for y in ys:
+        if y > lo[1] + 0.05 * dy:
+            pts.append([lo[0] + 0.01 * dx, y, 0.0])
+            labels.append(f"{round(y, 12) + 0.0:g}")
+    if pts:
+        plotter.add_point_labels(np.array(pts), labels, font_size=10, text_color="#33414f", shape=None,
+                                 show_points=False, always_visible=True, name="axes_labels", pickable=False)
+
+
 def show_handles(plotter, positions, active: int | None = None, minor=None) -> None:
     """Handles of the selected primitive (empty: remove); minor: True for the
     secondary handles (middles of the sides of a polygon), drawn smaller."""

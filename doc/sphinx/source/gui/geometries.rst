@@ -90,6 +90,12 @@ dragging, snapped to a grid whose step follows the zoom:
 * *Polygon*: a vertex per click; clicking the first vertex again,
   double-clicking or *Enter* closes it, *Backspace* removes the last vertex.
 
+While drawing, the view shows the grid, the x and y axes and the
+coordinates of its main lines. The step of the grid follows the zoom
+(*Auto*), or is set: **−** and **+** give the next finer or coarser round
+step (1, 2, 5 × 10\ :sup:`n`), and a step can be typed in the *Grid* field.
+The points (and the handles, below) snap to it.
+
 The shape is added to, subtracted from or intersected with the geometry
 (*Escape* stops drawing). It joins the root boolean of the tree when it is
 the same operation; otherwise, the root is wrapped in a new boolean. A box

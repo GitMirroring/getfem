@@ -352,6 +352,54 @@ def test_entering_a_polygon_in_the_window():
             win.close()
 
 
+def test_grid_and_axes_while_drawing():
+    """While drawing: the axes and their coordinates; the grid step set by
+    -, +, typed, or back to automatic; the points snap to it."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication, QToolButton
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    assert G.next_step(0.01) == 0.02 and G.next_step(0.02) == 0.05 and G.next_step(0.05) == 0.1
+    assert G.next_step(0.01, finer=True) == 0.005 and G.next_step(0.2, finer=True) == 0.1
+    assert G.major_step(0.01, 0.3) == 0.05
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(examples / "plate.json", tmp)
+        win = MainWindow(path)
+        try:
+            v = win.viewer
+            win.select(("geometries", 0))
+            v.findChild(QToolButton, "draw:polygon").setChecked(True)
+            auto = v._draw_step
+            assert "axes" in v.plotter.actors and v.grid_edit.text() == f"{auto:g}"
+            assert v.grid_label.text() == "auto"
+            v.findChild(QToolButton, "draw:grid_coarser").click()
+            assert v._draw_step == G.next_step(auto) and v.grid_label.text() == "fixed"
+            v.findChild(QToolButton, "draw:grid_finer").click()
+            v.findChild(QToolButton, "draw:grid_finer").click()
+            assert v._draw_step == G.next_step(auto, finer=True)
+            v.grid_edit.setText("0.025")
+            v._grid_typed()
+            assert v._draw_step == 0.025
+            v.draw_begin([0.031, 0.012])
+            v.draw_end([0.031, 0.012])
+            assert v._poly == [[0.025, 0.0]]                        # snapped to the grid
+            v.refresh_grid()                                        # (after a zoom): kept
+            assert v._draw_step == 0.025
+            v.findChild(QToolButton, "draw:grid_auto").click()
+            assert v._draw_step == auto and v.grid_label.text() == "auto"
+            v.stop_drawing()
+            assert "axes" not in v.plotter.actors and v.grid_edit.text() == ""
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

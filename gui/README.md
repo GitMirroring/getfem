@@ -107,7 +107,8 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   geometries (CAD, imported meshes, 3D) are shown through their mesh.
 - **Drawing**: with a 2D geometry selected, the *Rectangle* and *Disk*
   tools of the view draw a shape by dragging (corner to corner, center to
-  circle), snapped to a grid whose step follows the zoom; it is added to,
+  circle), snapped to a grid (shown with the axes and their coordinates;
+  its step follows the zoom, or is set with − and +, or typed); it is added to,
   subtracted from or intersected with the geometry (Escape stops drawing).
   The *Ellipse* tool draws the ellipse inscribed in the rectangle of two
   corners. The *Polygon* tool takes a vertex per click; clicking the first vertex

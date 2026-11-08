@@ -33,9 +33,9 @@ from pathlib import Path
 
 import numpy as np
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QToolButton, QVBoxLayout,
                                QWidget)
 
 
@@ -110,6 +110,10 @@ class _DrawHooks:
     def active(self) -> bool:
         return self.viewer._tool is not None
 
+    def view_changed(self) -> None:
+        if self.viewer._tool is not None:
+            self.viewer._grid_timer.start()
+
     def _world(self, widget, x, y):
         from . import scene
         s = widget.devicePixelRatioF()
@@ -174,6 +178,9 @@ class ClickFilter(QObject):
             if taken:
                 self._press = None
                 return True
+        if self.draw is not None and (t == QEvent.Type.Wheel or t == QEvent.Type.MouseButtonRelease) \
+                and hasattr(self.draw, "view_changed"):
+            self.draw.view_changed()          # a zoom or a pan: the grid follows
         if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
             self._press = ev.position()
         elif t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
@@ -506,9 +513,29 @@ class Viewer(QWidget):
             self.draw_op.addItem(label, op)
         self.draw_op.setToolTip("How the drawn shape is combined with the geometry")
         row.addWidget(self.draw_op)
+        row.addWidget(QLabel("Grid:"))
+        self.grid_edit = QLineEdit()
+        self.grid_edit.setObjectName("draw:grid")
+        self.grid_edit.setFixedWidth(70)
+        self.grid_edit.setToolTip("Step of the grid (the drawn points snap to it); empty: it follows the zoom")
+        self.grid_edit.editingFinished.connect(self._grid_typed)
+        row.addWidget(self.grid_edit)
+        for ident, text, tip in (("finer", "−", "A finer grid"), ("coarser", "+", "A coarser grid"),
+                                 ("auto", "Auto", "The grid follows the zoom")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"draw:grid_{ident}")
+            b.clicked.connect(lambda _=False, i=ident: self._grid_button(i))
+            row.addWidget(b)
         self.grid_label = QLabel("")
         self.grid_label.setStyleSheet("color: #555;")
         row.addWidget(self.grid_label)
+        self._grid_fixed = None           # a step chosen by the user (None: it follows the zoom)
+        self._grid_timer = QTimer(self)
+        self._grid_timer.setSingleShot(True)
+        self._grid_timer.setInterval(150)
+        self._grid_timer.timeout.connect(self.refresh_grid)
         row.addStretch(1)
         layout.addWidget(self.draw_bar)
         self.draw_bar.hide()
@@ -554,7 +581,7 @@ class Viewer(QWidget):
         if d[i] > 9 * px:
             return False
         self._grabbed = i
-        self._draw_step = G.grid_step(px * max(self.view_widget.width(), 100))
+        self._draw_step = self._grid_fixed or G.grid_step(px * max(self.view_widget.width(), 100))
         self._draw_handles(active=i)
         return True
 
@@ -621,17 +648,55 @@ class Viewer(QWidget):
         if not on:
             self._draw_step = None
             self.grid_label.setText("")
+            self.grid_edit.setText("")
             scene.show_grid(self.plotter, None, None, None)
+            scene.show_axes_2d(self.plotter, None, None, None)
             self.plotter.render()
             return
         width = scene.pixel_size(self.plotter) * max(self.view_widget.width(), 100)
-        self._draw_step = G.grid_step(width)
-        self.grid_label.setText(f"grid {self._draw_step:g}")
+        self._draw_step = self._grid_fixed or G.grid_step(width)
+        if not self.grid_edit.hasFocus():
+            self.grid_edit.setText(f"{self._draw_step:g}")
         lo = scene.display_to_world(self.plotter, 0, 0)
         hi = scene.display_to_world(self.plotter, self.view_widget.width() * self.view_widget.devicePixelRatioF(),
                                     self.view_widget.height() * self.view_widget.devicePixelRatioF())
-        scene.show_grid(self.plotter, np.minimum(lo, hi), np.maximum(lo, hi), self._draw_step)
+        lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
+        shown = (np.ceil(hi[0] / self._draw_step) - np.floor(lo[0] / self._draw_step) + 1) * \
+            (np.ceil(hi[1] / self._draw_step) - np.floor(lo[1] / self._draw_step) + 1) <= 40000
+        self.grid_label.setText(("auto" if self._grid_fixed is None else "fixed")
+                                + ("" if shown else ", too fine to be shown"))
+        scene.show_grid(self.plotter, lo, hi, self._draw_step)
+        scene.show_axes_2d(self.plotter, lo, hi, G.major_step(self._draw_step, float(hi[0] - lo[0])))
         self.plotter.render()
+
+    def refresh_grid(self) -> None:
+        """The grid and the axes again (after a zoom or a pan)."""
+        if self._tool is not None and self.plotter is not None:
+            self._show_grid(True)
+
+    def _grid_button(self, ident: str) -> None:
+        from .. import geometry2d as G
+        if ident == "auto":
+            self._grid_fixed = None
+        elif self._draw_step:
+            self._grid_fixed = G.next_step(self._draw_step, finer=ident == "finer")
+        self.refresh_grid()
+
+    def _grid_typed(self) -> None:
+        text = self.grid_edit.text().strip()
+        if not text:
+            self._grid_fixed = None
+        else:
+            try:
+                step = float(text)
+            except ValueError:
+                step = 0.0
+            if step <= 0 or not np.isfinite(step):
+                self.grid_edit.setText(f"{self._draw_step:g}" if self._draw_step else "")
+                return
+            self._grid_fixed = step
+        self.grid_edit.clearFocus()
+        self.refresh_grid()
 
     def _snapped(self, world):
         from .. import geometry2d as G

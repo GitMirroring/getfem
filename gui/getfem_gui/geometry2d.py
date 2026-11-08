@@ -667,6 +667,23 @@ def grid_step(width: float, divisions: int = 40) -> float:
     return 10.0 ** (e + 1)
 
 
+def next_step(step: float, finer: bool = False) -> float:
+    """The next round step (1, 2, 5 x 10^n) above step, or below it."""
+    e = math.floor(math.log10(step) + 1e-9)
+    seq = [m * 10.0 ** k for k in (e - 1, e, e + 1) for m in (1, 2, 5)]
+    if finer:
+        return max(s for s in seq if s < step * (1 - 1e-9))
+    return min(s for s in seq if s > step * (1 + 1e-9))
+
+
+def major_step(step: float, width: float, count: int = 8) -> float:
+    """A multiple of the grid step (1, 2, 5 x 10^n) for about `count` labels over width."""
+    s = step
+    while width / s > count:
+        s = next_step(s)
+    return s
+
+
 def snap(point, step: float) -> list[float]:
     return [round(round(float(c) / step) * step, 12) for c in point[:2]]
 
