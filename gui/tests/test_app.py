@@ -34,7 +34,7 @@ os.environ.setdefault("GETFEM_GUI_NO_3D", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
-    from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton
+    from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QMenu, QPushButton
 except ImportError:  # pragma: no cover
     QApplication = None
     if "pytest" in sys.modules:
@@ -429,6 +429,30 @@ def test_constructive_geometry_from_nothing_in_the_window():
         win._panel_action("add_shape:ball")
         assert not [e for e in win.errors if e.startswith(f"geometries[{path[1]}]")], win.errors
         win.select(path)
+    close(win)
+
+
+def test_variants_of_an_action_in_one_menu():
+    """The actions of a boolean: "Add…" and "Put in…" buttons with menus
+    (not a button each), and submenus in the menu of the tree."""
+    from PySide6.QtWidgets import QPushButton
+    from getfem_gui.app.properties import group_label
+    assert group_label(["Add a rectangle", "Add an ellipse"]) == "Add…"
+    assert group_label(["Put in a union", "Put in an intersection"]) == "Put in…"
+    win = window("plate_hole_tension.json")
+    root = ("geometries", 0, "source", "shape")
+    win.select(root)
+    buttons = [b.objectName() for b in win.props.findChildren(QPushButton)]
+    assert "action:add_shape" in buttons and "action:wrap" in buttons
+    assert not any(n.startswith("action:add_shape:") for n in buttons)
+    b = win.props.findChild(QPushButton, "action:add_shape")
+    kinds = [a.data() for a in b.menu().actions()]
+    assert "add_shape:rectangle" in kinds and "add_shape:difference" in kinds
+    next(a for a in b.menu().actions() if a.data() == "add_shape:ball").trigger()
+    assert win.current_path() == root + ("of", 2)
+    menu = win._populate(QMenu(), root, False)
+    titles = [a.text() for a in menu.actions()]
+    assert "Add" in titles and "Put in" in titles and not any(t.startswith("Add a") for t in titles)
     close(win)
 
 

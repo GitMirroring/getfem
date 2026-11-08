@@ -1796,7 +1796,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
             if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
                 out.append(("remove", "Remove"))
             elif path[-1] in ("shape", "profile") and shape != EMPTY_SHAPE:
-                out.append(("clear_shape", "Remove (start again from nothing)"))
+                out.append(("clear_shape", "Clear (start again from nothing)"))
     elif path[:1] == ("geometries",) and n == 3 and path[2] == "selections":
         out.append(("add_selection", "Add a selection"))
     elif path[:1] == ("geometries",) and n == 4:

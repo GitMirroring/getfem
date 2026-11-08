@@ -443,7 +443,7 @@ A new constructive geometry (and the profile of a new extrusion or
 revolution) starts from nothing, an empty union: shapes are added to the
 booleans (*Add a rectangle*..., *Add a difference* gives an empty boolean),
 a shape is put in a new boolean (*Put in a difference*), the root is
-emptied again (*Remove (start again from nothing)*); a boolean of one shape
+emptied again (*Clear (start again from nothing)*); a boolean of one shape
 is that shape, an empty one is an error. *Add a polygon* gives an empty
 polygon: its vertices are then clicked in the view (the polygon tool
 starts), or typed (*Add* in its table). A node of the profile of an

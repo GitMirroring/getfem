@@ -80,6 +80,20 @@ def geometry_menu(parent, emit) -> QMenu:
     return menu
 
 
+def group_label(labels: list[str]) -> str:
+    """The words common to the labels of the variants of an action ("Add a
+    rectangle", "Add an ellipse" -> "Add"; "Put in a union"... -> "Put in")."""
+    words = [lab.split() for lab in labels]
+    common = []
+    for ws in zip(*words):
+        if len(set(ws)) != 1:
+            break
+        common.append(ws[0])
+    while common and common[-1] in ("a", "an", "the"):
+        common.pop()
+    return (" ".join(common) or labels[0].split()[0]).rstrip(":") + "…"
+
+
 class PropertiesPanel(QScrollArea):
     changed = Signal(object, object)          # Field, value
     action = Signal(str)                      # editing action identifier, or a window command
@@ -125,11 +139,35 @@ class PropertiesPanel(QScrollArea):
             self.layout_.addWidget(lab)
 
     def _buttons(self, actions: list[tuple[str, str]]):
+        """The actions of the node as buttons; the variants of one action
+        ("add_shape:rectangle", "add_shape:ball"...) in the menu of one
+        button, so that the row stays short."""
         if not actions:
             return
         row = QHBoxLayout()
         row.setContentsMargins(0, 8, 0, 0)
+        groups: dict[str, list[tuple[str, str]]] = {}
         for ident, label in actions:
+            if ":" in ident and not ident.startswith("cmd:"):
+                groups.setdefault(ident.split(":", 1)[0], []).append((ident, label))
+        done = set()
+        for ident, label in actions:
+            prefix = ident.split(":", 1)[0]
+            if len(groups.get(prefix, [])) > 1:
+                if prefix in done:
+                    continue
+                done.add(prefix)
+                items = groups[prefix]
+                b = QPushButton(group_label([lab for _, lab in items]))
+                b.setObjectName(f"action:{prefix}")
+                menu = QMenu(b)
+                for i, lab in items:
+                    act = menu.addAction(lab)
+                    act.setData(i)
+                    act.triggered.connect(lambda _=False, i=i: self.action.emit(i))
+                b.setMenu(menu)
+                row.addWidget(b)
+                continue
             b = QPushButton(label)
             b.setObjectName(f"action:{ident}")
             if ident == "add_from_library":            # the materials, in a menu on the button

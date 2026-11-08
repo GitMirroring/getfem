@@ -1133,16 +1133,28 @@ class MainWindow(QMainWindow):
         return out
 
     def _populate(self, menu, path, adding_only):
-        from .properties import geometry_menu, library_menu
+        from .properties import geometry_menu, group_label, library_menu
         menu.clear()
-        for ident, label in self.menu_actions(path, adding_only):
+        actions = self.menu_actions(path, adding_only)
+        groups: dict[str, list] = {}
+        for ident, label in actions:              # the variants of an action: a submenu
+            if ":" in ident and not ident.startswith("cmd:"):
+                groups.setdefault(ident.split(":", 1)[0], []).append((ident, label))
+        subs: dict[str, QMenu] = {}
+        for ident, label in actions:
             if ident in ("add_from_library", "add_geometry"):     # submenus: materials, kinds of geometry
                 make = library_menu if ident == "add_from_library" else geometry_menu
                 sub = make(menu, lambda i, p=path: self._run_action(p, i))
                 sub.setTitle(label.rstrip("…"))
                 menu.addMenu(sub)
                 continue
-            act = menu.addAction(label)
+            prefix = ident.split(":", 1)[0]
+            target = menu
+            if len(groups.get(prefix, [])) > 1:
+                if prefix not in subs:
+                    subs[prefix] = menu.addMenu(group_label([lab for _, lab in groups[prefix]]).rstrip("…"))
+                target = subs[prefix]
+            act = target.addAction(label)
             act.setData(ident)
             act.triggered.connect(lambda checked=False, i=ident, p=path: self._run_action(p, i))
         return menu

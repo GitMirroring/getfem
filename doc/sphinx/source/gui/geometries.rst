@@ -140,7 +140,7 @@ of its form) build the tree:
 * on any shape: *Put in a union / an intersection / a difference*, which
   makes it the first part of a new boolean (the other parts are then
   added to it);
-* on the root (or a profile): *Remove (start again from nothing)*.
+* on the root (or a profile): *Clear (start again from nothing)*.
 
 The type of a boolean is changed in its form (a union of a rectangle and a
 disk becomes their difference). A boolean of a single shape is that shape;
