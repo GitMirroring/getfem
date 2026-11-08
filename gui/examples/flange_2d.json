@@ -1,0 +1,84 @@
+{
+  "format_version": 3,
+  "name": "Flange: a circular array of bolt holes (2D)",
+  "parameters": [
+    {"name": "R", "value": 0.05, "description": "outer radius (m)"},
+    {"name": "Ri", "value": 0.015, "description": "radius of the bore (m)"},
+    {"name": "Rb", "value": 0.035, "description": "radius of the bolt circle (m)"},
+    {"name": "rb", "value": 0.004, "description": "radius of the bolt holes (m)"},
+    {"name": "n", "value": 6, "description": "number of bolt holes"},
+    {"name": "kw", "value": 0.006, "description": "width of the keyway (m)"},
+    {"name": "ka", "value": 30.0, "description": "angle of the keyway (degrees)"},
+    {"name": "Tin", "value": 80.0, "description": "temperature of the shaft (C)"},
+    {"name": "Tb", "value": 20.0, "description": "temperature of the bolts (C)"},
+    {"name": "hc", "value": 50.0, "description": "convection coefficient on the rim (W/m2/K)"}
+  ],
+  "materials": [
+    {
+      "name": "structural_steel",
+      "description": "Structural steel",
+      "from": "library:Structural steel",
+      "properties": {"k": 45, "E": 210000000000.0, "nu": 0.3, "alpha": 1.2e-05, "rho": 7850, "cp": 470}
+    }
+  ],
+  "geometries": [
+    {
+      "name": "flange",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "difference",
+          "of": [
+            {"type": "ball", "center": [0, 0], "radius": "R"},
+            {"type": "ball", "center": [0, 0], "radius": "Ri"},
+            {
+              "type": "transform", "translate": [0, 0], "angle": "ka", "center": [0, 0],
+              "of": [{"type": "rectangle", "min": ["-kw/2", "Ri - kw"], "max": ["kw/2", "Ri + kw"]}]
+            },
+            {
+              "type": "array", "kind": "circular", "count": "n", "angle": "360/n", "center": [0, 0],
+              "of": [{"type": "ball", "center": ["Rb", 0], "radius": "rb"}]
+            }
+          ]
+        }
+      },
+      "selections": {
+        "bore": {
+          "kind": "boundary",
+          "criteria": {"type": "edges", "edges": [{"shape": [1], "side": "circle"}, {"shape": [2, 0], "side": "xmin"},
+                                                  {"shape": [2, 0], "side": "xmax"}, {"shape": [2, 0], "side": "ymax"}]}
+        },
+        "bolts": {"kind": "boundary", "criteria": {"type": "edges", "edges": [{"shape": [3, 0], "side": "circle"}]}},
+        "rim": {"kind": "boundary", "criteria": {"type": "edges", "edges": [{"shape": [0], "side": "circle"}]}}
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "flange", "mesher": "getfem", "h": 0.002, "order": 2}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "material": "structural_steel"}]},
+          "sources": [],
+          "conditions": [
+            {"type": "temperature", "selection": "bore", "value": "Tin"},
+            {"type": "temperature", "selection": "bolts", "value": "Tb"},
+            {"type": "convection", "selection": "rim", "h": "hc", "T_ext": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "power_in", "expr": "k*Grad_T.Normal", "selection": "bore"},
+        {"name": "power_bolts", "expr": "-k*Grad_T.Normal", "selection": "bolts"},
+        {"name": "power_rim", "expr": "hc*(T - 20)", "selection": "rim"},
+        {"name": "bolt_holes_length", "expr": "1", "selection": "bolts"}
+      ],
+      "vtu": "heat.vtu"
+    }
+  ]
+}

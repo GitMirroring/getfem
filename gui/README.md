@@ -456,7 +456,9 @@ meshers): the transforms are applied to the primitives (in 2D, written in
 their parameters; in 3D, a `"_frame"` composed with the work plane by
 `geometry3d.frame`), each primitive keeping its path in the model
 (`"_src"`), so that the references to sides and faces, and the regions,
-hold on every copy.
+hold on every copy. See `examples/flange_2d.json` (a circular array of bolt
+holes, a turned keyway) and `examples/pin_fin_heat_sink_3d.json` (an array
+of an array of pins).
 
 ## Adding a geometry
 

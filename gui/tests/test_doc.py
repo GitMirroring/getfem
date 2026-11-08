@@ -131,6 +131,14 @@ def test_examples_quoted_results():
     q = _solve("anisotropic_plate.json")["heat"]
     assert _close(q["injected_power"], q["outflow"], 1e-3)
     assert q["flux_along_fibres"] > 3 * q["flux_across_fibres"]
+    q = _solve("flange_2d.json")["heat"]
+    assert _close(q["bolt_holes_length"], 6 * 2 * math.pi * 0.004, 1e-3)    # the n holes of the array
+    assert _close(q["power_in"], q["power_bolts"] + q["power_rim"], 1.5e-2)
+    q = _solve("pin_fin_heat_sink_3d.json")["heat"]
+    assert _close(q["injected_power"], 2e4 * 0.03 ** 2, 1e-2)              # qin times the base: 18 W
+    assert _close(q["injected_power"], q["convected_power"], 1e-2)
+    r, F = 0.0025, 0.02                                                    # the 9 pins in the air
+    assert _close(q["pins_area"], 9 * (2 * math.pi * r * F + math.pi * r ** 2), 6e-2)
     for name in ("plate_with_hole.json", "plate_inclusion.json", "thermoelastic_plate.json",
                  "block_with_hole_3d.json", "pulley_3d.json"):
         assert all(v for v in _solve(name).values())

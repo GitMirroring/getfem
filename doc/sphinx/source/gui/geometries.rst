@@ -275,7 +275,8 @@ In 2D, the transformations are applied to the primitives themselves (a
 turned rectangle is meshed as a polygon). In 3D, the GetFEM mesher places
 each copy with its ``placed`` object, |gmsh| and Netgen turn and move them.
 An extrusion or a revolution meshed in layers may be moved; copied in an
-array, it is meshed as a whole (the layers are dropped).
+array, it is meshed as a whole (the layers are dropped). See
+``examples/flange_2d.json`` and ``examples/pin_fin_heat_sink_3d.json``.
 
 Curves and surfaces
 -------------------

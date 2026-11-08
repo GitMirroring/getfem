@@ -1,0 +1,90 @@
+{
+  "format_version": 3,
+  "name": "Pin fin heat sink: an array of pins (3D)",
+  "parameters": [
+    {"name": "n", "value": 3, "description": "number of pins along x and along y"},
+    {"name": "p", "value": 0.01, "description": "pitch of the pins (m)"},
+    {"name": "W", "value": "n*p", "description": "width of the base (m)"},
+    {"name": "B", "value": 0.004, "description": "thickness of the base (m)"},
+    {"name": "r", "value": 0.0025, "description": "radius of the pins (m)"},
+    {"name": "F", "value": 0.02, "description": "height of the pins above the base (m)"},
+    {"name": "qin", "value": 20000.0, "description": "heat flux under the base (W/m2)"},
+    {"name": "hc", "value": 25.0, "description": "convection coefficient (W/m2/K)"}
+  ],
+  "materials": [
+    {
+      "name": "aluminium_alloy_6061_t6",
+      "description": "Aluminium alloy 6061-T6",
+      "from": "library:Aluminium alloy 6061-T6",
+      "properties": {"k": 167, "E": 68900000000.0, "nu": 0.33, "alpha": 2.36e-05, "rho": 2700, "cp": 896}
+    }
+  ],
+  "geometries": [
+    {
+      "name": "sink",
+      "source": {
+        "type": "csg",
+        "dim": 3,
+        "shape": {
+          "type": "union",
+          "of": [
+            {"type": "rectangle", "min": [0, 0, 0], "max": ["W", "W", "B"]},
+            {
+              "type": "array", "kind": "linear", "count": "n", "step": [0, "p", 0],
+              "of": [
+                {
+                  "type": "array", "kind": "linear", "count": "n", "step": ["p", 0, 0],
+                  "of": [
+                    {"type": "cylinder", "origin": ["p/2", "p/2", "B/2"], "axis": [0, 0, 1],
+                     "length": "F + B/2", "radius": "r"}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "selections": {
+        "base": {"kind": "boundary", "criteria": {"type": "faces", "faces": [{"shape": [0], "face": "zmin"}]}},
+        "pins": {
+          "kind": "boundary",
+          "criteria": {"type": "faces", "faces": [{"shape": [1, 0, 0], "face": "side"},
+                                                  {"shape": [1, 0, 0], "face": "end"}]}
+        },
+        "plate": {
+          "kind": "boundary",
+          "criteria": {"type": "faces", "faces": [{"shape": [0], "face": "zmax"}, {"shape": [0], "face": "xmin"},
+                                                  {"shape": [0], "face": "xmax"}, {"shape": [0], "face": "ymin"},
+                                                  {"shape": [0], "face": "ymax"}]}
+        },
+        "air": {"kind": "boundary", "criteria": {"type": "union", "of": ["pins", "plate"]}}
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "sink", "mesher": "getfem", "h": 0.0018, "order": 1}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "material": "aluminium_alloy_6061_t6"}]},
+          "sources": [],
+          "conditions": [
+            {"type": "heat_flux", "selection": "base", "value": "qin"},
+            {"type": "convection", "selection": "air", "h": "hc", "T_ext": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "injected_power", "expr": "k*Grad_T.Normal", "selection": "base"},
+        {"name": "convected_power", "expr": "hc*(T - 20)", "selection": "air"},
+        {"name": "pins_power", "expr": "hc*(T - 20)", "selection": "pins"},
+        {"name": "pins_area", "expr": "1", "selection": "pins"}
+      ],
+      "vtu": "heat.vtu"
+    }
+  ]
+}

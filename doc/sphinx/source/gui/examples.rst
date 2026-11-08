@@ -123,3 +123,33 @@ fixed temperature: the isotherms are stretched along the fibres. The
 direction of the fibres is also a vector field, written to the results.
 The outflow balances the injected power, and the heat flows mostly along
 the fibres (``flux_along_fibres`` and ``flux_across_fibres``).
+
+.. _gui-example-flange_2d:
+
+Flange (``flange_2d.json``)
+---------------------------
+
+A flange with a keyway, held by ``n`` bolts: the bolt holes are a
+circular ``array`` of a disk (``"count": "n"``, ``"angle": "360/n"``), the
+keyway a rectangle turned by ``ka`` degrees about the center (a
+``transform``). The shaft is hot (the ``bore`` selection: the circle of
+the bore and the sides of the keyway), the bolts cold (``bolts``: the
+circle of the disk of the array, that is all the holes), the rim cooled by
+convection. ``bolt_holes_length`` is the perimeter of the ``n`` holes, and
+the power entering through the bore (``power_in``) leaves through the bolts
+and the rim (``power_bolts`` and ``power_rim``). Change ``n`` or ``ka``:
+the holes and the keyway follow, and so do the selections.
+
+.. _gui-example-pin_fin_heat_sink_3d:
+
+Pin fin heat sink (``pin_fin_heat_sink_3d.json``)
+-------------------------------------------------
+
+A plate with ``n`` × ``n`` pins: a linear ``array`` (along y) of a linear
+``array`` (along x) of a cylinder. The ``pins`` selection is two faces of
+the cylinder (its ``side`` and ``end``), so it holds all the pins. Heated
+under the plate (``qin``), cooled by convection on the plate and the pins
+(``air``): the injected power (``qin`` times the area of the base) is
+balanced by the convected power, and ``pins_area`` is the area of the
+pins in the air (``n``\ :sup:`2` times their side above the plate and
+their end).

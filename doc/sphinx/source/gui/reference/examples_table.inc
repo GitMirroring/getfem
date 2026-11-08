@@ -19,6 +19,11 @@
      - csg 3D
      - getfem
      - heat_conduction
+   * - :ref:`flange_2d.json <gui-example-flange_2d>`
+     - Flange: a circular array of bolt holes (2D)
+     - csg 2D
+     - getfem
+     - heat_conduction
    * - :ref:`heat_sink_3d.json <gui-example-heat_sink_3d>`
      - Heat sink: extruded finned profile (3D)
      - csg 3D
@@ -34,6 +39,11 @@
      - csg 2D
      - getfem
      - linear_elasticity
+   * - :ref:`pin_fin_heat_sink_3d.json <gui-example-pin_fin_heat_sink_3d>`
+     - Pin fin heat sink: an array of pins (3D)
+     - csg 3D
+     - getfem
+     - heat_conduction
    * - :ref:`plate.json <gui-example-plate>`
      - Heated plate cooled by convection
      - box
