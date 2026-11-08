@@ -134,7 +134,7 @@ def test_gmsh_and_netgen_scripts():
     for mesher_name in ("gmsh", "netgen"):
         m = model_with(PLACED, {"mesher": mesher_name, "size": 0.1})
         code = mesher.mesh_script(P.resolved(m), m["meshes"][0], "mesh")
-        assert "placed in its work plane" in code
+        assert "placed in its frame" in code
         assert ("occ.rotate(" in code) if mesher_name == "gmsh" else (".Rotate(Axis((0, 0, 0), Dir(" in code)
         compile(code, "mesh.py", "exec")
     rev = dict(copy.deepcopy(PLACED), type="revolution")

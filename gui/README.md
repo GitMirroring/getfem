@@ -445,6 +445,19 @@ by its plane, and points snap to the vertices of the geometry and of that
 section (else to the grid). The GetFEM mesher needs its `placed` object
 (GetFEM patch "mesher: objects placed in a frame").
 
+## Transformations and arrays
+
+A shape of a CSG tree (2D or 3D, profiles included) can be put in a
+`transform` (turned about a center, and an axis in 3D, then translated) or
+an `array` (the union of `count` copies, `linear` by a `step` or
+`circular` by an `angle`), with *Transform…*. The rest of the code works on
+the flattened tree (`transforms.flatten`, called by `shape_of` and by the
+meshers): the transforms are applied to the primitives (in 2D, written in
+their parameters; in 3D, a `"_frame"` composed with the work plane by
+`geometry3d.frame`), each primitive keeping its path in the model
+(`"_src"`), so that the references to sides and faces, and the regions,
+hold on every copy.
+
 ## Adding a geometry
 
 *Add a geometry* opens a menu of the kinds of geometry (`E.GEOMETRY_KINDS`):

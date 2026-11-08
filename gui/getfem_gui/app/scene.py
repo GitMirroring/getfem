@@ -452,6 +452,11 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
     size about h (fine enough to clip it along the other shapes); the cell
     data "face" is the index of the face in geometry3d.primitive_faces."""
     t = prim["type"]
+    if "_frame" in prim and t not in ("extrusion", "revolution"):     # moved (transforms): built, then placed
+        b, A = (np.asarray(x, float) for x in prim["_frame"])
+        surf = _primitive_surface({k: v for k, v in prim.items() if k != "_frame"}, h)
+        surf.points = b + np.asarray(surf.points) @ A.T
+        return surf
     if t == "rectangle":
         lo, hi = np.asarray(prim["min"], float), np.asarray(prim["max"], float)
         L = hi - lo
@@ -591,7 +596,7 @@ def _surface_3d(shape: dict, n: int) -> pv.PolyData:
             return _surface_3d_grid(shape, n)
         # the faces of all the primitives numbered together (cell data "face_id")
         surf.cell_data["face_id"] = np.asarray(surf.cell_data["face"]) + len(refs)
-        refs += [dict(f, shape=list(path)) for f in G3.primitive_faces(prim)]
+        refs += [dict(f, shape=list(prim.get("_src", path))) for f in G3.primitive_faces(prim)]
         surf.point_data["c"] = G3.boundary_level(shape, path, np.asarray(surf.points), 10 * size)
         part = surf.clip_scalar(scalars="c", value=0.0, invert=True)
         if part.n_cells == 0:

@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import model as M, parameters as P
+from . import model as M, parameters as P, transforms as T
 
 Path = tuple
 
@@ -306,6 +306,10 @@ def _shape_label(shape: dict) -> str:
     t = shape.get("type", "?")
     if t in M.SHAPES_BOOLEAN and not shape.get("of"):
         return f"{t.capitalize()} (empty: add shapes)"
+    if t == "transform":
+        return "Transform (move, turn)"
+    if t == "array":
+        return f"Array ({shape.get('kind', 'linear')}, {format_value(shape.get('count', 1))} copies)"
     return t.capitalize()
 
 
@@ -318,7 +322,7 @@ def _a(word: str) -> str:
 
 def _shape_node(shape: dict, path: Path) -> Node:
     node = Node(path, _shape_label(shape), "shape")
-    if shape.get("type") in M.SHAPES_BOOLEAN:
+    if shape.get("type") in M.SHAPES_BOOLEAN or shape.get("type") in M.SHAPES_TRANSFORM:
         for j, s in enumerate(shape.get("of", [])):
             node.children.append(_shape_node(s, path + ("of", j)))
     elif shape.get("type") in M.SHAPES_SWEPT and isinstance(shape.get("profile"), dict):
@@ -535,9 +539,39 @@ def _vec_field(key, label, kind, dim, help=""):
     return Field(key, label, kind, size=dim, help=help)
 
 
+def _transform_fields(path, shape, dim) -> list[Field]:
+    """The fields of a transform or an array (transforms.py)."""
+    t = shape.get("type")
+    axis = [_vec_field(path + ("axis",), "Axis of rotation", "numbers", 3,
+                       help="The rotation is about the line through the center along this axis")] \
+        if dim == 3 else []
+    if t == "transform":
+        return [Field(path, "", "info", help="The shape below, turned about the center, then translated. "
+                                             "Its sides and faces keep their selections."),
+                _vec_field(path + ("translate",), "Translation", "numbers", dim),
+                Field(path + ("angle",), "Rotation (degrees)", "number",
+                      help="Counterclockwise" + (" about the axis (right-hand rule)" if dim == 3 else "")),
+                _vec_field(path + ("center",), "Center of rotation", "numbers", dim)] + axis
+    out = [Field(path, "", "info", help="The union of copies of the shape below; a selection of a side or "
+                                        "a face of the shape holds it on every copy."),
+           Field(path + ("kind",), "Kind", "choice",
+                 (("linear", "linear: translated by a step"), ("circular", "circular: turned by an angle")),
+                 op="array_kind"),
+           Field(path + ("count",), "Number of copies", "number", help="The shape itself included")]
+    if shape.get("kind", "linear") == "linear":
+        out.append(_vec_field(path + ("step",), "Step", "numbers", dim, help="From a copy to the next one"))
+    else:
+        out += [_vec_field(path + ("center",), "Center", "numbers", dim),
+                Field(path + ("angle",), "Angle between copies (degrees)", "number",
+                      help="360 / number of copies for a full turn")] + axis
+    return out
+
+
 def _shape_fields(model, path, dim) -> list[Field]:
     shape = get_at(model, path, {})
     t = shape.get("type")
+    if t in M.SHAPES_TRANSFORM:
+        return _transform_fields(path, shape, dim)
     types = primitives_of_dim(dim) + M.SHAPES_BOOLEAN
     out = [Field(path + ("type",), "Type", "choice", tuple((x, x) for x in types), op="shape_type")]
     if path[-1] == "profile":
@@ -1082,6 +1116,12 @@ def _default_shape(t: str, dim: int) -> dict:
     if t == "revolution":
         return {"type": "revolution",
                 "profile": {"type": "rectangle", "min": [0.5, 0.0], "max": [1.0, 1.0]}}
+    if t == "transform":
+        return dict({"type": "transform", "translate": [0.0] * dim, "angle": 0.0, "center": [0.5] * dim},
+                    **({"axis": [0.0, 0.0, 1.0]} if dim == 3 else {}), of=[_default_shape("rectangle", dim)])
+    if t == "array":
+        return {"type": "array", "kind": "linear", "count": 3, "step": [1.2] + [0.0] * (dim - 1),
+                "of": [_default_shape("rectangle", dim)]}
     return {"type": t, "of": [_default_shape("rectangle", dim), _default_shape("ball", dim)]}
 
 
@@ -1105,7 +1145,7 @@ def _profile_extent(model: dict, path: Path):
             return G.bounds(get_at(r, prof))
         except ValueError:                       # empty: the rest of the geometry
             rest = G3.without(r["geometries"][prof[1]]["source"]["shape"], tuple(prof[5:-1:2]))
-            return G3.plane_extent(rest, get_at(r, prof[:-1]))
+            return G3.plane_extent(rest, placed_swept(r, prof))
     except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
         return None
 
@@ -1399,6 +1439,8 @@ def field_value(model: dict, f: Field):
     if f.op == "placement":
         shape = get_at(model, f.key[:-1], {})
         return "custom" if "origin" in shape or "axes" in shape else "xy"
+    if f.op == "array_kind":
+        return get_at(model, f.key, "linear")
     return get_at(model, f.key)
 
 
@@ -1500,6 +1542,13 @@ def apply(model: dict, f: Field, value) -> Path | None:
         else:
             shape.pop("origin", None)
             shape.pop("axes", None)
+        return None
+    if f.op == "array_kind":
+        arr = get_at(model, key[:-1])
+        if arr.get("kind", "linear") != value:
+            for k in ("step", "center", "angle", "axis"):
+                arr.pop(k, None)
+            arr.update(_array_defaults(model, key[:-1], value))
         return None
     if f.op == "point_component":
         # a component j of the point key[:-1] (a vertex, a point of a curve):
@@ -1838,6 +1887,10 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
                         ("pick_plane:pocket", "On a face: a pocket (extrusion into the solid)")]
             if shape.get("type") not in M.SHAPES_BOOLEAN or shape.get("of"):
                 out += [(f"wrap:{t}", f"Put in {_a(t)} {t}") for t in M.SHAPES_BOOLEAN]
+                out += [("transform:transform", "Transform: move or turn"),
+                        ("transform:array", "Transform: copy in an array (linear, circular)")]
+            if shape.get("type") in M.SHAPES_TRANSFORM:
+                out.append(("unwrap", f"Remove the {shape['type']} only"))
             if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
                 out.append(("remove", "Remove"))
             elif path[-1] in ("shape", "profile") and shape != EMPTY_SHAPE:
@@ -2014,6 +2067,11 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return path
     if action == "remove" and path[:1] == ("geometries",) and len(path) > 5 and path[2] == "source" \
             and path[-2] == "of":
+        # the shape of a transform or an array goes with it
+        while path[-2] == "of" and get_at(model, path[:-2], {}).get("type") in M.SHAPES_TRANSFORM:
+            path = path[:-2]
+        if path[-2] != "of":                  # the root (or a profile) was a transform
+            return do_action(model, path, "clear_shape")
         return _remove_shape(model, path)
     if action == "remove":
         parent = get_at(model, path[:-1])
@@ -2091,13 +2149,27 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
                 else _shape_in_geometry(model, path[1], t)
         shape.setdefault("of", []).append(new)
         return path + ("of", len(shape["of"]) - 1)
+    if action.startswith("transform:"):     # the shape moved, or copied: in a new transform or array
+        return do_action(model, path, "wrap:" + action.split(":", 1)[1])
     if action.startswith("wrap:"):          # the shape becomes the first part of a new boolean
         t = action.split(":", 1)[1]
-        set_at(model, path, {"type": t, "of": [get_at(model, path)]})
+        node = {"type": t, "of": [get_at(model, path)]}
+        if t in M.SHAPES_TRANSFORM:           # or the shape of a new transform or array
+            node.update(_transform_defaults(model, path, t))
+        set_at(model, path, node)
+        _fit_layers(model, path[1])
         swept, inner = _shape_location(path)
         _remap_shape_refs(model["geometries"][path[1]],
                           lambda p: tuple(p)[:len(inner)] + (0,) + tuple(p)[len(inner):]
                           if tuple(p)[:len(inner)] == inner else tuple(p), swept)
+        return path
+    if action == "unwrap":                    # a transform or an array replaced by its shape
+        node = get_at(model, path)
+        set_at(model, path, node["of"][0])
+        swept, inner = _shape_location(path)
+        n = len(inner)
+        _remap_shape_refs(model["geometries"][path[1]],
+                          lambda p: tuple(p)[:n] + tuple(p)[n + 1:] if tuple(p)[:n] == inner else tuple(p), swept)
         return path
     if action == "clear_shape":               # the root (or a profile) emptied
         set_at(model, path, copy.deepcopy(EMPTY_SHAPE))
@@ -2368,11 +2440,29 @@ def part_3d(model: dict, path: Path) -> dict | None:
     the profile of an extrusion or a revolution, the part of the profile
     extruded or turned likewise."""
     shape = get_at(model, path)
-    if "profile" not in path[4:] or not isinstance(shape, dict):
+    if not isinstance(shape, dict):
         return shape
-    k = path.index("profile", 4)
-    swept = get_at(model, path[:k])
-    return dict(swept, profile=shape) if isinstance(swept, dict) else None
+    if "profile" in path[4:]:
+        k = path.index("profile", 4)
+        swept = get_at(model, path[:k])
+        if not isinstance(swept, dict):
+            return None
+        shape, path = dict(swept, profile=shape), path[:k]
+    try:                                  # placed by the transforms above it
+        A, b = T.frame_along(get_at(model, path[:4]), tuple(path[5::2]), 3)
+        return T.flatten(shape, 3, A, b)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return shape
+
+
+def placed_swept(model: dict, prof: Path) -> dict:
+    """The extrusion or revolution of the profile at prof (in a resolved
+    model), with the transforms above it ("_frame", see transforms.flatten)."""
+    swept = get_at(model, prof[:-1])
+    A, b = T.frame_along(get_at(model, prof[:4]), tuple(prof[5:-1:2]), 3)
+    if np.allclose(A, np.eye(3)) and np.allclose(b, 0):
+        return swept
+    return dict(swept, _frame=[b.tolist(), A.tolist()])
 
 
 def preview_geometry(model: dict, path: Path) -> int | None:
@@ -2629,6 +2719,61 @@ def can_draw(model: dict, path: Path) -> int | None:
     return None
 
 
+def _fit_layers(model: dict, gi: int) -> None:
+    """Meshes in layers of a geometry that is no longer one extrusion or
+    revolution (copied in an array): meshed as a whole instead (tetrahedra)."""
+    geom = model["geometries"][gi]
+    if M.swept_root(geom.get("source", {}).get("shape")) is not None:
+        return
+    for mesh, _ in M.all_meshes(model):
+        if mesh.get("geometry") == geom.get("name") and mesh.pop("layers", None) is not None:
+            if mesh.get("element") == "quad":
+                mesh.pop("element")
+
+
+def _shape_bounds(model: dict, path: Path):
+    """The bounds (lo, hi) of the shape at path (before the transforms above
+    it), or None."""
+    from . import geometry2d as G
+    from . import geometry3d as G3
+    try:
+        node = get_at(P.resolved(model), path)
+        return (G if shape_dim(model, path) == 2 else G3).bounds(node)
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+        return None
+
+
+def _transform_defaults(model: dict, path: Path, t: str) -> dict:
+    """The parameters of a new transform (nothing moved, turned about the
+    center of the shape) or array (3 copies side by side)."""
+    dim = shape_dim(model, path)
+    b = _shape_bounds(model, path)
+    r = lambda v: 0.0 if abs(v) < 1e-12 else float(f"{v:.3g}")          # noqa: E731
+    center = [r(x) for x in (b[0] + b[1]) / 2] if b is not None and np.all(np.isfinite(b)) else [0.0] * dim
+    if t == "transform":
+        out = {"translate": [0.0] * dim, "angle": 0.0, "center": center}
+        if dim == 3:
+            out["axis"] = [0.0, 0.0, 1.0]
+        return out
+    return dict({"count": 3}, **_array_defaults(model, path + ("of", 0), "linear", b))
+
+
+def _array_defaults(model: dict, path: Path, kind: str, b=None) -> dict:
+    """The parameters of an array of the shape at path (its first copy):
+    linear, a step of 1.2 times its width along x; circular, 90 degrees about
+    the origin (about z in 3D)."""
+    dim = shape_dim(model, path)
+    if kind == "circular":
+        out = {"kind": "circular", "center": [0.0] * dim, "angle": 90.0}
+        if dim == 3:
+            out["axis"] = [0.0, 0.0, 1.0]
+        return out
+    b = _shape_bounds(model, path + ("of", 0) if get_at(model, path, {}).get("type") == "array" else path) \
+        if b is None else b
+    width = float(b[1][0] - b[0][0]) if b is not None and np.all(np.isfinite(b)) else 1.0
+    return {"kind": "linear", "step": [float(f"{1.2 * (width or 1.0):.3g}")] + [0.0] * (dim - 1)}
+
+
 def _shape_location(path: Path) -> tuple:
     """(swept, inner) of a shape node: the path of the extrusion or revolution
     whose profile holds it (None for the CSG tree itself), and its own path
@@ -2793,8 +2938,29 @@ def primitive_node(model: dict, path: Path) -> dict | None:
     return shape if isinstance(shape, dict) and shape.get("type") in PRIMITIVES_2D else None
 
 
+def handle_frame(model: dict, path: Path):
+    """The map (A, b), x -> A x + b, of the transforms above the 2D primitive
+    at path (the first copy of an array): its handles are moved by it."""
+    root = draw_root(model, path)
+    if root is None:
+        return np.eye(2), np.zeros(2)
+    try:
+        return T.frame_along(get_at(P.resolved(model), root), tuple(path[len(root) + 1::2]), 2)
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+        return np.eye(2), np.zeros(2)
+
+
 def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
-    """Handles of the primitive at path: [(name, position)], in model values."""
+    """Handles of the primitive at path: [(name, position)], in model values
+    (where the transforms above it put them)."""
+    A, b = handle_frame(model, path)
+    out = _local_handles(model, path)
+    if np.allclose(A, np.eye(2)) and np.allclose(b, 0):
+        return out
+    return [(name, (A @ np.asarray(q, float) + b).tolist()) for name, q in out]
+
+
+def _local_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
     shape = primitive_node(model, path)
     if shape is None:
         return []
@@ -2865,7 +3031,8 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
         raise ValueError("not a rectangle, a disk or a polygon")
     before = copy.deepcopy(model)
     notes: list[str] = []
-    x, y = float(point[0]), float(point[1])
+    A, b = handle_frame(model, path)              # the point brought back before the transforms
+    x, y = (float(v) for v in A.T @ (np.asarray(point[:2], float) - b))
     r = get_at(P.resolved(model), path)
     try:
         if shape["type"] == "ellipse":

@@ -140,6 +140,8 @@ of its form) build the tree:
 * on any shape: *Put in a union / an intersection / a difference*, which
   makes it the first part of a new boolean (the other parts are then
   added to it);
+* on any shape: *Transform: move or turn*, *Transform: copy in an array*
+  (see :ref:`gui-geometries-transforms`);
 * on the root (or a profile): *Clear (start again from nothing)*.
 
 The type of a boolean is changed in its form (a union of a rectangle and a
@@ -224,6 +226,56 @@ under a profile; otherwise it snaps to the grid (*snap* unchecked: neither).
 The GetFEM mesher places the shapes with its ``placed`` object (a rigid
 motion, added to GetFEM for the interface); Gmsh and Netgen turn and move
 them; a mesh in layers is turned and moved after it is built.
+
+.. _gui-geometries-transforms:
+
+Transformations and arrays
+--------------------------
+
+.. image:: images/array_3d.png
+   :width: 100%
+   :alt: The hole of a block copied in a linear array
+
+Any shape of a constructive geometry, 2D or 3D (a primitive, a boolean, a
+profile or one of its shapes), can be moved or copied. *Transform* (right
+click, the **+** button or the buttons of its form) puts it in a new node:
+
+``transform``
+   the shape turned by ``angle`` degrees about ``center`` (in 3D, about the
+   line through ``center`` along ``axis``, counterclockwise around it), then
+   translated by ``translate``. A new transform moves nothing and turns
+   about the center of the shape;
+``array``
+   the union of ``count`` copies of the shape (itself included):
+   ``linear``, each copy translated by ``step`` from the previous one;
+   ``circular``, each copy turned by ``angle`` degrees about ``center``
+   (and ``axis`` in 3D). A new array is linear, of three copies side by
+   side; its *Kind* changes it into a circular one, a quarter of a turn
+   apart about the origin.
+
+.. code-block:: text
+
+  {"type": "array", "kind": "circular", "count": 6, "angle": 60, "center": [0, 0, 0],
+   "axis": [0, 0, 1], "of": [{"type": "cylinder", ...}]}
+
+All these values may be parameters or expressions (``"count": "n"``, a
+vector parameter for ``step``), so that a pattern is changed in one place.
+*Remove the transform only* (*the array only*) puts the shape back in its
+place; removing the shape removes its transform too.
+
+The sides and faces of a moved or copied shape keep their names and their
+paths in the tree: a selection of a side or a face of the shape holds it on
+every copy (the ``hole`` of the block above is the side of the three
+holes), and the selections stay valid when the shape is put in a transform
+or an array or taken out of it. A region (2D) is a region of the shape, in
+any of its copies. The handles of a moved 2D primitive are where it is
+drawn: dragging them changes the primitive before the transformation.
+
+In 2D, the transformations are applied to the primitives themselves (a
+turned rectangle is meshed as a polygon). In 3D, the GetFEM mesher places
+each copy with its ``placed`` object, |gmsh| and Netgen turn and move them.
+An extrusion or a revolution meshed in layers may be moved; copied in an
+array, it is meshed as a whole (the layers are dropped).
 
 Curves and surfaces
 -------------------

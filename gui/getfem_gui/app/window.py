@@ -915,7 +915,7 @@ class MainWindow(QMainWindow):
         from .. import geometry3d as G3
         try:
             root = model["geometries"][gi]["source"]["shape"]
-            swept = E.get_at(model, prof[:-1])
+            swept = E.placed_swept(model, prof)
             rest = G3.without(root, tuple(prof[5:-1:2]))
             if next(G3.primitives(rest), None) is None:
                 return None

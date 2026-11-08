@@ -6,7 +6,7 @@
 Shapes of the constructive geometries
 =====================================
 
-A ``csg`` geometry is a tree of shapes: primitives combined by booleans. The flat domain of a ``surface`` and the profile of an extrusion or a revolution are 2D trees of the same kind. The sides (2D) and faces (3D) are the names used by the ``edges`` and ``faces`` selections.
+A ``csg`` geometry is a tree of shapes: primitives combined by booleans, moved by transforms and copied by arrays. The flat domain of a ``surface`` and the profile of an extrusion or a revolution are 2D trees of the same kind. The sides (2D) and faces (3D) are the names used by the ``edges`` and ``faces`` selections.
 
 .. _gui-ref-shape-rectangle-2d:
 
@@ -284,3 +284,108 @@ difference
      - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
 
 The first shape is combined with the following ones.
+
+.. _gui-ref-shape-transform-2d:
+
+transform (2D)
+--------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Translation
+     - ``translate``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Rotation (degrees)
+     - ``angle``
+     - number or expression of parameters. Counterclockwise
+   * - Center of rotation
+     - ``center``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+
+The shape below, turned about the center, then translated. Its sides and faces keep their selections.
+
+.. _gui-ref-shape-transform-3d:
+
+transform (3D)
+--------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Translation
+     - ``translate``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Rotation (degrees)
+     - ``angle``
+     - number or expression of parameters. Counterclockwise about the axis (right-hand rule)
+   * - Center of rotation
+     - ``center``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Axis of rotation
+     - ``axis``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter. The rotation is about the line through the center along this axis
+
+The shape below, turned about the center, then translated. Its sides and faces keep their selections.
+
+.. _gui-ref-shape-array-2d:
+
+array: linear (2D)
+------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Kind
+     - ``kind``
+     - one of ``linear`` (linear: translated by a step), ``circular`` (circular: turned by an angle)
+   * - Number of copies
+     - ``count``
+     - number or expression of parameters. The shape itself included
+   * - Step
+     - ``step``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter. From a copy to the next one
+
+The union of copies of the shape below; a selection of a side or a face of the shape holds it on every copy.
+
+.. _gui-ref-shape-array-3d:
+
+array: circular (3D)
+--------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Kind
+     - ``kind``
+     - one of ``linear`` (linear: translated by a step), ``circular`` (circular: turned by an angle)
+   * - Number of copies
+     - ``count``
+     - number or expression of parameters. The shape itself included
+   * - Center
+     - ``center``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Angle between copies (degrees)
+     - ``angle``
+     - number or expression of parameters. 360 / number of copies for a full turn
+   * - Axis of rotation
+     - ``axis``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter. The rotation is about the line through the center along this axis
+
+The union of copies of the shape below; a selection of a side or a face of the shape holds it on every copy.

@@ -336,7 +336,8 @@ def format_value(v) -> str:
 # ------------------------------------------------------------------ resolution
 
 # Numerical fields of geometries and meshes that may hold an expression
-SHAPE_KEYS = ("min", "max", "center", "radius", "radii", "angle", "origin", "axis", "length", "z")
+SHAPE_KEYS = ("min", "max", "center", "radius", "radii", "angle", "origin", "axis", "length", "z",
+              "translate", "step")
 CRITERIA_KEYS = ("point", "normal", "direction", "angle", "min", "max", "center", "radius")
 BOX_KEYS = ("origin", "size")
 MESH_KEYS = ("h", "size")
@@ -388,6 +389,7 @@ def _resolve_shape(shape, where, vals, errors):
     if not isinstance(shape, dict):
         return
     _resolve(shape, SHAPE_KEYS, where, vals, errors)
+    _resolve(shape, ("count",), where, vals, errors, integer=True, scalars=("count",))
     if isinstance(shape.get("points"), list):
         for j, v in enumerate(shape["points"]):
             if isinstance(v, (list, str)):

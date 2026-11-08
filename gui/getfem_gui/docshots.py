@@ -189,12 +189,30 @@ def work_plane(win):
     win.select(prof)
 
 
+def array_3d(win):
+    """The hole of the block copied in a linear array: its selection holds
+    the three holes."""
+    hole = ("geometries", 0, "source", "shape", "of", 1)
+    win.select(hole)
+    win._panel_action("transform:array")
+    _settle()
+    arr = E.get_at(win.model, hole)
+    arr.update(count=3, step=["Lx/4", 0, 0])
+    arr["of"][0]["origin"][0] = "Lx/4"
+    win._changed(select=hole)
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QSplitter
+    split = next(w for w in win.findChildren(QSplitter) if w.orientation() == Qt.Orientation.Horizontal)
+    split.setSizes([230, 470, 580])              # the whole form
+
+
 SHOTS = {
     "window.png": ("plate_hole_tension.json", window_2d),
     "polygon_handles.png": ("l_bracket.json", polygon_handles),
     "preview_3d.png": ("heat_sink_3d.json", preview_3d),
     "faces_3d.png": ("block_with_hole_3d.json", faces_3d),
     "work_plane.png": ("block_with_hole_3d.json", work_plane),
+    "array_3d.png": ("block_with_hole_3d.json", array_3d),
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
     "results.png": ("plate_hole_tension.json", results),

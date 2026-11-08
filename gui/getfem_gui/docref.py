@@ -176,22 +176,27 @@ def geometry_sources() -> str:
 
 def shapes() -> str:
     out = HEADER + ".. _gui-ref-shapes:\n\n" + _title("Shapes of the constructive geometries", "=")
-    out += ("A ``csg`` geometry is a tree of shapes: primitives combined by booleans. "
+    out += ("A ``csg`` geometry is a tree of shapes: primitives combined by booleans, "
+            "moved by transforms and copied by arrays. "
             "The flat domain of a ``surface`` and the profile of an extrusion or a "
             "revolution are 2D trees of the same kind. The sides (2D) and faces (3D) are "
             "the names used by the ``edges`` and ``faces`` selections.\n\n")
     cases = [(t, 2) for t in E.PRIMITIVES_2D] + [("rectangle", 3), ("ball", 3), ("cylinder", 3),
                                                  ("extrusion", 3), ("revolution", 3)] \
-        + [(t, 2) for t in M.SHAPES_BOOLEAN]
+        + [(t, 2) for t in M.SHAPES_BOOLEAN] + [("transform", 2), ("transform", 3), ("array", 2), ("array", 3)]
     for t, dim in cases:
         shape = E._default_shape(t, dim)
+        if t == "array" and dim == 3:
+            shape.update(kind="circular", center=[0.0, 0.0, 0.0], angle=90.0, axis=[0.0, 0.0, 1.0])
+            shape.pop("step")
         m = _model_with_source({"type": "csg", "dim": dim, "shape": shape})
-        what = {"rectangle": "box" if dim == 3 else "rectangle", "ball": "ball" if dim == 3 else "disk"}
+        what = {"rectangle": "box" if dim == 3 else "rectangle", "ball": "ball" if dim == 3 else "disk",
+                "array": "linear (2D)" if dim == 2 else "circular (3D)"}
         name = what.get(t, t)
-        title = f"{t} ({dim}D)" if t in ("rectangle", "ball") else t
+        title = f"{t} ({dim}D)" if t in ("rectangle", "ball", "transform") else t
         out += f".. _gui-ref-shape-{t}-{dim}d:\n\n" + _title(title + ("" if name == t else f": {name}"), "-")
         out += _fields_doc(m, ("geometries", 0, "source", "shape"))
-        if t in M.SHAPES_BOOLEAN:
+        if t in M.SHAPES_BOOLEAN or t in M.SHAPES_TRANSFORM:
             continue
         if dim == 2:
             sides = G2.side_names(shape)

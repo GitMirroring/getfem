@@ -32,6 +32,7 @@ import math
 import numpy as np
 
 from . import geometry2d as G2
+from . import transforms as T
 
 BOOLEANS = ("union", "intersection", "difference")
 
@@ -43,13 +44,21 @@ def shape_of(source: dict) -> dict | None:
         o, s = source["origin"], source["size"]
         return {"type": "rectangle", "min": list(o), "max": [a + b for a, b in zip(o, s)]}
     if t == "csg" and source.get("dim") == 3:
-        return source.get("shape")
+        shape = source.get("shape")
+        return T.flatten(shape, 3) if isinstance(shape, dict) else shape
     return None
+
+
+SWEPT = ("extrusion", "revolution")
 
 
 def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     """Signed distance like function at the points P (n x 3)."""
     t = shape["type"]
+    if t in T.TRANSFORMS:
+        return sdf(T.flatten(shape, 3), P)
+    if t not in BOOLEANS and frame(shape) is not None:      # placed (work plane, transformation)
+        P = to_local(shape, P)
     if t == "rectangle":
         lo, hi = np.asarray(shape["min"], float), np.asarray(shape["max"], float)
         q = np.maximum(lo - P, P - hi)
@@ -68,8 +77,6 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
         q = np.stack([radial, axial], axis=1)
         outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
         return np.where(np.all(q <= 0, axis=1), np.max(q, axis=1), outside)
-    if t in ("extrusion", "revolution") and frame(shape) is not None:      # in its work plane
-        P = to_local(shape, P)
     if t == "extrusion":
         z0, z1 = (float(v) for v in shape["z"])
         q = np.stack([G2.sdf(shape["profile"], P[:, :2]), np.maximum(z0 - P[:, 2], P[:, 2] - z1)], axis=1)
@@ -90,17 +97,24 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
 
 
 def frame(shape: dict):
-    """The work plane of an extrusion or a revolution: (O, R), its origin and
-    the orthonormal matrix whose columns are its axes e1, e2 and its normal
-    e1 x e2 (the z axis of the profile); None for the (x, y) plane at 0."""
-    if "origin" not in shape and "axes" not in shape:
-        return None
-    O = np.asarray(shape.get("origin", [0.0, 0.0, 0.0]), float)
-    a = np.asarray(shape.get("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), float)
-    e1 = a[0] / (np.linalg.norm(a[0]) or 1.0)
-    e2 = a[1] - (a[1] @ e1) * e1
-    e2 = e2 / (np.linalg.norm(e2) or 1.0)
-    return O, np.column_stack([e1, e2, np.cross(e1, e2)])
+    """The frame where a primitive is built: (O, R), x -> O + R x, R
+    orthonormal. For an extrusion or a revolution, its work plane: its
+    origin, its axes e1, e2 and its normal e1 x e2 (the z axis of the
+    profile) as columns of R; composed with the transformation of the
+    primitive by the transforms and arrays of the tree ("_frame", see
+    transforms.flatten). None for the identity."""
+    out = None
+    if shape.get("type") in SWEPT and ("origin" in shape or "axes" in shape):
+        O = np.asarray(shape.get("origin", [0.0, 0.0, 0.0]), float)
+        a = np.asarray(shape.get("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), float)
+        e1 = a[0] / (np.linalg.norm(a[0]) or 1.0)
+        e2 = a[1] - (a[1] @ e1) * e1
+        e2 = e2 / (np.linalg.norm(e2) or 1.0)
+        out = O, np.column_stack([e1, e2, np.cross(e1, e2)])
+    if "_frame" in shape:
+        b, A = np.asarray(shape["_frame"][0], float), np.asarray(shape["_frame"][1], float)
+        out = (b, A) if out is None else (b + A @ out[0], A @ out[1])
+    return out
 
 
 def to_local(shape: dict, P: np.ndarray) -> np.ndarray:
@@ -179,6 +193,34 @@ def meridian(P: np.ndarray) -> np.ndarray:
 
 def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
     t = shape["type"]
+    if t in T.TRANSFORMS:
+        return bounds(T.flatten(shape, 3))
+    if t not in BOOLEANS and frame(shape) is not None:      # placed: the box of its placed local box
+        lo, hi = _local_bounds(shape)
+        corners = np.array([[a, b, c] for a in (lo[0], hi[0]) for b in (lo[1], hi[1]) for c in (lo[2], hi[2])])
+        X = to_global(shape, corners)
+        return X.min(axis=0), X.max(axis=0)
+    if t not in BOOLEANS:
+        return _local_bounds(shape)
+    b = []
+    for s in shape["of"]:
+        try:
+            b.append(bounds(s))
+        except ValueError:                 # an empty boolean in it
+            if t == "difference" and not b:
+                raise
+    if not b:
+        raise ValueError("empty shape")
+    if t == "union":
+        return np.min([x[0] for x in b], axis=0), np.max([x[1] for x in b], axis=0)
+    if t == "intersection":
+        return np.max([x[0] for x in b], axis=0), np.min([x[1] for x in b], axis=0)
+    return b[0]
+
+
+def _local_bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
+    """The bounds of a primitive in its own frame."""
+    t = shape["type"]
     if t == "rectangle":
         return np.asarray(shape["min"], float), np.asarray(shape["max"], float)
     if t == "ball":
@@ -200,25 +242,8 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         else:
             R = max(float(hi[0]), 0.0)
             lo, hi = np.array([-R, -R, lo[1]]), np.array([R, R, hi[1]])
-        if frame(shape) is None:
-            return lo, hi
-        corners = np.array([[a, b, c] for a in (lo[0], hi[0]) for b in (lo[1], hi[1]) for c in (lo[2], hi[2])])
-        X = to_global(shape, corners)
-        return X.min(axis=0), X.max(axis=0)
-    b = []
-    for s in shape["of"]:
-        try:
-            b.append(bounds(s))
-        except ValueError:                 # an empty boolean in it
-            if t == "difference" and not b:
-                raise
-    if not b:
-        raise ValueError("empty shape")
-    if t == "union":
-        return np.min([x[0] for x in b], axis=0), np.max([x[1] for x in b], axis=0)
-    if t == "intersection":
-        return np.max([x[0] for x in b], axis=0), np.min([x[1] for x in b], axis=0)
-    return b[0]
+        return lo, hi
+    raise ValueError(f"shape {t!r} is not 3D")
 
 
 def effective_profile(shape: dict) -> dict:
@@ -259,7 +284,11 @@ def profile_curves(shape: dict, h: float, refs: bool = False) -> list:
 
 
 def primitives(shape: dict, path: tuple = ()):
-    if shape.get("type") in BOOLEANS:
+    """(path, primitive) of the leaves of a CSG tree; path = indices in "of"
+    (in a flattened tree, see transforms.flatten, the path of the primitive
+    in the model is its "_src"; transforms and arrays are gone through, for
+    a tree that is not flattened)."""
+    if shape.get("type") in BOOLEANS or shape.get("type") in T.TRANSFORMS:
         for i, s in enumerate(shape.get("of", [])):
             yield from primitives(s, path + (i,))
     else:
@@ -370,12 +399,35 @@ BOX_FACES = ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
 
 
 def primitive_at(shape: dict, path) -> dict | None:
+    """The node at path (indices in "of") of the tree of the model; in a
+    flattened tree, the (first copy of the) primitive of that path."""
+    if shape.get("_flat"):
+        return next(iter(copies(shape, path)), None)
     for i in path:
         try:
             shape = shape["of"][i]
         except (KeyError, IndexError, TypeError):
             return None
     return shape
+
+
+def copies(shape: dict, path) -> list[dict]:
+    """The primitives of a (flattened) tree that are the node at path of the
+    model: one, or a copy per element of the arrays above it."""
+    if not shape.get("_flat"):
+        prim = primitive_at(shape, path)
+        return [] if prim is None else [prim]
+    return [p for q, p in primitives(shape) if T.source_path(p, q) == tuple(path)]
+
+
+def source_paths(shape: dict) -> list[tuple]:
+    """The paths in the model of the primitives, each once, in order."""
+    out = []
+    for q, p in primitives(shape):
+        k = T.source_path(p, q)
+        if k not in out:
+            out.append(k)
+    return out
 
 
 def face_key(ref: dict) -> tuple:
@@ -400,7 +452,7 @@ def primitive_faces(prim: dict) -> list[dict]:
 
 def face_exists(shape: dict, ref: dict) -> bool:
     prim = primitive_at(shape, ref.get("shape", []))
-    if prim is None or prim.get("type") in BOOLEANS:
+    if prim is None or prim.get("type") in BOOLEANS or prim.get("type") in T.TRANSFORMS:
         return False
     key = face_key(dict(ref, shape=[]))
     return any(face_key(dict(f, shape=[])) == key for f in primitive_faces(prim))
@@ -409,7 +461,7 @@ def face_exists(shape: dict, ref: dict) -> bool:
 def face_label(shape: dict, ref: dict) -> str:
     """'xmin of rectangle 1', 'top of extrusion 2', 'side (circle of ball 1)
     of revolution 1'."""
-    names = [p for p, _ in primitives(shape)]
+    names = source_paths(shape)
     path = tuple(ref.get("shape", []))
     prim = primitive_at(shape, path)
     if prim is None or path not in names:
@@ -434,26 +486,34 @@ def toggle_face(criteria: dict, ref: dict) -> dict:
 
 
 def face_spec(shape: dict, ref: dict) -> dict:
-    """Concrete description of a face (numbers), for on_face."""
-    prim = primitive_at(shape, ref.get("shape", []))
+    """Concrete description of a face (numbers), for on_face; for a shape
+    copied by an array, the face of any of the copies."""
+    found = copies(shape, ref.get("shape", []))
+    if len(found) > 1:
+        return {"kind": "any", "of": [_face_spec(p, ref) for p in found]}
+    return _face_spec(found[0], ref)
+
+
+def _face_spec(prim: dict, ref: dict) -> dict:
     t, f = prim["type"], ref.get("face")
+    fr = frame(prim)
+    place = {} if fr is None else {"frame": {"origin": fr[0].tolist(), "R": fr[1].tolist()}}
     if t == "rectangle":
         k = BOX_FACES.index(f)
         axis, hi = k // 2, k % 2 == 1
-        return {"kind": "box_face", "axis": axis, "value": float((prim["max"] if hi else prim["min"])[axis]),
-                "min": [float(x) for x in prim["min"]], "max": [float(x) for x in prim["max"]]}
+        return dict({"kind": "box_face", "axis": axis, "value": float((prim["max"] if hi else prim["min"])[axis]),
+                     "min": [float(x) for x in prim["min"]], "max": [float(x) for x in prim["max"]]}, **place)
     if t == "ball":
-        return {"kind": "sphere", "center": [float(x) for x in prim["center"]], "radius": float(prim["radius"])}
+        return dict({"kind": "sphere", "center": [float(x) for x in prim["center"]],
+                     "radius": float(prim["radius"])}, **place)
     if t == "cylinder":
         a = np.asarray(prim["axis"], float)
         a = (a / (np.linalg.norm(a) or 1.0)).tolist()
         o, L, r = [float(x) for x in prim["origin"]], float(prim["length"]), float(prim["radius"])
         if f == "side":
-            return {"kind": "cylinder_side", "origin": o, "axis": a, "length": L, "radius": r}
-        return {"kind": "disk", "center": o if f == "start" else [x + L * y for x, y in zip(o, a)],
-                "normal": a, "radius": r}
-    fr = frame(prim) if t in ("extrusion", "revolution") else None
-    place = {} if fr is None else {"frame": {"origin": fr[0].tolist(), "R": fr[1].tolist()}}
+            return dict({"kind": "cylinder_side", "origin": o, "axis": a, "length": L, "radius": r}, **place)
+        return dict({"kind": "disk", "center": o if f == "start" else [x + L * y for x, y in zip(o, a)],
+                     "normal": a, "radius": r}, **place)
     if t == "extrusion" and f in ("bottom", "top"):
         z = sorted(float(v) for v in prim["z"])
         return dict({"kind": "cap", "z": z[0] if f == "bottom" else z[1], "profile": prim["profile"]}, **place)
@@ -546,7 +606,9 @@ def on_face(spec, Q, N, tol):
     vertices on the surface (tolerance tol), its normal along the normal of
     the surface (which tells apart a face at the edge of two surfaces)."""
     k = spec["kind"]
-    if "frame" in spec:                   # a face of a shape in a work plane: in its frame
+    if k == "any":                        # a face of a shape copied by an array: on any copy
+        return any(on_face(s, Q, N, tol) for s in spec["of"])
+    if "frame" in spec:                   # a face of a placed shape (work plane, transformation): in its frame
         R = np.asarray(spec["frame"]["R"], float)
         Q = (Q - np.asarray(spec["frame"]["origin"], float)) @ R
         N = N @ R

@@ -42,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import geometry2d as G, geometry3d as G3, model as M, parameters as P
+from . import geometry2d as G, geometry3d as G3, model as M, parameters as P, transforms as T
 
 # To be incremented whenever the generated script changes, to invalidate caches.
 SCRIPT_VERSION = 14
@@ -114,11 +114,6 @@ def _gf_shape(shape, w) -> str:
             w(f"{v} = gf.MesherObject('extrusion', {p}, {z0!r}, {z1!r})")
         else:
             w(f"{v} = gf.MesherObject('revolution', {p})   # profile in the (r, z) plane, axis z")
-        fr = G3.frame(shape)
-        if fr is not None:                # in its work plane: placed (origin, axes)
-            O, R = fr
-            w(f"{v} = gf.MesherObject('placed', {v}, {O.tolist()!r}, {R[:, 0].tolist()!r}, "
-              f"{R[:, 1].tolist()!r})")
     elif t in GF_SHAPES and len(parts) == 1:        # a boolean of one shape: that shape
         return parts[0]
     elif t == "difference" and len(parts) > 2:
@@ -128,6 +123,11 @@ def _gf_shape(shape, w) -> str:
           f"gf.MesherObject('union', {', '.join(parts[1:])}))")
     else:
         w(f"{v} = gf.MesherObject({GF_SHAPES[t]!r}, {', '.join(parts)})")
+    fr = G3.frame(shape) if t not in GF_SHAPES else None
+    if fr is not None:                    # in its work plane, or moved: placed (origin, axes)
+        O, R = fr
+        w(f"{v} = gf.MesherObject('placed', {v}, {O.tolist()!r}, {R[:, 0].tolist()!r}, "
+          f"{R[:, 1].tolist()!r})")
     return v
 
 
@@ -136,9 +136,17 @@ def _box_as_shape(src):
             "max": [o + s for o, s in zip(src["origin"], src["size"])]}
 
 
+def _source_shape(src):
+    """The CSG tree of a box or csg source, its transforms and arrays applied
+    (transforms.flatten)."""
+    if src["type"] == "box":
+        return _box_as_shape(src)
+    return T.flatten(src["shape"], src.get("dim", 2))
+
+
 def _build_getfem(model, geom, mesh, w):
     src = geom["source"]
-    shape = _box_as_shape(src) if src["type"] == "box" else src["shape"]
+    shape = _source_shape(src)
     w("# Implicit description of the geometry (MesherObject)")
     top = _gf_shape(shape, w)
     h, K = float(mesh['h']), int(mesh.get('order', 1))
@@ -197,14 +205,12 @@ def _occ_shape(shape, dim, w) -> str:
         z0, z1 = _floats(shape["z"])
         w(f"{occ}.translate({p}, 0.0, 0.0, {z0!r})")
         w(f"{v} = [e for e in {occ}.extrude({p}, 0.0, 0.0, {z1 - z0!r}) if e[0] == 3]")
-        _occ_place(shape, v, w)
     elif t == "revolution":
         # the profile, drawn in the (x, y) plane for (r, z), is turned into
         # the (x, z) plane, then about the z axis
         p = _occ_shape(G3.effective_profile(shape), 2, w)
         w(f"{occ}.rotate({p}, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, math.pi / 2)")
         w(f"{v} = [e for e in {occ}.revolve({p}, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2 * math.pi) if e[0] == 3]")
-        _occ_place(shape, v, w)
     elif len(parts) == 1:                 # a boolean of one shape: that shape
         w(f"{v} = {parts[0]}")
     elif t == "intersection":
@@ -215,19 +221,22 @@ def _occ_shape(shape, dim, w) -> str:
             w(f"{v}, _ = {occ}.intersect({v}, {q})")
     else:          # fuse(a, b + c), cut(a, b + c): a with or without b and c
         w(f"{v}, _ = {occ}.{OCC_BOOLEANS[t]}({parts[0]}, {' + '.join(parts[1:])})")
+    if t not in OCC_BOOLEANS and dim == 3:
+        _occ_place(shape, v, w)
     return v
 
 
 def _occ_place(shape, v, w):
-    """An extrusion or a revolution in its work plane: built in the frame of
-    the plane, then turned and moved there."""
+    """A 3D primitive in its frame (the work plane of an extrusion or a
+    revolution, the transforms and arrays above it): built in the frame,
+    then turned and moved there."""
     fr = G3.frame(shape)
     if fr is None:
         return
     occ = "gmsh.model.occ"
     O, R = fr
     axis, angle = G3.rotation_vector(R)
-    w("# placed in its work plane")
+    w("# placed in its frame")
     if angle:
         w(f"{occ}.rotate({v}, 0.0, 0.0, 0.0, {axis[0]!r}, {axis[1]!r}, {axis[2]!r}, {angle!r})")
     w(f"{occ}.translate({v}, {O[0]!r}, {O[1]!r}, {O[2]!r})")
@@ -239,7 +248,7 @@ def _ng_place(shape, v, w):
         return
     O, R = fr
     axis, angle = G3.rotation_vector(R)
-    w("# placed in its work plane")
+    w("# placed in its frame")
     if angle:
         w(f"{v} = {v}.Rotate(Axis((0, 0, 0), Dir({axis[0]!r}, {axis[1]!r}, {axis[2]!r})), "
           f"{math.degrees(angle)!r})")
@@ -260,7 +269,7 @@ def _build_gmsh(model, geom, mesh, w, msh_name):
         w("dim = max(d for d, _ in entities)")
     else:
         dim = len(src["size"]) if src["type"] == "box" else src["dim"]
-        shape = _box_as_shape(src) if src["type"] == "box" else src["shape"]
+        shape = _source_shape(src)
         _occ_shape(shape, dim, w)
         w("gmsh.model.occ.synchronize()")
         w(f"dim = {dim}")
@@ -321,17 +330,17 @@ def _ng_shape(shape, dim, w) -> str:
         p = _ng_shape(shape["profile"], 2, w)
         z0, z1 = _floats(shape["z"])
         w(f"{v} = {p}.Extrude({z1 - z0!r}).Move(Vec(0, 0, {z0!r}))")
-        _ng_place(shape, v, w)
     elif t == "revolution":
         p = _ng_shape(G3.effective_profile(shape), 2, w)
         w("# the profile, drawn in the (x, y) plane for (r, z), turned into the (x, z) plane")
         w(f"{v} = {p}.Rotate(Axis((0, 0, 0), X), 90).Revolve(Axis((0, 0, 0), Z), 360)")
-        _ng_place(shape, v, w)
     elif t in OCC_BOOLEANS:
         op = {"union": "+", "intersection": "*", "difference": "-"}[t]
         w(f"{v} = " + f" {op} ".join(parts))
     else:
         raise ValueError(f"{t!r} shapes cannot be meshed by Netgen yet (use Gmsh)")
+    if t not in OCC_BOOLEANS and dim == 3:
+        _ng_place(shape, v, w)
     return v
 
 
@@ -342,7 +351,7 @@ def _build_netgen(model, geom, mesh, w, msh_name):
         w(f"geo = OCCGeometry({str(M.resolve_file(model, src['file']))!r})")
     else:
         dim = len(src["size"]) if src["type"] == "box" else src["dim"]
-        shape = _box_as_shape(src) if src["type"] == "box" else src["shape"]
+        shape = _source_shape(src)
         top = _ng_shape(shape, dim, w)
         w(f"geo = OCCGeometry({top}, dim={dim})")
     quad = mesh.get("element") == "quad"
@@ -359,7 +368,7 @@ def _build_layered(model, geom, mesh, w, basename):
     """A 3D extrusion or revolution meshed in layers: the 2D profile is
     meshed (triangles or quadrangles), then extruded or turned in layers of
     prisms or hexahedra (gf.Mesh('prismatic'), its points then mapped)."""
-    shape = M.swept_root(geom["source"]["shape"])
+    shape = M.swept_root(T.flatten(geom["source"]["shape"], 3))
     n, K = int(mesh["layers"]), int(mesh.get("order", 1))
     profile = G3.effective_profile(shape)
     g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": profile}, "selections": {}}
@@ -377,7 +386,7 @@ def _build_layered(model, geom, mesh, w, basename):
 
     def place():
         if fr is not None:                # in its work plane
-            w("# placed in its work plane: x -> O + R x")
+            w("# placed in its frame: x -> O + R x")
             w(f"m.transform({fr[1].tolist()!r})")
             w(f"m.translate({fr[0].tolist()!r})")
     if shape["type"] == "extrusion":
@@ -444,7 +453,7 @@ def _build_swept(model, geom, mesh, w):
 def _build_flat(model, geom, mesh, w, basename):
     """The flat domain of a surface, meshed in 2D (mapped to 3D after the
     selections, which are defined on it)."""
-    g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": geom["source"]["shape"]},
+    g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": T.flatten(geom["source"]["shape"], 2)},
           "selections": geom.get("selections", {})}
     w("# The flat domain (local coordinates x, y)")
     if mesh["mesher"] == "getfem":
@@ -541,9 +550,13 @@ def _selection_code(name, sel, w, shape=None):
             else:
                 w(f"    ('ball', {_floats(p['center'])}, {float(p['radius'])!r}),")
         w("]")
-        paths = [tuple(path) for path, _ in prims]
+        paths = G.source_paths(shape)
+        groups = [paths.index(tuple(path)) for path, _ in prims]
         bits = [[tuple(q) in {tuple(x) for x in reg} for q in paths] for reg in c["regions"]]
-        w(f"SEL[{name!r}] = ('domain', cvs_in_regions(PRIMITIVES, {bits!r}))")
+        if groups == list(range(len(prims))):
+            w(f"SEL[{name!r}] = ('domain', cvs_in_regions(PRIMITIVES, {bits!r}))")
+        else:                             # copies of a shape (arrays): one group of primitives
+            w(f"SEL[{name!r}] = ('domain', cvs_in_regions(PRIMITIVES, {bits!r}, {groups!r}))")
     elif t == "union":
         parts = ", ".join(f"SEL[{o!r}][1]" for o in c["of"])
         if kind == M.BOUNDARY:
@@ -649,9 +662,10 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("    return faces[:, keep]")
 
     w("")
-    w("def cvs_in_regions(primitives, regions):")
+    w("def cvs_in_regions(primitives, regions, groups=None):")
     w("    \"\"\"Elements whose center is in one of the regions; a region is given by")
-    w("    which primitives contain it (one boolean per primitive).\"\"\"")
+    w("    which primitives contain it (one boolean per primitive, or per group of")
+    w("    primitives: the copies of a shape).\"\"\"")
     w("    cv = m.cvid()")
     w("    pid, idx = m.pid_from_cvid(cv)")
     w("    C = np.add.reduceat(m.pts()[:2, pid], idx[:-1], axis=1) / np.diff(idx)")
@@ -676,6 +690,9 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("        else:")
     w("            inside.append(np.linalg.norm(C - np.c_[a], axis=0) < b)")
     w("    inside = np.array(inside).reshape(len(primitives), -1)")
+    w("    if groups is not None:")
+    w("        inside = np.array([np.any(inside[[i for i, g in enumerate(groups) if g == k]], axis=0)")
+    w("                           for k in range(max(groups) + 1)])")
     w("    keep = np.zeros(cv.size, bool)")
     w("    for bits in regions:")
     w("        keep |= np.all(inside == np.c_[bits], axis=0)")

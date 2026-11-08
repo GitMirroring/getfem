@@ -41,6 +41,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import transforms as T
+
 RECTANGLE_SIDES = ("xmin", "xmax", "ymin", "ymax")
 BOOLEANS = ("union", "intersection", "difference")
 
@@ -53,14 +55,18 @@ def shape_of(source: dict) -> dict | None:
     if t == "box" and len(source.get("size", [])) == 2:
         o, s = source["origin"], source["size"]
         return {"type": "rectangle", "min": list(o), "max": [o[0] + s[0], o[1] + s[1]]}
-    if t == "csg" and source.get("dim") == 2:
-        return source.get("shape")
-    if t == "surface":                   # the flat domain of a surface in 3D
-        return source.get("shape")
+    if (t == "csg" and source.get("dim") == 2) or t == "surface":     # surface: its flat domain
+        shape = source.get("shape")
+        return T.flatten(shape, 2) if isinstance(shape, dict) else shape
     return None
 
 
 def primitive_at(shape: dict, path) -> dict | None:
+    """The node at path (indices in "of") of the tree of the model; in a
+    flattened tree (transforms.flatten), the (first copy of the) primitive
+    of that path, with the transformations applied."""
+    if shape.get("_flat"):
+        return next((p for q, p in primitives(shape) if q == tuple(path)), None)
     for i in path:
         try:
             shape = shape["of"][i]
@@ -70,12 +76,26 @@ def primitive_at(shape: dict, path) -> dict | None:
 
 
 def primitives(shape: dict, path: tuple = ()):
-    """(path, primitive) of the leaves of a CSG tree; path = indices in "of"."""
+    """(path, primitive) of the leaves of a CSG tree; path = indices in "of"
+    in the tree of the model. A tree with transforms or arrays is flattened
+    first (transforms.flatten): the primitives are then transformed, and a
+    primitive copied by an array comes once per copy, with the same path."""
+    if not path and not shape.get("_flat") and T.has_transforms(shape):
+        shape = T.flatten(shape, 2)
     if shape.get("type") in BOOLEANS:
         for i, s in enumerate(shape.get("of", [])):
             yield from primitives(s, path + (i,))
     elif not incomplete(shape):
-        yield path, shape
+        yield T.source_path(shape, path), shape
+
+
+def source_paths(shape: dict) -> list[tuple]:
+    """The paths of the primitives in the tree of the model, each once."""
+    out = []
+    for q, _ in primitives(shape):
+        if q not in out:
+            out.append(q)
+    return out
 
 
 def incomplete(shape: dict) -> bool:
@@ -86,6 +106,8 @@ def incomplete(shape: dict) -> bool:
 def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     """Signed distance like function (negative inside) at the points P (n x 2)."""
     t = shape["type"]
+    if t in T.TRANSFORMS:
+        return sdf(T.flatten(shape, 2), P)
     if t == "rectangle":
         lo, hi = np.asarray(shape["min"], float), np.asarray(shape["max"], float)
         return np.max(np.maximum(lo - P, P - hi), axis=1)
@@ -111,6 +133,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
 
 def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
     t = shape["type"]
+    if t in T.TRANSFORMS:
+        return bounds(T.flatten(shape, 2))
     if t == "rectangle":
         return np.asarray(shape["min"], float), np.asarray(shape["max"], float)
     if t == "ball":
@@ -316,6 +340,8 @@ def side_names(prim: dict) -> tuple:
     if t == "rectangle":
         return RECTANGLE_SIDES
     if t == "polygon":
+        if prim.get("side_names"):            # a turned rectangle (transforms.flatten)
+            return tuple(prim["side_names"])
         return tuple(f"side{i + 1}" for i in range(len(prim.get("points", []))))
     if t == "ellipse":
         return ("ellipse",)
@@ -338,7 +364,8 @@ def sides(shape: dict) -> list[Side]:
                             (float(p["radii"][0]), float(p["radii"][1]), math.radians(float(p.get("angle", 0.0))))))
         elif p["type"] == "polygon":
             V = [tuple(float(x) for x in v) for v in p["points"]]
-            out += [Side(path, f"side{i + 1}", "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
+            names = side_names(p)
+            out += [Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
     return out
 
 
@@ -493,7 +520,7 @@ def interface_points(shape: dict, h: float) -> np.ndarray:
 # ------------------------------------------------------------------ regions
 
 def _paths(shape: dict) -> list[tuple]:
-    return [p for p, _ in primitives(shape)]
+    return source_paths(shape)
 
 
 def region_at(shape: dict, point) -> list[list[int]] | None:
@@ -503,7 +530,11 @@ def region_at(shape: dict, point) -> list[list[int]] | None:
     P = np.asarray(point, float)[None, :2]
     if sdf(shape, P)[0] >= 0:
         return None
-    return [list(path) for path, prim in primitives(shape) if sdf(prim, P)[0] < 0]
+    inside = []
+    for path, prim in primitives(shape):
+        if sdf(prim, P)[0] < 0 and list(path) not in inside:
+            inside.append(list(path))
+    return inside
 
 
 def region_level(shape: dict, regions: list) -> callable:
@@ -513,7 +544,10 @@ def region_level(shape: dict, regions: list) -> callable:
 
     def level(P):
         d = sdf(shape, P)
-        each = {path: sdf(prim, P) for path, prim in prims}
+        each = {}
+        for path, prim in prims:            # the copies of a primitive (arrays): together
+            v = sdf(prim, P)
+            each[path] = np.minimum(each[path], v) if path in each else v
         out = np.full(len(P), np.inf)
         for reg in regions:
             inside = {tuple(p) for p in reg}
@@ -596,7 +630,7 @@ def side_label(shape: dict, ref: dict) -> str:
     """Readable name of a side reference: 'circle of ball 2', 'xmin of rectangle 1',
     'side 3 of polygon 2'."""
     prim = primitive_at(shape, ref.get("shape", []))
-    names = [p for p, _ in primitives(shape)]
+    names = source_paths(shape)
     try:
         index = names.index(tuple(ref.get("shape", []))) + 1
     except ValueError:

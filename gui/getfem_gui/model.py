@@ -82,6 +82,12 @@ Geometry sources
                     | {"type": "revolution", "profile": <2D shape>}  (3D, about the z axis; the
                       profile is given in the (r, z) half plane, its part with r < 0 is ignored)
                     | {"type": "union" | "intersection" | "difference", "of": [<shape>, ...]}
+                    | {"type": "transform", "of": [<shape>], "translate": [...], "angle": a,
+                       "center": [...], "axis": [...]}   the shape turned by a degrees about
+                      the center (about the axis through it, in 3D), then translated
+                    | {"type": "array", "of": [<shape>], "count": n, "kind": "linear", "step": [...]}
+                    | {"type": "array", "of": [<shape>], "count": n, "kind": "circular",
+                       "center": [...], "angle": a, "axis": [...]}   the union of n copies
 - cad       : {"type": "cad", "file": "part.step"}                   STEP, IGES, BREP (through Gmsh)
 - mesh_file : {"type": "mesh_file", "file": "part.msh"}              the geometry is the mesh
 
@@ -197,6 +203,7 @@ CRITERIA = {
 }
 SHAPES_BOOLEAN = ("union", "intersection", "difference")
 SHAPES_SWEPT = ("extrusion", "revolution")        # 3D shapes made of a 2D profile
+SHAPES_TRANSFORM = ("transform", "array")          # a shape moved, or copied (transforms.py)
 
 SCALAR = "scalar"
 VECTOR = "vector"
@@ -316,8 +323,9 @@ def box_boundary_names(dim: int) -> list[str]:
 
 def swept_root(shape) -> dict | None:
     """The extrusion or revolution that a 3D CSG tree is (through booleans
-    of a single shape), or None."""
-    while isinstance(shape, dict) and shape.get("type") in SHAPES_BOOLEAN and len(shape.get("of", [])) == 1:
+    of a single shape and transforms), or None."""
+    while isinstance(shape, dict) and len(shape.get("of", [])) == 1 and (
+            shape.get("type") in SHAPES_BOOLEAN or shape.get("type") == "transform"):
         shape = shape["of"][0]
     return shape if isinstance(shape, dict) and shape.get("type") in SHAPES_SWEPT else None
 
@@ -829,10 +837,48 @@ def _check_shape(shape, dim, where, errors):
             errors.append(f"{where}.of: empty {t}: add shapes to it")
         for i, s in enumerate(parts):
             _check_shape(s, dim, f"{where}.of[{i}]", errors)
+    elif t in SHAPES_TRANSFORM:
+        _check_transform(shape, dim, where, errors)
+        parts = shape.get("of", [])
+        if not isinstance(parts, list) or len(parts) != 1:
+            errors.append(f"{where}.of: one shape expected (the shape {'moved' if t == 'transform' else 'copied'})")
+        else:
+            _check_shape(parts[0], dim, f"{where}.of[0]", errors)
     else:
         errors.append(f"{where}.type: unknown shape {t!r} "
                       "(rectangle, ball, ellipse, polygon, cylinder, extrusion, revolution, union, intersection, "
-                      "difference)")
+                      "difference, transform, array)")
+
+
+def _check_transform(shape, dim, where, errors):
+    """The parameters of a transform or an array (transforms.py)."""
+    def number(k, required=False):
+        v = shape.get(k)
+        if v is None and not required:
+            return
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            errors.append(f"{where}.{k}: number expected" + (" (degrees)" if k == "angle" else ""))
+    for k in ("center",) + (("translate",) if shape["type"] == "transform" else ()):
+        if k in shape:
+            _check_vec(shape[k], dim, f"{where}.{k}", errors)
+    if "axis" in shape:
+        if dim != 3:
+            errors.append(f"{where}.axis: only in 3D (in 2D, the rotations are about the center)")
+        elif _check_vec(shape["axis"], 3, f"{where}.axis", errors) and not any(shape["axis"]):
+            errors.append(f"{where}.axis: a nonzero vector expected")
+    if shape["type"] == "transform":
+        number("angle")
+        return
+    n = shape.get("count")
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        errors.append(f"{where}.count: a positive integer expected (the number of copies)")
+    kind = shape.get("kind", "linear")
+    if kind == "linear":
+        _check_vec(shape.get("step"), dim, f"{where}.step", errors)
+    elif kind == "circular":
+        number("angle", required=True)
+    else:
+        errors.append(f"{where}.kind: 'linear' or 'circular' expected")
 
 
 def _validate_geometry(model, geom, where, errors):
