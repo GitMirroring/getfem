@@ -111,8 +111,9 @@ class _DrawHooks:
         return self.viewer._tool is not None
 
     def view_changed(self) -> None:
-        if self.viewer._tool is not None:
-            self.viewer._grid_timer.start()
+        v = self.viewer
+        if v._tool is not None or (v._last and v._last[0] == "geometry"):
+            v._grid_timer.start()
 
     def _world(self, widget, x, y):
         from . import scene
@@ -329,6 +330,8 @@ class Viewer(QWidget):
         self._shown_key = key
         if self._tool is not None:
             self._show_grid(True)
+        else:
+            self._show_axes()
         if self._handles:
             from . import scene as _s
             _s.show_handles(self.plotter, [p for _, p in self._handles], minor=self._minor_handles())
@@ -650,7 +653,7 @@ class Viewer(QWidget):
             self.grid_label.setText("")
             self.grid_edit.setText("")
             scene.show_grid(self.plotter, None, None, None)
-            scene.show_axes_2d(self.plotter, None, None, None)
+            self._show_axes()                 # kept on a 2D geometry
             self.plotter.render()
             return
         width = scene.pixel_size(self.plotter) * max(self.view_widget.width(), 100)
@@ -669,10 +672,37 @@ class Viewer(QWidget):
         scene.show_axes_2d(self.plotter, lo, hi, G.major_step(self._draw_step, float(hi[0] - lo[0])))
         self.plotter.render()
 
+    def _view_box(self):
+        from . import scene
+        lo = scene.display_to_world(self.plotter, 0, 0)
+        hi = scene.display_to_world(self.plotter, self.view_widget.width() * self.view_widget.devicePixelRatioF(),
+                                    self.view_widget.height() * self.view_widget.devicePixelRatioF())
+        return np.minimum(lo, hi), np.maximum(lo, hi)
+
+    def _show_axes(self) -> None:
+        """The axes and their coordinates on a 2D geometry (also when not
+        drawing); removed on the other views."""
+        from .. import geometry2d as G
+        from . import scene
+        if self.plotter is None:
+            return
+        if not (self._last and self._last[0] == "geometry"):
+            scene.show_axes_2d(self.plotter, None, None, None)
+            return
+        lo, hi = self._view_box()
+        width = float(hi[0] - lo[0])
+        step = self._draw_step or G.grid_step(width)
+        scene.show_axes_2d(self.plotter, lo, hi, G.major_step(step, width))
+
     def refresh_grid(self) -> None:
         """The grid and the axes again (after a zoom or a pan)."""
-        if self._tool is not None and self.plotter is not None:
+        if self.plotter is None:
+            return
+        if self._tool is not None:
             self._show_grid(True)
+        elif self._last and self._last[0] == "geometry":
+            self._show_axes()
+            self.plotter.render()
 
     def _grid_button(self, ident: str) -> None:
         from .. import geometry2d as G

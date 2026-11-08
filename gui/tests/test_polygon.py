@@ -353,7 +353,7 @@ def test_entering_a_polygon_in_the_window():
 
 
 def test_grid_and_axes_while_drawing():
-    """While drawing: the axes and their coordinates; the grid step set by
+    """The axes and their coordinates on a 2D geometry; while drawing, the grid step set by
     -, +, typed, or back to automatic; the points snap to it."""
     import os
     import shutil
@@ -393,8 +393,15 @@ def test_grid_and_axes_while_drawing():
             assert v._draw_step == 0.025
             v.findChild(QToolButton, "draw:grid_auto").click()
             assert v._draw_step == auto and v.grid_label.text() == "auto"
-            v.stop_drawing()
-            assert "axes" not in v.plotter.actors and v.grid_edit.text() == ""
+            v.stop_drawing()                    # the axes stay on the geometry, not the grid
+            assert "axes" in v.plotter.actors and "grid" not in v.plotter.actors and v.grid_edit.text() == ""
+            win.select(("models", 0))
+            v.refresh_grid()
+            win.select(("geometries", 0, "selections"))
+            assert "axes" in v.plotter.actors
+            v.show_message("nothing")
+            v.refresh_grid()
+            assert "axes" not in v.plotter.actors
         finally:
             win.setWindowModified(False)
             win.close()
