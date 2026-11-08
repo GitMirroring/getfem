@@ -400,7 +400,35 @@ def test_add_a_geometry_from_its_menu():
     b = win.props.findChild(QPushButton, "action:add_geometry")
     assert b is not None and b.menu() is not None
     next(a for a in b.menu().actions() if a.data() == "add_geometry:curve3").trigger()
-    assert win.model["geometries"][-1]["source"]["type"] == "curve" and win.errors == []
+    assert win.model["geometries"][-1]["source"]["type"] == "curve"
+    assert win.errors == ["geometries[1].source.shape.profile.of: empty union: add shapes to it"]
+    close(win)
+
+
+def test_constructive_geometry_from_nothing_in_the_window():
+    """An empty 2D and 3D constructive geometry, an extrusion of an empty
+    profile: selected without error; shapes and booleans added."""
+    win = window("plate.json")
+    for kind in ("csg2", "csg3", "extrusion"):
+        win.select(("geometries",))
+        win._panel_action(f"add_geometry:{kind}")
+        path = win.current_path()
+        win.select(path)
+        root = path + ("source", "shape")
+        win.select(root)
+        assert any("empty union" in e for e in win.errors)
+        if kind == "extrusion":
+            root = root + ("profile",)
+            win.select(root)
+        win._panel_action("add_shape:rectangle")
+        win.select(root)
+        win._panel_action("add_shape:difference")
+        inner = win.current_path()
+        win._panel_action("add_shape:ball")
+        win.select(inner)
+        win._panel_action("add_shape:ball")
+        assert not [e for e in win.errors if e.startswith(f"geometries[{path[1]}]")], win.errors
+        win.select(path)
     close(win)
 
 

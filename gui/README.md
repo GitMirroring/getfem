@@ -436,6 +436,12 @@ first one is also used to check the user expressions.
 segment, rectangle, box; 2D domain, 3D solid, extrusion or revolution of a
 2D profile; curve in 2D or 3D, surface in 3D, extruded or revolved curve;
 CAD or mesh file. The source can still be changed in the form afterwards.
+A new constructive geometry (and the profile of a new extrusion or
+revolution) starts from nothing, an empty union: shapes are added to the
+booleans (*Add a rectangle*..., *Add a difference* gives an empty boolean),
+a shape is put in a new boolean (*Put in a difference*), the root is
+emptied again (*Remove (start again from nothing)*); a boolean of one shape
+is that shape, an empty one is an error.
 
 ## Parameters, fields, coordinates
 

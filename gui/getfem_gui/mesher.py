@@ -114,6 +114,8 @@ def _gf_shape(shape, w) -> str:
     elif t == "revolution":
         p = _gf_shape(shape["profile"], w)
         w(f"{v} = gf.MesherObject('revolution', {p})   # profile in the (r, z) plane, axis z")
+    elif t in GF_SHAPES and len(parts) == 1:        # a boolean of one shape: that shape
+        return parts[0]
     elif t == "difference" and len(parts) > 2:
         # a minus b minus c...: a minus the union of the others (some versions of
         # GetFEM only use the first two objects of 'set minus')
@@ -196,6 +198,8 @@ def _occ_shape(shape, dim, w) -> str:
         p = _occ_shape(G3.effective_profile(shape), 2, w)
         w(f"{occ}.rotate({p}, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, math.pi / 2)")
         w(f"{v} = [e for e in {occ}.revolve({p}, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2 * math.pi) if e[0] == 3]")
+    elif len(parts) == 1:                 # a boolean of one shape: that shape
+        w(f"{v} = {parts[0]}")
     elif t == "intersection":
         # OpenCASCADE intersects the object with the union of the tools:
         # intersect the shapes two by two
@@ -318,7 +322,7 @@ def _build_layered(model, geom, mesh, w, basename):
     """A 3D extrusion or revolution meshed in layers: the 2D profile is
     meshed (triangles or quadrangles), then extruded or turned in layers of
     prisms or hexahedra (gf.Mesh('prismatic'), its points then mapped)."""
-    shape = geom["source"]["shape"]
+    shape = M.swept_root(geom["source"]["shape"])
     n, K = int(mesh["layers"]), int(mesh.get("order", 1))
     profile = G3.effective_profile(shape)
     g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": profile}, "selections": {}}

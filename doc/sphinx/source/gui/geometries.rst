@@ -11,9 +11,11 @@ Geometries
 a menu of the kinds of geometry: a segment, a rectangle or a box; a 2D
 domain or a 3D solid by constructive geometry, an extrusion or a revolution
 of a 2D profile; a curve in 2D or 3D, a surface in 3D, an extruded or
-revolved curve; a CAD or a mesh file. The new geometry is a simple one of
-that kind, to be edited, and *Add a mesh of this geometry* gives it a mesh.
-Its source can still be changed in its form.
+revolved curve; a CAD or a mesh file. A new box, curve or surface is a simple one of that
+kind, to be edited; a new constructive geometry (2D domain, 3D solid) starts
+from nothing, as does the profile of a new extrusion or revolution (see
+:ref:`gui-geometries-building`). *Add a mesh of this geometry* gives it a
+mesh. Its source can still be changed in its form.
 
 A geometry is given by its *source* (see :ref:`gui-ref-sources` for all
 the fields):
@@ -109,6 +111,30 @@ expression (``"L/2"``) is locked, and the status bar says so.
 
 Any shape of a boolean can be removed (right click); a boolean left with a
 single shape is replaced by it.
+
+.. _gui-geometries-building:
+
+Building the tree
+^^^^^^^^^^^^^^^^^
+
+A new constructive geometry starts from nothing: its root is an empty union
+(*Union (empty: add shapes)* in the tree, an error until a shape is added).
+The actions of a shape node (right click, the **+** button, or the buttons
+of its form) build the tree:
+
+* on a boolean: *Add a rectangle*, *a ball*... (the primitives of its
+  dimension), and *Add a union / an intersection / a difference*, an empty
+  boolean to fill in turn;
+* on any shape: *Put in a union / an intersection / a difference*, which
+  makes it the first part of a new boolean (the other parts are then
+  added to it);
+* on the root (or a profile): *Remove (start again from nothing)*.
+
+The type of a boolean is changed in its form (a union of a rectangle and a
+disk becomes their difference). A boolean of a single shape is that shape;
+an empty one is an error. In 2D, the first shape drawn on an empty geometry
+becomes its first part. The selections that refer to sides or faces of
+primitives follow these changes.
 
 Geometries in 3D
 ----------------

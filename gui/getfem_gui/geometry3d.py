@@ -76,12 +76,14 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "revolution":
         return G2.sdf(shape["profile"], meridian(P))
     parts = [sdf(s, P) for s in shape["of"]]
+    if not parts:                          # an empty boolean: nothing
+        return np.full(len(P), np.inf)
     if t == "union":
         return np.min(parts, axis=0)
     if t == "intersection":
         return np.max(parts, axis=0)
     if t == "difference":
-        return np.maximum(parts[0], -np.min(parts[1:], axis=0))
+        return parts[0] if len(parts) == 1 else np.maximum(parts[0], -np.min(parts[1:], axis=0))
     raise ValueError(f"shape {t!r} is not 3D")
 
 
@@ -113,7 +115,15 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         lo, hi = G2.bounds(shape["profile"])
         R = max(float(hi[0]), 0.0)
         return np.array([-R, -R, lo[1]]), np.array([R, R, hi[1]])
-    b = [bounds(s) for s in shape["of"]]
+    b = []
+    for s in shape["of"]:
+        try:
+            b.append(bounds(s))
+        except ValueError:                 # an empty boolean in it
+            if t == "difference" and not b:
+                raise
+    if not b:
+        raise ValueError("empty shape")
     if t == "union":
         return np.min([x[0] for x in b], axis=0), np.max([x[1] for x in b], axis=0)
     if t == "intersection":

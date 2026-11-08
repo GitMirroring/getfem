@@ -314,6 +314,14 @@ def box_boundary_names(dim: int) -> list[str]:
     return [f"{_AXES[i]}{side}" for i in range(dim) for side in ("min", "max")]
 
 
+def swept_root(shape) -> dict | None:
+    """The extrusion or revolution that a 3D CSG tree is (through booleans
+    of a single shape), or None."""
+    while isinstance(shape, dict) and shape.get("type") in SHAPES_BOOLEAN and len(shape.get("of", [])) == 1:
+        shape = shape["of"][0]
+    return shape if isinstance(shape, dict) and shape.get("type") in SHAPES_SWEPT else None
+
+
 def property_kind(mod: dict, prop: str) -> str:
     """SCALAR, or MATRIX for a property that is a tensor with the options of
     its module (the conductivity of an anisotropic heat conduction)."""
@@ -807,8 +815,8 @@ def _check_shape(shape, dim, where, errors):
             _check_shape(profile, 2, f"{where}.profile", errors)
     elif t in SHAPES_BOOLEAN:
         parts = shape.get("of", [])
-        if len(parts) < 2:
-            errors.append(f"{where}.of: at least two shapes expected")
+        if not parts:
+            errors.append(f"{where}.of: empty {t}: add shapes to it")
         for i, s in enumerate(parts):
             _check_shape(s, dim, f"{where}.of[{i}]", errors)
     else:
@@ -1064,18 +1072,18 @@ def _validate_mesh(model, mesh, where, errors):
     dim = src.get("dim") if stype == "csg" else len(src.get("size", [])) if stype == "box" \
         else 2 if stype == "surface" else None
     layers = mesh.get("layers", 0)
-    swept = stype == "csg" and dim == 3 and src.get("shape", {}).get("type") in SHAPES_SWEPT
+    swept = stype == "csg" and dim == 3 and swept_root(src.get("shape")) is not None
     if layers:
         if isinstance(layers, bool) or not isinstance(layers, int) or layers < 1:
             errors.append(f"{where}.layers: integer >= 1 expected (0: no layers)")
         elif not swept:
             errors.append(f"{where}.layers: only for a 3D geometry that is an extrusion or a revolution")
-        elif src["shape"]["type"] == "revolution":
+        elif swept_root(src["shape"])["type"] == "revolution":
             if layers < 3:
                 errors.append(f"{where}.layers: at least 3 layers around the axis")
             try:
                 from . import geometry2d as G
-                lo, _ = G.bounds(src["shape"]["profile"])
+                lo, _ = G.bounds(swept_root(src["shape"])["profile"])
                 if lo[0] <= 0:
                     errors.append(f"{where}.layers: the profile of a revolution meshed in layers must not "
                                   "touch the axis (r > 0)")

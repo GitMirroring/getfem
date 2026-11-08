@@ -302,7 +302,16 @@ def split_vector(v, size: int) -> list | None:
 
 def _shape_label(shape: dict) -> str:
     t = shape.get("type", "?")
-    return t.capitalize() if t in PRIMITIVES else t.capitalize()
+    if t in M.SHAPES_BOOLEAN and not shape.get("of"):
+        return f"{t.capitalize()} (empty: add shapes)"
+    return t.capitalize()
+
+
+EMPTY_SHAPE = {"type": "union", "of": []}       # a constructive geometry started from nothing
+
+
+def _a(word: str) -> str:
+    return "an" if word[0] in "aeio" else "a"
 
 
 def _shape_node(shape: dict, path: Path) -> Node:
@@ -1001,10 +1010,9 @@ def fields(model: dict, path: Path) -> list[Field]:
             out += [Field(path + (_size_key(mesher),), "Element size", "number"),
                     Field(path + ("order",), "Geometric order", "choice", orders)]
             src = (M.geometry_of(model, mesh) or {}).get("source", {})
-            swept = src.get("type") == "csg" and src.get("dim") == 3 \
-                and src.get("shape", {}).get("type") in M.SHAPES_SWEPT
+            swept = src.get("type") == "csg" and src.get("dim") == 3 and M.swept_root(src.get("shape"))
             if swept:
-                around = src["shape"]["type"] == "revolution"
+                around = swept["type"] == "revolution"
                 out.append(Field(path + ("layers",), "Layers", "number",
                                  help="0: free tetrahedra. Otherwise the profile is meshed in 2D, then "
                                       + ("turned about the axis in this number of layers"
@@ -1241,10 +1249,12 @@ def new_geometry_source(kind: str) -> dict:
     """The source of a new geometry of a kind of GEOMETRY_KINDS."""
     if kind in ("box1", "box2", "box3"):
         return _default_source("box", int(kind[-1]))
-    if kind in ("csg2", "csg3"):
-        return _default_source("csg", int(kind[-1]))
-    if kind in ("extrusion", "revolution"):
-        return {"type": "csg", "dim": 3, "shape": _default_shape(kind, 3)}
+    if kind in ("csg2", "csg3"):             # from nothing: shapes and booleans to add
+        return {"type": "csg", "dim": int(kind[-1]), "shape": copy.deepcopy(EMPTY_SHAPE)}
+    if kind in ("extrusion", "revolution"):  # its profile from nothing
+        shape = _default_shape(kind, 3)
+        shape["profile"] = copy.deepcopy(EMPTY_SHAPE)
+        return {"type": "csg", "dim": 3, "shape": shape}
     if kind in ("curve2", "curve3"):
         return _default_source("curve", int(kind[-1]))
     if kind == "surface":
@@ -1777,11 +1787,16 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
             out.append(("remove", "Remove"))
     elif path[:1] == ("geometries",) and n > 3 and path[2] == "source":
         shape = get_at(model, path, {})
-        if shape.get("type") in M.SHAPES_BOOLEAN:
-            out += [(f"add_shape:{t}", f"Add a{'n' if t[0] in 'aeiou' else ''} {t}")
-                    for t in primitives_of_dim(shape_dim(model, path))]
-        if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
-            out.append(("remove", "Remove"))
+        if isinstance(shape, dict) and shape.get("type"):
+            if shape.get("type") in M.SHAPES_BOOLEAN:
+                out += [(f"add_shape:{t}", f"Add {_a(t)} {t}") for t in primitives_of_dim(shape_dim(model, path))]
+                out += [(f"add_shape:{t}", f"Add {_a(t)} {t} (of shapes to add)") for t in M.SHAPES_BOOLEAN]
+            if shape.get("type") not in M.SHAPES_BOOLEAN or shape.get("of"):
+                out += [(f"wrap:{t}", f"Put in {_a(t)} {t}") for t in M.SHAPES_BOOLEAN]
+            if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
+                out.append(("remove", "Remove"))
+            elif path[-1] in ("shape", "profile") and shape != EMPTY_SHAPE:
+                out.append(("clear_shape", "Remove (start again from nothing)"))
     elif path[:1] == ("geometries",) and n == 3 and path[2] == "selections":
         out.append(("add_selection", "Add a selection"))
     elif path[:1] == ("geometries",) and n == 4:
@@ -2001,9 +2016,26 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
     if action.startswith("add_shape:"):
         shape = get_at(model, path)
         t = action.split(":", 1)[1]
-        new = _shape_in_profile(model, path, t) if "profile" in path[4:] else _shape_in_geometry(model, path[1], t)
+        if t in M.SHAPES_BOOLEAN:
+            new = {"type": t, "of": []}
+        else:
+            new = _shape_in_profile(model, path, t) if "profile" in path[4:] \
+                else _shape_in_geometry(model, path[1], t)
         shape.setdefault("of", []).append(new)
         return path + ("of", len(shape["of"]) - 1)
+    if action.startswith("wrap:"):          # the shape becomes the first part of a new boolean
+        t = action.split(":", 1)[1]
+        set_at(model, path, {"type": t, "of": [get_at(model, path)]})
+        swept, inner = _shape_location(path)
+        _remap_shape_refs(model["geometries"][path[1]],
+                          lambda p: tuple(p)[:len(inner)] + (0,) + tuple(p)[len(inner):]
+                          if tuple(p)[:len(inner)] == inner else tuple(p), swept)
+        return path
+    if action == "clear_shape":               # the root (or a profile) emptied
+        set_at(model, path, copy.deepcopy(EMPTY_SHAPE))
+        swept, inner = _shape_location(path)
+        _remap_shape_refs(model["geometries"][path[1]], lambda p: None, swept)
+        return path
     if action == "add_mesh":
         meshes = model.setdefault("meshes", [])
         geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else model["geometries"][0]
@@ -2465,6 +2497,16 @@ def can_draw(model: dict, path: Path) -> int | None:
     return None
 
 
+def _shape_location(path: Path) -> tuple:
+    """(swept, inner) of a shape node: the path of the extrusion or revolution
+    whose profile holds it (None for the CSG tree itself), and its own path
+    (the indices in the "of" lists) from that tree."""
+    if "profile" in path[4:]:
+        k = path.index("profile", 4)
+        return tuple(path[5:k:2]), tuple(path[k + 2::2])
+    return None, tuple(path[5::2])
+
+
 def _remove_shape(model: dict, path: Path) -> Path:
     """Remove a part of a boolean; a boolean left with one part is replaced
     by it. The references to primitives (edges, faces, regions) follow."""
@@ -2590,6 +2632,9 @@ def add_shape_2d(model: dict, gi: int, shape: dict, op: str) -> tuple[Path, list
     src = geom["source"]
     root = src["shape"]
     base = ("geometries", gi, "source", "shape")
+    if root.get("type") in M.SHAPES_BOOLEAN and not root.get("of"):     # the first shape
+        root["of"] = [shape]
+        return base + ("of", 0), notes
     if root.get("type") == op:            # a \ b \ c, a u b u c...: one more operand
         root.setdefault("of", []).append(shape)
         return base + ("of", len(root["of"]) - 1), notes
