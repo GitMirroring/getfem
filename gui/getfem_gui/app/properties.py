@@ -393,6 +393,15 @@ class PropertiesPanel(QScrollArea):
             QTimer.singleShot(0, table.setFocus)
         bar = QHBoxLayout()
         bar.setContentsMargins(0, 0, 0, 0)
+        add = QToolButton()
+        add.setText("Add")
+        add.setToolTip("Add a vertex after the last one")
+        add.setObjectName("table:add_vertex")
+        def add_vertex():
+            self._last_cell = (f.key, len(rows), 0)
+            self.action.emit("add_vertex")
+        add.clicked.connect(add_vertex)
+        bar.addWidget(add)
         for ident, text, tip in (("insert_vertex", "Insert", "Insert a vertex in the middle of the side "
                                                             "after the selected vertex"),
                                  ("remove_vertex", "Remove", "Remove the selected vertex")):

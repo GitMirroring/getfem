@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self.viewer.cutDrawn.connect(lambda ab: self._set_cut(ab))
         self.viewer.cutCleared.connect(lambda: self._set_cut(None))
         self.viewer.shapeDrawn.connect(self._shape_drawn)
+        self.viewer.polygonEntered.connect(self._polygon_entered)
         self.viewer.handleMoved.connect(self._handle_moved)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(tree_box)
@@ -844,6 +845,19 @@ class MainWindow(QMainWindow):
         self._changed(select=path)
         self.state.setText("Shape modified" + (f" ({'; '.join(notes)})" if notes else ""))
 
+    def _polygon_entered(self, points):
+        """The vertices of the empty polygon selected in the tree, clicked in the view."""
+        path = self.current_path()
+        if not E.polygon_to_enter(self.model, path):
+            return
+        before = copy.deepcopy(self.model)
+        E.get_at(self.model, path)["points"] = [list(p) for p in points]
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=path)
+        self.state.setText(f"Polygon of {len(points)} vertices entered")
+
     def _shape_drawn(self, shape: dict, op: str):
         """A rectangle, a disk or a polygon drawn in the view: combined with the geometry."""
         path = self.current_path()
@@ -1006,6 +1020,8 @@ class MainWindow(QMainWindow):
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
                                           pickable=pickable, key=title.split(" — ")[0].split(":")[0])
                 self.viewer.set_handles(handles, lambda name, point, p=path: self._handle_preview(p, name, point))
+                if E.polygon_to_enter(self.model, path):
+                    self.viewer.enter_polygon()
             except Exception as exc:  # noqa: BLE001
                 self.viewer.show_message(f"Cannot display the geometry: {exc}")
             return

@@ -189,6 +189,7 @@ class Viewer(QWidget):
     regionClicked = Signal(object)        # region (geometry2d.region_at) clicked in the preview
     faceClicked = Signal(object)          # face (geometry3d reference) clicked in a 3D preview
     shapeDrawn = Signal(object, str)      # primitive (model format), operation
+    polygonEntered = Signal(object)       # vertices of a polygon of the tree being entered
     handleMoved = Signal(str, object)     # handle name, new position (snapped)
     cutDrawn = Signal(object)             # cut line [a, b] drawn on a field
     cutCleared = Signal()
@@ -516,6 +517,7 @@ class Viewer(QWidget):
         self._draw_step = None
         self._handles, self._handle_preview, self._grabbed = [], None, None
         self._poly = []                   # vertices of the polygon being drawn
+        self._entering = False            # the polygon is the one of the tree being entered
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.stop_drawing)
         for key, slot in ((Qt.Key.Key_Return, self.polygon_close), (Qt.Key.Key_Enter, self.polygon_close),
                           (Qt.Key.Key_Backspace, self.polygon_back)):
@@ -587,7 +589,19 @@ class Viewer(QWidget):
         if getattr(self, "cut_button", None) is not None:
             self.cut_button.setChecked(False)
 
+    def enter_polygon(self) -> None:
+        """Enter the vertices of the (empty) polygon selected in the tree: the
+        polygon tool, whose result goes to that polygon."""
+        if self.plotter is None or (self._entering and self._tool == "polygon"):
+            return
+        self.draw_buttons["polygon"].setChecked(True)
+        self._entering = True
+        self.status_message("Click the first vertex of the polygon (then the others; click the first "
+                            "one again, double-click or Enter to close)")
+
     def _tool_toggled(self, kind, on):
+        if not on and kind == "polygon":
+            self._entering = False
         if on:
             for k, b in self.draw_buttons.items():
                 if k != kind:
@@ -659,6 +673,11 @@ class Viewer(QWidget):
         problem = G.polygon_problem(pts)
         if problem:
             self.status_message(f"Polygon not added: {problem}")
+            return
+        if self._entering:
+            self._entering = False
+            self.draw_buttons["polygon"].setChecked(False)
+            self.polygonEntered.emit(pts)
             return
         self.shapeDrawn.emit({"type": "polygon", "points": pts}, self.draw_op.currentData())
 

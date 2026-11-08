@@ -73,6 +73,8 @@ def test_every_action_keeps_a_valid_model():
                 if action in ("add_shape:union", "add_shape:intersection", "add_shape:difference"):
                     # an empty boolean, to be filled
                     errors = [e for e in errors if ": add shapes to it" not in e]
+                if action == "add_shape:polygon":        # its vertices to enter
+                    errors = [e for e in errors if "at least three vertices" not in e]
                 assert errors == [], (ex.name, node.path, action, errors)
                 assert new is None or E.find_node(E.tree(model), new) is not None, (action, new)
 
@@ -424,7 +426,9 @@ def test_constructive_geometry_from_nothing():
     p3 = E.do_action(m, ("geometries",), "add_geometry:extrusion")
     prof = p3 + ("source", "shape", "profile")
     assert E.get_at(m, prof) == {"type": "union", "of": []}
-    E.do_action(m, prof, "add_shape:polygon")
+    poly = E.do_action(m, prof, "add_shape:polygon")         # empty: its vertices to type
+    for _ in range(3):
+        E.do_action(m, poly, "add_vertex")
     assert not [e for e in M.validate(m) if e.startswith(f"geometries[{p3[1]}]")]
 
 

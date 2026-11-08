@@ -1922,6 +1922,25 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         n = len(pts) if src.get("closed") else len(pts) - 1
         src["through"] = through[:n]
         return path
+    if action == "add_vertex":                # a vertex after the last one (a polygon being typed)
+        pts = get_at(model, path + ("points",))
+        r = [v for v in (get_at(P.resolved(model), path + ("points",)) or []) if isinstance(v, list)]
+        from . import geometry2d as G
+        try:
+            gi = path[1]
+            lo, hi = G.bounds(G.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+            c, e = (lo + hi) / 2, float((hi - lo).max()) / 4
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+            c, e = [0.0, 0.0], 1.0
+        if not r:
+            new = [float(c[0]), float(c[1])]
+        elif len(r) == 1:
+            new = [r[0][0] + e, r[0][1]]
+        else:                                 # the last side turned by a quarter
+            dx, dy = r[-1][0] - r[-2][0], r[-1][1] - r[-2][1]
+            new = [r[-1][0] - dy, r[-1][1] + dx]
+        pts.append([float(f"{x:.6g}") for x in new])
+        return path
     if action.split(":")[0] in ("insert_vertex", "remove_vertex"):
         verb, i = action.split(":")
         pts, i = get_at(model, path + ("points",)), int(i)
@@ -2018,6 +2037,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         t = action.split(":", 1)[1]
         if t in M.SHAPES_BOOLEAN:
             new = {"type": t, "of": []}
+        elif t == "polygon":                 # empty: its vertices clicked in the view, or typed
+            new = {"type": "polygon", "points": []}
         else:
             new = _shape_in_profile(model, path, t) if "profile" in path[4:] \
                 else _shape_in_geometry(model, path[1], t)
@@ -2483,6 +2504,14 @@ def pick_region_for_item(model: dict, path: Path, region: list) -> tuple[str, bo
 
 # ------------------------------------------------------------------ drawing shapes
 
+def polygon_to_enter(model: dict, path: Path) -> bool:
+    """The node is a polygon without its vertices yet, in a 2D geometry drawn
+    in the view: its vertices are then clicked there."""
+    shape = get_at(model, path) if path else None
+    return isinstance(shape, dict) and shape.get("type") == "polygon" and not shape.get("points") \
+        and can_draw(model, path) is not None and "profile" not in path[4:]
+
+
 def can_draw(model: dict, path: Path) -> int | None:
     """Index of the 2D geometry (box or csg) that a drawn shape goes to, when
     the node at path is that geometry or one of its shapes; None otherwise."""
@@ -2677,6 +2706,8 @@ def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
                 ("axis1", [cx + r1 * math.cos(th), cy + r1 * math.sin(th)]),
                 ("axis2", [cx - r2 * math.sin(th), cy + r2 * math.cos(th)])]
     if s["type"] == "polygon":
+        if len(s["points"]) < 3:             # being entered
+            return []
         V = [[float(x), float(y)] for x, y in s["points"]]
         n = len(V)
         mids = [[(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2] for i in range(n)]

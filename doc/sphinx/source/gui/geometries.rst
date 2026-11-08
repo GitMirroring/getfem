@@ -59,8 +59,12 @@ The primitives (:ref:`gui-ref-shapes`) are:
 * ``ball`` (a disk in 2D): center and radius;
 * ``ellipse``: center, semi-axes, angle of the first semi-axis in degrees;
 * ``polygon``: its vertices, in either order, not necessarily convex (but
-  it must not cross itself). Its vertices are edited in a table: *Insert*
-  adds a vertex in the middle of a side, *Remove* removes one.
+  it must not cross itself). Its vertices are edited in a table: *Add* adds
+  one after the last, *Insert* adds a vertex in the middle of a side,
+  *Remove* removes one. *Add a polygon* gives an empty polygon: in a 2D
+  geometry, the polygon tool of the view starts, and its vertices are
+  clicked (as for drawing, below); in a profile, they are typed in the
+  table.
 
 Every number may be a parameter or an expression of parameters. The type
 of a primitive can be changed in its form: a rectangle or a disk changed

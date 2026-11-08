@@ -74,8 +74,13 @@ def primitives(shape: dict, path: tuple = ()):
     if shape.get("type") in BOOLEANS:
         for i, s in enumerate(shape.get("of", [])):
             yield from primitives(s, path + (i,))
-    else:
+    elif not incomplete(shape):
         yield path, shape
+
+
+def incomplete(shape: dict) -> bool:
+    """A polygon being entered (fewer than three vertices): not a shape yet."""
+    return shape.get("type") == "polygon" and len(shape.get("points") or []) < 3
 
 
 def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
@@ -87,6 +92,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "ball":
         return np.linalg.norm(P - np.asarray(shape["center"], float), axis=1) - float(shape["radius"])
     if t == "polygon":
+        if incomplete(shape):
+            return np.full(len(P), np.inf)
         return polygon_sdf(np.asarray(shape["points"], float), P)
     if t == "ellipse":
         return ellipse_sdf(shape["center"], shape["radii"], float(shape.get("angle", 0.0)), P)
@@ -110,6 +117,8 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         c, r = np.asarray(shape["center"], float), float(shape["radius"])
         return c - r, c + r
     if t == "polygon":
+        if incomplete(shape):
+            raise ValueError("a polygon being entered")
         V = np.asarray(shape["points"], float)
         return V.min(axis=0), V.max(axis=0)
     if t == "ellipse":

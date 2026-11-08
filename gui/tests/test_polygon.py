@@ -270,6 +270,73 @@ def test_drawing_a_polygon_in_the_window():
             win.close()
 
 
+def test_adding_a_polygon_enters_its_vertices():
+    """"Add a polygon" gives an empty polygon: in a 2D geometry its vertices
+    are clicked in the view; in a profile they are typed (Add a vertex)."""
+    model = M.default_model()
+    path = E.do_action(model, ("geometries",), "add_geometry:csg2")
+    root = path + ("source", "shape")
+    poly = E.do_action(model, root, "add_shape:polygon")
+    assert E.get_at(model, poly) == {"type": "polygon", "points": []}
+    assert E.polygon_to_enter(model, poly) and E.shape_handles(model, poly) == []
+    assert any("at least three vertices" in e for e in M.validate(model))
+    for _ in range(3):
+        E.do_action(model, poly, "add_vertex")
+    pts = E.get_at(model, poly)["points"]
+    assert len(pts) == 3 and not E.polygon_to_enter(model, poly)
+    assert not [e for e in M.validate(model) if e.startswith(f"geometries[{path[1]}]")], M.validate(model)
+    # an incomplete polygon is nothing in the previews
+    shape = {"type": "union", "of": [{"type": "rectangle", "min": [0, 0], "max": [1, 1]},
+                                     {"type": "polygon", "points": [[0, 0], [2, 0]]}]}
+    assert [p for p, _ in G.primitives(shape)] == [(0,)]
+    lo, hi = G.bounds(shape)
+    assert list(lo) == [0, 0] and list(hi) == [1, 1]
+    assert G.sdf(shape, np.array([[1.5, 0.5]]))[0] > 0
+    # in a profile: no clicks (a 3D view), typed vertices
+    model = M.default_model()
+    path = E.do_action(model, ("geometries",), "add_geometry:extrusion")
+    prof = path + ("source", "shape", "profile")
+    poly = E.do_action(model, prof, "add_shape:polygon")
+    assert not E.polygon_to_enter(model, poly)
+
+
+def test_entering_a_polygon_in_the_window():
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication, QToolButton
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(examples / "plate_hole_tension.json", tmp)
+        win = MainWindow(path)
+        try:
+            v = win.viewer
+            root = ("geometries", 0, "source", "shape")
+            win.select(root)
+            win._panel_action("add_shape:polygon")
+            poly = win.current_path()
+            assert poly == root + ("of", 2) and v._entering
+            assert v.findChild(QToolButton, "draw:polygon").isChecked()
+            for p in ([0.02, 0.02], [0.06, 0.02], [0.04, 0.04], [0.02, 0.02]):
+                v.draw_begin(p)
+                v.draw_end(p)
+            pts = E.get_at(win.model, poly)["points"]
+            assert len(pts) == 3 and len(win.model["geometries"][0]["source"]["shape"]["of"]) == 3
+            assert not v._entering and not v.findChild(QToolButton, "draw:polygon").isChecked()
+            assert "3 vertices entered" in win.state.text() and win.errors == []
+            assert len(v._handles) == 7                       # its handles, once entered
+            win.undo()
+            assert E.get_at(win.model, poly)["points"] == []
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
