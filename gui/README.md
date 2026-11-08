@@ -430,6 +430,13 @@ forms from it. Then write three functions in `codegen.py` (macros, GWFL
 terms and conditions, post-processing) and register them in `MODULES`; the
 first one is also used to check the user expressions.
 
+## Adding a geometry
+
+*Add a geometry* opens a menu of the kinds of geometry (`E.GEOMETRY_KINDS`):
+segment, rectangle, box; 2D domain, 3D solid, extrusion or revolution of a
+2D profile; curve in 2D or 3D, surface in 3D, extruded or revolved curve;
+CAD or mesh file. The source can still be changed in the form afterwards.
+
 ## Parameters, fields, coordinates
 
 ```json

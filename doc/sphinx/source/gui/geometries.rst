@@ -7,6 +7,14 @@
 Geometries
 ==========
 
+*Add a geometry* (the **+** button or a right click on *Geometries*) opens
+a menu of the kinds of geometry: a segment, a rectangle or a box; a 2D
+domain or a 3D solid by constructive geometry, an extrusion or a revolution
+of a 2D profile; a curve in 2D or 3D, a surface in 3D, an extruded or
+revolved curve; a CAD or a mesh file. The new geometry is a simple one of
+that kind, to be edited, and *Add a mesh of this geometry* gives it a mesh.
+Its source can still be changed in its form.
+
 A geometry is given by its *source* (see :ref:`gui-ref-sources` for all
 the fields):
 

@@ -1215,6 +1215,50 @@ def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
     return _scaled_shape(t, lo, hi, dim)
 
 
+# The kinds of geometry offered by "Add a geometry": (group, identifier,
+# label, description); new_geometry_source gives the source of each.
+GEOMETRY_KINDS = (
+    ("Boxes", "box1", "Segment (1D)", "an interval: bars, 1D problems"),
+    ("Boxes", "box2", "Rectangle (2D)", "a structured mesh"),
+    ("Boxes", "box3", "Box (3D)", "a structured mesh"),
+    ("Constructive geometries", "csg2", "2D domain", "rectangles, disks, ellipses, polygons and booleans"),
+    ("Constructive geometries", "csg3", "3D solid", "boxes, balls, cylinders and booleans"),
+    ("Constructive geometries", "extrusion", "3D extrusion of a 2D profile", "a profile extruded along z"),
+    ("Constructive geometries", "revolution", "3D revolution of a 2D profile",
+     "a profile in the (r, z) plane turned about the z axis"),
+    ("Curves and surfaces", "curve2", "Curve in 2D", "segments and arcs: beams, cables"),
+    ("Curves and surfaces", "curve3", "Curve in 3D", "segments and arcs: beams, cables"),
+    ("Curves and surfaces", "surface", "Surface in 3D", "a flat domain plus a height: shells"),
+    ("Curves and surfaces", "swept_extrusion", "Extruded curve (3D surface)", "a 2D curve extruded along z"),
+    ("Curves and surfaces", "swept_revolution", "Revolved curve (3D surface)",
+     "a 2D curve turned about the z axis"),
+    ("Files", "cad", "CAD file (STEP, IGES, BREP)", "read by Gmsh"),
+    ("Files", "mesh_file", "Gmsh mesh file (.msh)", "the mesh is the geometry"),
+)
+
+
+def new_geometry_source(kind: str) -> dict:
+    """The source of a new geometry of a kind of GEOMETRY_KINDS."""
+    if kind in ("box1", "box2", "box3"):
+        return _default_source("box", int(kind[-1]))
+    if kind in ("csg2", "csg3"):
+        return _default_source("csg", int(kind[-1]))
+    if kind in ("extrusion", "revolution"):
+        return {"type": "csg", "dim": 3, "shape": _default_shape(kind, 3)}
+    if kind in ("curve2", "curve3"):
+        return _default_source("curve", int(kind[-1]))
+    if kind == "surface":
+        return _default_source("surface", 3)
+    if kind == "swept_extrusion":
+        return {"type": "swept_surface", "sweep": "extrusion", "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                "through": [None, None], "closed": False, "z": [0.0, 1.0]}
+    if kind == "swept_revolution":
+        return _default_source("swept_surface", 3)
+    if kind in ("cad", "mesh_file"):
+        return _default_source(kind, 3)
+    raise ValueError(f"unknown kind of geometry {kind!r}")
+
+
 def _default_source(t: str, dim: int) -> dict:
     if t == "box":
         return {"type": "box", "origin": [0.0] * dim, "size": [1.0] * dim}
@@ -1938,10 +1982,12 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
             raise ValueError(f"the property {name!r} already exists")
         props[name] = 1.0
         return path
-    if action == "add_geometry":
+    if action == "add_geometry" or action.startswith("add_geometry:"):
         geoms = model.setdefault("geometries", [])
         gname = unique_name(name or "geometry", [g.get("name") for g, _ in M.all_geometries(model)])
-        geoms.append({"name": gname, "source": _default_source("box", dim), "selections": {}})
+        kind = action.partition(":")[2]
+        src = new_geometry_source(kind) if kind else _default_source("box", dim)
+        geoms.append({"name": gname, "source": src, "selections": {}})
         return ("geometries", len(geoms) - 1)
     if action == "add_selection":
         gi = path[1]

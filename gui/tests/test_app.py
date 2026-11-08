@@ -383,6 +383,27 @@ def test_vector_parameter_for_a_vertex_in_the_window():
     close(win)
 
 
+def test_add_a_geometry_from_its_menu():
+    """+ on Geometries: a submenu of the kinds of geometry; so does the button
+    of the panel."""
+    win = window("plate.json")
+    win.select(("geometries",))
+    win._fill_add_menu()
+    sub = next(a.menu() for a in win.add_button.menu().actions() if a.menu() is not None)
+    kinds = [a.data() for a in sub.actions() if a.data()]
+    assert kinds == [f"add_geometry:{k}" for _, k, _, _ in E.GEOMETRY_KINDS]
+    next(a for a in sub.actions() if a.data() == "add_geometry:extrusion").trigger()
+    geom = win.model["geometries"][-1]
+    assert geom["source"]["shape"]["type"] == "extrusion" and win.current_path() == ("geometries", 1)
+    win.select(("geometries",))
+    from PySide6.QtWidgets import QPushButton
+    b = win.props.findChild(QPushButton, "action:add_geometry")
+    assert b is not None and b.menu() is not None
+    next(a for a in b.menu().actions() if a.data() == "add_geometry:curve3").trigger()
+    assert win.model["geometries"][-1]["source"]["type"] == "curve" and win.errors == []
+    close(win)
+
+
 def test_change_of_type_rebuilds_the_form():
     win = window()
     path = ("models", 0, "modules", 0, "conditions", 0)

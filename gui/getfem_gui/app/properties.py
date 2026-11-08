@@ -62,6 +62,24 @@ def library_menu(parent, emit) -> QMenu:
     return menu
 
 
+def geometry_menu(parent, emit) -> QMenu:
+    """The kinds of geometry, by group; choosing one emits add_geometry:<kind>."""
+    menu = QMenu(parent)
+    menu.setToolTipsVisible(True)
+    group = None
+    for grp, kind, label, descr in E.GEOMETRY_KINDS:
+        if grp != group:
+            if group is not None:
+                menu.addSeparator()
+            menu.addSection(grp)
+            group = grp
+        act = menu.addAction(label)
+        act.setToolTip(descr)
+        act.setData(f"add_geometry:{kind}")
+        act.triggered.connect(lambda _=False, k=kind: emit(f"add_geometry:{k}"))
+    return menu
+
+
 class PropertiesPanel(QScrollArea):
     changed = Signal(object, object)          # Field, value
     action = Signal(str)                      # editing action identifier, or a window command
@@ -117,6 +135,8 @@ class PropertiesPanel(QScrollArea):
             if ident == "add_from_library":            # the materials, in a menu on the button
                 b.setText(label.rstrip("…").rstrip("."))
                 b.setMenu(library_menu(b, self.action.emit))
+            elif ident == "add_geometry":              # the kinds of geometry, in a menu
+                b.setMenu(geometry_menu(b, self.action.emit))
             else:
                 b.clicked.connect(lambda _=False, i=ident: self.action.emit(i))
             row.addWidget(b)

@@ -1101,11 +1101,12 @@ class MainWindow(QMainWindow):
         return out
 
     def _populate(self, menu, path, adding_only):
-        from .properties import library_menu
+        from .properties import geometry_menu, library_menu
         menu.clear()
         for ident, label in self.menu_actions(path, adding_only):
-            if ident == "add_from_library":             # a submenu of the materials
-                sub = library_menu(menu, lambda i, p=path: self._run_action(p, i))
+            if ident in ("add_from_library", "add_geometry"):     # submenus: materials, kinds of geometry
+                make = library_menu if ident == "add_from_library" else geometry_menu
+                sub = make(menu, lambda i, p=path: self._run_action(p, i))
                 sub.setTitle(label.rstrip("…"))
                 menu.addMenu(sub)
                 continue

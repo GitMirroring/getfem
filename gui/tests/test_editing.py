@@ -343,6 +343,30 @@ def test_default_mesher():
     assert "pip install gmsh" in err and "GetFEM mesher" in err
 
 
+def test_add_a_geometry_of_each_kind():
+    """The menu of the kinds of geometry: each gives a valid geometry (the
+    files excepted, until one is chosen), with a mesh added on demand."""
+    for _, kind, _, _ in E.GEOMETRY_KINDS:
+        m = M.default_model()
+        path = E.do_action(m, ("geometries",), f"add_geometry:{kind}")
+        geom = E.get_at(m, path)
+        assert geom["name"] == "geometry2"
+        errors = [e for e in M.validate(m) if e.startswith(f"geometries[{path[1]}]")]
+        if kind in ("cad", "mesh_file"):
+            assert all("file" in e for e in errors), (kind, errors)
+            continue
+        assert errors == [], (kind, errors)
+        mesh = E.do_action(m, path, "add_mesh")
+        assert M.validate(m) == [], (kind, M.validate(m))
+        dims = {"box1": 1, "box2": 2, "csg2": 2, "curve2": 2}
+        assert M.geometry_dim(m, geom) == dims.get(kind, 3), kind
+        assert E.get_at(m, mesh)["geometry"] == "geometry2"
+    src = E.new_geometry_source("revolution")
+    assert src["shape"]["type"] == "revolution"
+    assert E.new_geometry_source("swept_extrusion")["sweep"] == "extrusion"
+    assert ("add_geometry", "Add a geometry") in E.actions(M.default_model(), ("geometries",))
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
