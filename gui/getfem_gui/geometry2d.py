@@ -243,8 +243,16 @@ def polygon_problem(points) -> str | None:
 
 
 def size(shape: dict) -> float:
-    lo, hi = bounds(shape)
+    try:
+        lo, hi = bounds(shape)
+    except ValueError:                     # nothing yet (an empty geometry)
+        return 1.0
     return float(np.linalg.norm(hi - lo)) or 1.0
+
+
+def is_empty(shape: dict) -> bool:
+    """Nothing to draw yet: no complete primitive."""
+    return next(primitives(shape), None) is None
 
 
 # ------------------------------------------------------------------ sides and pieces

@@ -333,6 +333,17 @@ def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain:
     it is negative (geometry2d.domain_level)."""
     from .. import geometry2d as G
     clear(plotter)
+    if G.is_empty(shape):               # nothing yet: a frame to draw in
+        plotter.add_mesh(_polyline(np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], float)), color="#c8ced4",
+                         line_width=1, lighting=False, name="frame")
+        plotter.add_text("Empty geometry: draw shapes, or add them in the tree", position="upper_left",
+                         font_size=10, color="#444444", name="title")
+        if reset:
+            plotter.view_xy()
+            plotter.enable_parallel_projection()
+            set_style(plotter, True)
+            plotter.reset_camera()
+        return
     whole = domain is True
     plotter.add_mesh(_fill(shape), color=HIGHLIGHT if whole else FILL, opacity=0.55 if whole else 1.0,
                      lighting=False, name="fill")

@@ -332,6 +332,21 @@ def test_entering_a_polygon_in_the_window():
             assert len(v._handles) == 7                       # its handles, once entered
             win.undo()
             assert E.get_at(win.model, poly)["points"] == []
+            # in a new, empty geometry: an empty frame to draw in, then the vertices clicked
+            win.select(("geometries",))
+            win._panel_action("add_geometry:csg2")
+            g = win.current_path()
+            win.select(g + ("source", "shape"))
+            assert not v.draw_bar.isHidden() and "frame" in v.plotter.actors
+            win._panel_action("add_shape:polygon")
+            poly = win.current_path()
+            assert v._entering and "draw_status" in v.plotter.actors
+            for p in ([0.2, 0.2], [0.6, 0.2], [0.4, 0.5], [0.2, 0.2]):
+                v.draw_begin(p)
+                v.draw_end(p)
+            assert len(E.get_at(win.model, poly)["points"]) == 3
+            assert not [e for e in win.errors if e.startswith(f"geometries[{g[1]}]")], win.errors
+            assert "fill" in v.plotter.actors
         finally:
             win.setWindowModified(False)
             win.close()
