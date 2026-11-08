@@ -38,6 +38,8 @@ import os
 import re
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from . import model as M, parameters as P
 
 Path = tuple
@@ -561,12 +563,25 @@ def _shape_fields(model, path, dim) -> list[Field]:
                 _vec_field(path + ("axis",), "Axis", "numbers", dim),
                 Field(path + ("length",), "Length", "number"),
                 Field(path + ("radius",), "Radius", "number")]
-    elif t == "extrusion":
-        out += [_vec_field(path + ("z",), "From z to z", "numbers", 2),
-                Field(path, "", "info", help="The profile (2D shape below) is extruded along z.")]
-    elif t == "revolution":
-        out.append(Field(path, "", "info", help="The profile (2D shape below, in the (r, z) plane) "
-                                                "turns about the z axis."))
+    elif t in M.SHAPES_SWEPT:
+        shape = get_at(model, path, {})
+        placed = "origin" in shape or "axes" in shape
+        if t == "extrusion":
+            out.append(_vec_field(path + ("z",), "From z to z", "numbers", 2,
+                                  help="along the normal of the work plane" if placed else ""))
+        out.append(Field(path + ("placement",), "Work plane", "choice",
+                         (("xy", "the (x, y) plane at the origin"), ("custom", "an origin and two axes")),
+                         op="placement",
+                         help="The plane of the profile: its x and y axes (r and z for a revolution); "
+                              "z is their cross product"))
+        if placed:
+            out += [_vec_field(path + ("origin",), "Origin", "numbers", 3),
+                    _vec_field(path + ("axes", 0), "Axis x", "numbers", 3),
+                    _vec_field(path + ("axes", 1), "Axis y", "numbers", 3,
+                               help="made orthogonal to the first axis")]
+        what = ("is extruded along the normal of its plane" if t == "extrusion"
+                else "turns about the z axis of its plane (the profile is in the (r, z) plane)")
+        out.append(Field(path, "", "info", help=f"The profile (2D shape below) {what}."))
     else:
         out.append(Field(path, "", "info", help="The first shape is combined with the following ones."))
     return out
@@ -1072,13 +1087,27 @@ def _default_shape(t: str, dim: int) -> dict:
 
 def _shape_in_profile(model: dict, path: Path, t: str) -> dict:
     """A new primitive in the profile of an extrusion or a revolution, at its scale."""
+    ext = _profile_extent(model, path)
+    return _default_shape(t, 2) if ext is None else _scaled_shape(t, ext[0], ext[1], 2)
+
+
+def _profile_extent(model: dict, path: Path):
+    """The extent (lo, hi) of a profile in its plane; when it is empty, that
+    of the rest of the 3D geometry seen in the plane; None if unknown."""
     from . import geometry2d as G
-    k = len(path) - 1 - path[::-1].index("profile")
+    from . import geometry3d as G3
+    prof = profile_root(path)
+    if prof is None:
+        return None
     try:
-        lo, hi = G.bounds(get_at(P.resolved(model), path[:k + 1]))
-    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
-        return _default_shape(t, 2)
-    return _scaled_shape(t, lo, hi, 2)
+        r = P.resolved(model)
+        try:
+            return G.bounds(get_at(r, prof))
+        except ValueError:                       # empty: the rest of the geometry
+            rest = G3.without(r["geometries"][prof[1]]["source"]["shape"], tuple(prof[5:-1:2]))
+            return G3.plane_extent(rest, get_at(r, prof[:-1]))
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+        return None
 
 
 def _scaled_shape(t: str, lo, hi, dim: int) -> dict:
@@ -1367,6 +1396,9 @@ def field_value(model: dict, f: Field):
         return f"material:{pc['material']}" if "material" in pc else "value"
     if f.op == "box_dim":
         return len(get_at(model, f.key, []))
+    if f.op == "placement":
+        shape = get_at(model, f.key[:-1], {})
+        return "custom" if "origin" in shape or "axes" in shape else "xy"
     return get_at(model, f.key)
 
 
@@ -1459,6 +1491,15 @@ def apply(model: dict, f: Field, value) -> Path | None:
     key = f.key
     if f.op is None:
         set_at(model, key, value)
+        return None
+    if f.op == "placement":
+        shape = get_at(model, key[:-1])
+        if value == "custom":
+            shape.setdefault("origin", [0.0, 0.0, 0.0])
+            shape.setdefault("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        else:
+            shape.pop("origin", None)
+            shape.pop("axes", None)
         return None
     if f.op == "point_component":
         # a component j of the point key[:-1] (a vertex, a point of a curve):
@@ -1791,6 +1832,10 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
             if shape.get("type") in M.SHAPES_BOOLEAN:
                 out += [(f"add_shape:{t}", f"Add {_a(t)} {t}") for t in primitives_of_dim(shape_dim(model, path))]
                 out += [(f"add_shape:{t}", f"Add {_a(t)} {t} (of shapes to add)") for t in M.SHAPES_BOOLEAN]
+            if shape.get("type") in M.SHAPES_BOOLEAN and shape_dim(model, path) == 3 \
+                    and "profile" not in path[4:] and shape.get("of"):
+                out += [("pick_plane:boss", "On a face: a boss (extrusion out of the face)"),
+                        ("pick_plane:pocket", "On a face: a pocket (extrusion into the solid)")]
             if shape.get("type") not in M.SHAPES_BOOLEAN or shape.get("of"):
                 out += [(f"wrap:{t}", f"Put in {_a(t)} {t}") for t in M.SHAPES_BOOLEAN]
             if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
@@ -1927,8 +1972,10 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         r = [v for v in (get_at(P.resolved(model), path + ("points",)) or []) if isinstance(v, list)]
         from . import geometry2d as G
         try:
-            gi = path[1]
-            lo, hi = G.bounds(G.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+            ext = _profile_extent(model, path)
+            if ext is None:
+                ext = G.bounds(G.shape_of(P.resolved(model)["geometries"][path[1]]["source"]))
+            lo, hi = ext
             c, e = (lo + hi) / 2, float((hi - lo).max()) / 4
         except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
             c, e = [0.0, 0.0], 1.0
@@ -2510,6 +2557,41 @@ def polygon_to_enter(model: dict, path: Path) -> bool:
     shape = get_at(model, path) if path else None
     return isinstance(shape, dict) and shape.get("type") == "polygon" and not shape.get("points") \
         and can_draw(model, path) is not None
+
+
+def work_plane(center, normal) -> tuple[list, list]:
+    """A frame of the plane of a point and a normal: (origin, [x axis, y
+    axis]) with x along the global axis the least aligned with the normal,
+    projected, and x, y, normal direct."""
+    n = np.asarray(normal, float)
+    n = n / (np.linalg.norm(n) or 1.0)
+    a = np.eye(3)[int(np.argmin(np.abs(n)))]
+    e1 = a - (a @ n) * n
+    e1 = e1 / np.linalg.norm(e1)
+    e2 = np.cross(n, e1)
+    clean = lambda v: [0.0 if abs(x) < 1e-12 else float(f"{x:.12g}") for x in v]       # noqa: E731
+    return clean(center), [clean(e1), clean(e2)]
+
+
+def add_extrusion_on_plane(model: dict, path: Path, center, normal, depth: float, kind: str = "boss") -> Path:
+    """An extrusion in the work plane of a face (center, outward normal), with
+    the boolean at path: a boss (z from 0 to depth, out of the face) united
+    with it, or a pocket (z from -depth to 0, into the solid) subtracted from
+    it. The boolean is put in a union (a difference) first when it is not
+    one. Its profile starts from nothing; returns the path of the profile."""
+    op = "union" if kind == "boss" else "difference"
+    target = get_at(model, path)
+    if target.get("type") != op and target.get("of"):
+        do_action(model, path, f"wrap:{op}")
+        target = get_at(model, path)
+    elif target.get("type") != op:
+        target["type"] = op
+    origin, axes = work_plane(center, normal)
+    d = float(f"{depth:.3g}")
+    shape = {"type": "extrusion", "z": [0.0, d] if kind == "boss" else [-d, 0.0], "origin": origin,
+             "axes": axes, "profile": copy.deepcopy(EMPTY_SHAPE)}
+    target.setdefault("of", []).append(shape)
+    return path + ("of", len(target["of"]) - 1, "profile")
 
 
 def profile_root(path: Path) -> Path | None:

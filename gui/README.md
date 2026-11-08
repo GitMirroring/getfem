@@ -433,6 +433,18 @@ forms from it. Then write three functions in `codegen.py` (macros, GWFL
 terms and conditions, post-processing) and register them in `MODULES`; the
 first one is also used to check the user expressions.
 
+## Work planes
+
+An extrusion or a revolution may be in any plane: `"origin"` and `"axes"`
+(two axes, the profile in their coordinates, z along their cross product;
+*Work plane* in its form). On a 3D boolean, *On a face…* puts an
+extrusion on a plane face clicked in the 3D view: a boss (united, out of
+the face) or a pocket (subtracted, into the solid), its profile starting
+from nothing. A profile is shown on the section of the rest of the geometry
+by its plane, and points snap to the vertices of the geometry and of that
+section (else to the grid). The GetFEM mesher needs its `placed` object
+(GetFEM patch "mesher: objects placed in a frame").
+
 ## Adding a geometry
 
 *Add a geometry* opens a menu of the kinds of geometry (`E.GEOMETRY_KINDS`):

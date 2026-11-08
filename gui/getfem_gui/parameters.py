@@ -394,6 +394,12 @@ def _resolve_shape(shape, where, vals, errors):
                 holder = {"v": v}
                 _resolve(holder, ("v",), f"{where}.points[{j}]", vals, errors)
                 shape["points"][j] = holder["v"]
+    if isinstance(shape.get("axes"), list):          # the work plane of an extrusion or a revolution
+        for j, v in enumerate(shape["axes"]):
+            if isinstance(v, (list, str)):
+                holder = {"v": v}
+                _resolve(holder, ("v",), f"{where}.axes[{j}]", vals, errors)
+                shape["axes"][j] = holder["v"]
     for j, s in enumerate(shape.get("of", [])):
         _resolve_shape(s, f"{where}.of[{j}]", vals, errors)
     _resolve_shape(shape.get("profile"), f"{where}.profile", vals, errors)

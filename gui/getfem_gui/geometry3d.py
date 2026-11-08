@@ -68,6 +68,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
         q = np.stack([radial, axial], axis=1)
         outside = np.linalg.norm(np.maximum(q, 0.0), axis=1)
         return np.where(np.all(q <= 0, axis=1), np.max(q, axis=1), outside)
+    if t in ("extrusion", "revolution") and frame(shape) is not None:      # in its work plane
+        P = to_local(shape, P)
     if t == "extrusion":
         z0, z1 = (float(v) for v in shape["z"])
         q = np.stack([G2.sdf(shape["profile"], P[:, :2]), np.maximum(z0 - P[:, 2], P[:, 2] - z1)], axis=1)
@@ -85,6 +87,89 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "difference":
         return parts[0] if len(parts) == 1 else np.maximum(parts[0], -np.min(parts[1:], axis=0))
     raise ValueError(f"shape {t!r} is not 3D")
+
+
+def frame(shape: dict):
+    """The work plane of an extrusion or a revolution: (O, R), its origin and
+    the orthonormal matrix whose columns are its axes e1, e2 and its normal
+    e1 x e2 (the z axis of the profile); None for the (x, y) plane at 0."""
+    if "origin" not in shape and "axes" not in shape:
+        return None
+    O = np.asarray(shape.get("origin", [0.0, 0.0, 0.0]), float)
+    a = np.asarray(shape.get("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), float)
+    e1 = a[0] / (np.linalg.norm(a[0]) or 1.0)
+    e2 = a[1] - (a[1] @ e1) * e1
+    e2 = e2 / (np.linalg.norm(e2) or 1.0)
+    return O, np.column_stack([e1, e2, np.cross(e1, e2)])
+
+
+def to_local(shape: dict, P: np.ndarray) -> np.ndarray:
+    """Global points (n x 3) in the frame of the work plane of the shape."""
+    fr = frame(shape)
+    return P if fr is None else (np.asarray(P, float) - fr[0]) @ fr[1]
+
+
+def to_global(shape: dict, Q: np.ndarray) -> np.ndarray:
+    fr = frame(shape)
+    return Q if fr is None else fr[0] + np.asarray(Q, float) @ fr[1].T
+
+
+def rotation_vector(R: np.ndarray) -> tuple[list[float], float]:
+    """The axis and angle (radians) of the rotation R (3 x 3)."""
+    w = math.sqrt(max(0.0, 1.0 + R[0, 0] + R[1, 1] + R[2, 2])) / 2
+    x = math.copysign(math.sqrt(max(0.0, 1.0 + R[0, 0] - R[1, 1] - R[2, 2])) / 2, R[2, 1] - R[1, 2])
+    y = math.copysign(math.sqrt(max(0.0, 1.0 - R[0, 0] + R[1, 1] - R[2, 2])) / 2, R[0, 2] - R[2, 0])
+    z = math.copysign(math.sqrt(max(0.0, 1.0 - R[0, 0] - R[1, 1] + R[2, 2])) / 2, R[1, 0] - R[0, 1])
+    s = math.sqrt(x * x + y * y + z * z)
+    if s < 1e-12:
+        return [0.0, 0.0, 1.0], 0.0
+    return [x / s, y / s, z / s], 2 * math.atan2(s, w)
+
+
+def without(shape: dict, path: tuple) -> dict:
+    """A copy of the shape where the primitive at path is removed (an empty
+    union instead)."""
+    import copy
+    out = copy.deepcopy(shape)
+    if not path:
+        return {"type": "union", "of": []}
+    node = out
+    for i in path[:-1]:
+        node = node["of"][i]
+    node["of"][path[-1]] = {"type": "union", "of": []}
+    return out
+
+
+def section_grid(shape: dict, swept: dict, lo2, hi2, n: int = 160):
+    """The signed distance of the 3D shape on a grid of the plane of the
+    profile of `swept` (an extrusion or a revolution): (X, Y, values), for the
+    section of the rest of the geometry drawn under the profile. The plane
+    of an extrusion is taken just behind its work plane (local z = -eps), so
+    that a face it stands on shows; that of a revolution is its (r, z)
+    half plane."""
+    lo2, hi2 = np.asarray(lo2, float), np.asarray(hi2, float)
+    eps = 1e-4 * float(np.linalg.norm(hi2 - lo2) or 1.0)
+    xs = np.linspace(lo2[0], hi2[0], n)
+    ys = np.linspace(lo2[1], hi2[1], n)
+    X, Y = np.meshgrid(xs, ys, indexing="ij")
+    if swept["type"] == "revolution":
+        Q = np.column_stack([X.ravel(), np.zeros(X.size), Y.ravel()])
+    else:
+        Q = np.column_stack([X.ravel(), Y.ravel(), np.full(X.size, -eps)])
+    P = to_global(swept, Q)
+    return xs, ys, sdf(shape, P).reshape(X.shape)
+
+
+def plane_extent(shape: dict, swept: dict):
+    """The extent, in the plane of the profile of `swept`, of the 3D shape
+    (its bounding box seen in the frame of the plane)."""
+    lo, hi = bounds(shape)
+    corners = np.array([[a, b, c] for a in (lo[0], hi[0]) for b in (lo[1], hi[1]) for c in (lo[2], hi[2])])
+    Q = to_local(swept, corners)
+    if swept["type"] == "revolution":
+        Q = np.column_stack([np.hypot(Q[:, 0], Q[:, 1]), Q[:, 2]])
+        return np.array([0.0, Q[:, 1].min()]), np.array([Q[:, 0].max(), Q[:, 1].max()])
+    return Q[:, :2].min(axis=0), Q[:, :2].max(axis=0)
 
 
 def meridian(P: np.ndarray) -> np.ndarray:
@@ -107,14 +192,19 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         e = r * np.sqrt(np.maximum(1.0 - a * a, 0.0))        # extent of the end disks
         ends = np.array([o, o + L * a])
         return ends.min(axis=0) - e, ends.max(axis=0) + e
-    if t == "extrusion":
+    if t in ("extrusion", "revolution"):
         lo, hi = G2.bounds(shape["profile"])
-        z = sorted(float(v) for v in shape["z"])
-        return np.array([lo[0], lo[1], z[0]]), np.array([hi[0], hi[1], z[1]])
-    if t == "revolution":
-        lo, hi = G2.bounds(shape["profile"])
-        R = max(float(hi[0]), 0.0)
-        return np.array([-R, -R, lo[1]]), np.array([R, R, hi[1]])
+        if t == "extrusion":
+            z = sorted(float(v) for v in shape["z"])
+            lo, hi = np.array([lo[0], lo[1], z[0]]), np.array([hi[0], hi[1], z[1]])
+        else:
+            R = max(float(hi[0]), 0.0)
+            lo, hi = np.array([-R, -R, lo[1]]), np.array([R, R, hi[1]])
+        if frame(shape) is None:
+            return lo, hi
+        corners = np.array([[a, b, c] for a in (lo[0], hi[0]) for b in (lo[1], hi[1]) for c in (lo[2], hi[2])])
+        X = to_global(shape, corners)
+        return X.min(axis=0), X.max(axis=0)
     b = []
     for s in shape["of"]:
         try:
@@ -362,15 +452,17 @@ def face_spec(shape: dict, ref: dict) -> dict:
             return {"kind": "cylinder_side", "origin": o, "axis": a, "length": L, "radius": r}
         return {"kind": "disk", "center": o if f == "start" else [x + L * y for x, y in zip(o, a)],
                 "normal": a, "radius": r}
+    fr = frame(prim) if t in ("extrusion", "revolution") else None
+    place = {} if fr is None else {"frame": {"origin": fr[0].tolist(), "R": fr[1].tolist()}}
     if t == "extrusion" and f in ("bottom", "top"):
         z = sorted(float(v) for v in prim["z"])
-        return {"kind": "cap", "z": z[0] if f == "bottom" else z[1], "profile": prim["profile"]}
+        return dict({"kind": "cap", "z": z[0] if f == "bottom" else z[1], "profile": prim["profile"]}, **place)
     side = next(sd for sd in G2.sides(prim["profile"])
                 if (list(sd.shape), sd.side) == (list(ref["profile"]["shape"]), ref["profile"]["side"]))
     curve = {"kind": side.kind, "a": [float(x) for x in side.a], "b": [float(x) for x in side.b]}
     if t == "extrusion":
-        return {"kind": "extruded_side", "curve": curve, "z": sorted(float(v) for v in prim["z"])}
-    return {"kind": "revolved_side", "curve": curve}
+        return dict({"kind": "extruded_side", "curve": curve, "z": sorted(float(v) for v in prim["z"])}, **place)
+    return dict({"kind": "revolved_side", "curve": curve}, **place)
 
 
 # The functions below are also copied into the meshing scripts (they use
@@ -454,6 +546,10 @@ def on_face(spec, Q, N, tol):
     vertices on the surface (tolerance tol), its normal along the normal of
     the surface (which tells apart a face at the edge of two surfaces)."""
     k = spec["kind"]
+    if "frame" in spec:                   # a face of a shape in a work plane: in its frame
+        R = np.asarray(spec["frame"]["R"], float)
+        Q = (Q - np.asarray(spec["frame"]["origin"], float)) @ R
+        N = N @ R
     C = Q.mean(axis=0)
     if k == "box_face":
         i = spec["axis"]

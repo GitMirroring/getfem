@@ -63,7 +63,7 @@ def test_every_action_keeps_a_valid_model():
         for node in E.tree(base).walk():
             for action, _ in E.actions(base, node.path):
                 if action in ("remove", "clear_shape", "add_import", "unfold", "add_from_library") \
-                        or action.startswith("cmd:"):
+                        or action.startswith(("cmd:", "pick_plane:")):      # (pick_plane: a click in the view)
                     continue
                 model = copy.deepcopy(base)
                 new = E.do_action(model, node.path, action, name="zeta" if E.needs_name(action) else None)

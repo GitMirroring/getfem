@@ -200,8 +200,11 @@ extrusion
    * - From z to z
      - ``z``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Work plane
+     - ``placement``
+     - one of ``xy`` (the (x, y) plane at the origin), ``custom`` (an origin and two axes). The plane of the profile: its x and y axes (r and z for a revolution); z is their cross product
 
-The profile (2D shape below) is extruded along z.
+The profile (2D shape below) is extruded along the normal of its plane.
 
 Faces: ``bottom``, ``top``, and the faces swept by the sides of the profile (``side`` with the reference of the side of the profile).
 
@@ -220,8 +223,11 @@ revolution
    * - Type
      - ``type``
      - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+   * - Work plane
+     - ``placement``
+     - one of ``xy`` (the (x, y) plane at the origin), ``custom`` (an origin and two axes). The plane of the profile: its x and y axes (r and z for a revolution); z is their cross product
 
-The profile (2D shape below, in the (r, z) plane) turns about the z axis.
+The profile (2D shape below) turns about the z axis of its plane (the profile is in the (r, z) plane).
 
 Faces: the faces swept by the sides of the profile (``side`` with the reference of the side of the profile).
 

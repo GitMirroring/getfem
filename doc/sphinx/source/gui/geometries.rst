@@ -180,6 +180,51 @@ or a revolution. They are picked in the view to define selections (see
 :ref:`gui-selections-faces`). See ``examples/heat_sink_3d.json`` and
 ``examples/pulley_3d.json``.
 
+.. _gui-geometries-work-planes:
+
+Work planes
+-----------
+
+.. image:: images/work_plane.png
+   :width: 100%
+   :alt: The profile of a boss drawn on the section of a block
+
+By default, the profile of an extrusion is in the (x, y) plane and the
+extrusion goes along z; that of a revolution is in the (r, z) half plane
+and turns about the z axis. Its *Work plane* (in its form) can also be
+any plane: an origin and two axes x and y (the second one is made
+orthogonal to the first one), the profile being drawn in their
+coordinates, z along their cross product. A revolution then turns about
+the z axis of its plane:
+
+.. code-block:: text
+
+  {"type": "extrusion", "z": [0, 0.02], "origin": [0.1, 0.05, 0.05],
+   "axes": [[1, 0, 0], [0, 1, 0]], "profile": {...}}
+
+**On a face.** On a 3D boolean (the root of a solid, say), *On a face…*
+puts an extrusion on a plane face clicked in the view: *a boss*, out of the
+face (united with the solid), or *a pocket*, into the solid (subtracted
+from it). The boolean is put in a union (a difference) first when it is
+not one. The work plane is that of the face (its origin at the center of
+the visible part of the face, its normal outward), the depth a fifth of the
+size of the solid, and the profile starts from nothing: it is shown in its
+plane, where it is drawn (*Escape* cancels the choice of the face).
+
+**The section under a profile.** The profile of an extrusion or a
+revolution is shown on the section of the rest of the geometry by its plane
+(just behind the plane for an extrusion, so that the face it stands on
+shows; the (r, z) half plane for a revolution), in blue.
+
+**Snapping.** While drawing or dragging a handle in 2D, a point within a
+few pixels of a vertex snaps to it: corners and centers of the primitives,
+vertices of the polygons, points where sides cross, corners of the section
+under a profile; otherwise it snaps to the grid (*snap* unchecked: neither).
+
+The GetFEM mesher places the shapes with its ``placed`` object (a rigid
+motion, added to GetFEM for the interface); Gmsh and Netgen turn and move
+them; a mesh in layers is turned and moved after it is built.
+
 Curves and surfaces
 -------------------
 

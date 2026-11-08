@@ -173,11 +173,28 @@ def anisotropic(win):
     win.select((E.RESULTS, "heat", "T"))
 
 
+def work_plane(win):
+    """A boss put on the top face of the block: its profile drawn on the
+    section of the block."""
+    root = ("geometries", 0, "source", "shape")
+    win.select(root)
+    win._panel_action("pick_plane:boss")
+    _settle()
+    surf, refs = win.viewer._faces
+    top = next(i for i, r in enumerate(refs) if r.get("face") == "zmax")
+    win.viewer.last_face = top
+    win._face_clicked(refs[top])
+    prof = win.current_path()
+    win._panel_action("add_shape:ball")
+    win.select(prof)
+
+
 SHOTS = {
     "window.png": ("plate_hole_tension.json", window_2d),
     "polygon_handles.png": ("l_bracket.json", polygon_handles),
     "preview_3d.png": ("heat_sink_3d.json", preview_3d),
     "faces_3d.png": ("block_with_hole_3d.json", faces_3d),
+    "work_plane.png": ("block_with_hole_3d.json", work_plane),
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
     "results.png": ("plate_hole_tension.json", results),

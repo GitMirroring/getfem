@@ -107,13 +107,18 @@ def _gf_shape(shape, w) -> str:
     elif t == "cylinder":
         w(f"{v} = gf.MesherObject('cylinder', {_floats(shape['origin'])}, {_floats(shape['axis'])}, "
           f"{float(shape['length'])!r}, {float(shape['radius'])!r})")
-    elif t == "extrusion":
+    elif t in ("extrusion", "revolution"):
         p = _gf_shape(shape["profile"], w)
-        z0, z1 = _floats(shape["z"])
-        w(f"{v} = gf.MesherObject('extrusion', {p}, {z0!r}, {z1!r})")
-    elif t == "revolution":
-        p = _gf_shape(shape["profile"], w)
-        w(f"{v} = gf.MesherObject('revolution', {p})   # profile in the (r, z) plane, axis z")
+        if t == "extrusion":
+            z0, z1 = _floats(shape["z"])
+            w(f"{v} = gf.MesherObject('extrusion', {p}, {z0!r}, {z1!r})")
+        else:
+            w(f"{v} = gf.MesherObject('revolution', {p})   # profile in the (r, z) plane, axis z")
+        fr = G3.frame(shape)
+        if fr is not None:                # in its work plane: placed (origin, axes)
+            O, R = fr
+            w(f"{v} = gf.MesherObject('placed', {v}, {O.tolist()!r}, {R[:, 0].tolist()!r}, "
+              f"{R[:, 1].tolist()!r})")
     elif t in GF_SHAPES and len(parts) == 1:        # a boolean of one shape: that shape
         return parts[0]
     elif t == "difference" and len(parts) > 2:
@@ -192,12 +197,14 @@ def _occ_shape(shape, dim, w) -> str:
         z0, z1 = _floats(shape["z"])
         w(f"{occ}.translate({p}, 0.0, 0.0, {z0!r})")
         w(f"{v} = [e for e in {occ}.extrude({p}, 0.0, 0.0, {z1 - z0!r}) if e[0] == 3]")
+        _occ_place(shape, v, w)
     elif t == "revolution":
         # the profile, drawn in the (x, y) plane for (r, z), is turned into
         # the (x, z) plane, then about the z axis
         p = _occ_shape(G3.effective_profile(shape), 2, w)
         w(f"{occ}.rotate({p}, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, math.pi / 2)")
         w(f"{v} = [e for e in {occ}.revolve({p}, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 2 * math.pi) if e[0] == 3]")
+        _occ_place(shape, v, w)
     elif len(parts) == 1:                 # a boolean of one shape: that shape
         w(f"{v} = {parts[0]}")
     elif t == "intersection":
@@ -209,6 +216,34 @@ def _occ_shape(shape, dim, w) -> str:
     else:          # fuse(a, b + c), cut(a, b + c): a with or without b and c
         w(f"{v}, _ = {occ}.{OCC_BOOLEANS[t]}({parts[0]}, {' + '.join(parts[1:])})")
     return v
+
+
+def _occ_place(shape, v, w):
+    """An extrusion or a revolution in its work plane: built in the frame of
+    the plane, then turned and moved there."""
+    fr = G3.frame(shape)
+    if fr is None:
+        return
+    occ = "gmsh.model.occ"
+    O, R = fr
+    axis, angle = G3.rotation_vector(R)
+    w("# placed in its work plane")
+    if angle:
+        w(f"{occ}.rotate({v}, 0.0, 0.0, 0.0, {axis[0]!r}, {axis[1]!r}, {axis[2]!r}, {angle!r})")
+    w(f"{occ}.translate({v}, {O[0]!r}, {O[1]!r}, {O[2]!r})")
+
+
+def _ng_place(shape, v, w):
+    fr = G3.frame(shape)
+    if fr is None:
+        return
+    O, R = fr
+    axis, angle = G3.rotation_vector(R)
+    w("# placed in its work plane")
+    if angle:
+        w(f"{v} = {v}.Rotate(Axis((0, 0, 0), Dir({axis[0]!r}, {axis[1]!r}, {axis[2]!r})), "
+          f"{math.degrees(angle)!r})")
+    w(f"{v} = {v}.Move(Vec({O[0]!r}, {O[1]!r}, {O[2]!r}))")
 
 
 def _build_gmsh(model, geom, mesh, w, msh_name):
@@ -286,10 +321,12 @@ def _ng_shape(shape, dim, w) -> str:
         p = _ng_shape(shape["profile"], 2, w)
         z0, z1 = _floats(shape["z"])
         w(f"{v} = {p}.Extrude({z1 - z0!r}).Move(Vec(0, 0, {z0!r}))")
+        _ng_place(shape, v, w)
     elif t == "revolution":
         p = _ng_shape(G3.effective_profile(shape), 2, w)
         w("# the profile, drawn in the (x, y) plane for (r, z), turned into the (x, z) plane")
         w(f"{v} = {p}.Rotate(Axis((0, 0, 0), X), 90).Revolve(Axis((0, 0, 0), Z), 360)")
+        _ng_place(shape, v, w)
     elif t in OCC_BOOLEANS:
         op = {"union": "+", "intersection": "*", "difference": "-"}[t]
         w(f"{v} = " + f" {op} ".join(parts))
@@ -336,11 +373,19 @@ def _build_layered(model, geom, mesh, w, basename):
         _build_netgen(model, g2, m2, w, f"{basename}_profile.msh")
     w(f"# {n} layers in [0, 1] along a third coordinate t (geometric degree {K} along t)")
     w(f"m = gf.Mesh('prismatic', m, {n}, {K})")
+    fr = G3.frame(shape)
+
+    def place():
+        if fr is not None:                # in its work plane
+            w("# placed in its work plane: x -> O + R x")
+            w(f"m.transform({fr[1].tolist()!r})")
+            w(f"m.translate({fr[0].tolist()!r})")
     if shape["type"] == "extrusion":
         z0, z1 = _floats(shape["z"])
         w(f"# extrusion: z = {z0!r} + {z1 - z0!r} t")
         w(f"m.transform([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, {z1 - z0!r}]])")
         w(f"m.translate([0.0, 0.0, {z0!r}])")
+        place()
         return
     w("# revolution: (r, z, t) -> (r cos a, r sin a, z), a = -2 pi t (a direct basis);")
     w("# the elements are added again, which merges the points of the seam (t = 0, 1)")
@@ -357,6 +402,7 @@ def _build_layered(model, geom, mesh, w, basename):
     w("    ids = np.array([pids[idx[c]:idx[c + 1]] for c in cvs]).T")
     w("    mr.add_convex(gt, Q[:, ids])")
     w("m = mr")
+    place()
 
 
 def _build_curve(model, geom, mesh, w):
@@ -796,6 +842,7 @@ def error_line(stderr: str) -> str:
 # Mesher objects added to GetFEM for the interface, and the patch that adds each one
 RECENT_MESHER_OBJECTS = {
     "extrusion": "mesher: extrusion and revolution of 2D objects",
+    "placed": "mesher: objects placed in a frame (rigid motion)",
     "revolution": "mesher: extrusion and revolution of 2D objects",
     "polygon": "mesher: polygons (not necessarily convex)",
     "ellipse": "mesher: a working ellipse",

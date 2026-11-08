@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):
         self.viewer.cutCleared.connect(lambda: self._set_cut(None))
         self.viewer.shapeDrawn.connect(self._shape_drawn)
         self.viewer.polygonEntered.connect(self._polygon_entered)
+        self.viewer.escaped.connect(self._cancel_plane_pick)
         self.viewer.handleMoved.connect(self._handle_moved)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(tree_box)
@@ -714,6 +715,7 @@ class MainWindow(QMainWindow):
                 return None
             swept = E.get_at(model, prof[:-1], {})
             plane = "(r, z)" if swept.get("type") == "revolution" else "(x, y)"
+            self._reference = self._section_under(model, gi, prof)
             csg = tuple(path[len(prof) + 1::2])
             highlighted = [p for p in pieces if p.side.shape[:len(csg)] == csg] if len(path) > len(prof) else []
             return (f"Profile of the {swept.get('type')} of {geom.get('name')!r}, in the {plane} plane",
@@ -827,6 +829,9 @@ class MainWindow(QMainWindow):
         pickable = E.can_pick_faces(self.model, path) or E.can_pick_faces_of_selection(self.model, path)
         if pickable:
             title += ": click faces to add or remove them"
+        if getattr(self, "_plane_target", None) == path:
+            pickable = True
+            title += ": click the plane face to put the extrusion on (Escape: cancel)"
         try:
             self.viewer.show_geometry_3d(shape, highlighted, part, status=title + " (preview, no mesh)",
                                          key=geom.get("name"), pickable=pickable)
@@ -872,6 +877,56 @@ class MainWindow(QMainWindow):
         self._update_undo()
         self._changed(select=path)
         self.state.setText(f"Polygon of {len(points)} vertices entered")
+
+    def _cancel_plane_pick(self):
+        if getattr(self, "_plane_target", None) is not None:
+            self._plane_target = None
+            self.state.setText("Cancelled")
+            self.update_view()
+
+    def _extrusion_on_face(self, path):
+        from .. import geometry3d as G3
+        target, self._plane_target = self._plane_target, None
+        if target != path:
+            return
+        plane = self.viewer.face_plane(getattr(self.viewer, "last_face", -1))
+        if plane is None:
+            self._plane_target = target
+            self.state.setText("This face is not plane: click a plane face")
+            return
+        C, n = plane
+        shape = G3.shape_of(P.resolved(self.model)["geometries"][path[1]]["source"])
+        lo, hi = G3.bounds(shape)
+        before = copy.deepcopy(self.model)
+        prof = E.add_extrusion_on_plane(self.model, path, C, n, 0.2 * float(np.max(hi - lo)),
+                                        getattr(self, "_plane_kind", "boss"))
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=prof)
+        z = E.get_at(self.model, prof[:-1])["z"]
+        self.state.setText("Extrusion " + ("out of" if z[0] >= 0 else "into") + " the face: draw its profile "
+                           "(the section of the solid is shown under it)")
+
+    def _section_under(self, model: dict, gi: int, prof) -> tuple | None:
+        """The section of the rest of the 3D geometry in the plane of a
+        profile (geometry3d.section_grid), drawn under it."""
+        from .. import geometry2d as G
+        from .. import geometry3d as G3
+        try:
+            root = model["geometries"][gi]["source"]["shape"]
+            swept = E.get_at(model, prof[:-1])
+            rest = G3.without(root, tuple(prof[5:-1:2]))
+            if next(G3.primitives(rest), None) is None:
+                return None
+            lo, hi = G3.plane_extent(rest, swept)
+            if not G.is_empty(swept["profile"]):
+                plo, phi = G.bounds(swept["profile"])
+                lo, hi = np.minimum(lo, plo), np.maximum(hi, phi)
+            m = 0.08 * float(np.max(hi - lo) or 1.0)
+            return G3.section_grid(rest, swept, lo - m, hi + m)
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
 
     def _shape_drawn(self, shape: dict, op: str):
         """A rectangle, a disk or a polygon drawn in the view: combined with the geometry."""
@@ -955,9 +1010,13 @@ class MainWindow(QMainWindow):
 
     def _face_clicked(self, ref):
         """A click on a face of the 3D preview: toggles it in the selected
-        boundary selection, or in the support of the selected item."""
+        boundary selection, or in the support of the selected item; or gives
+        the work plane of a new extrusion ("Add an extrusion on a face")."""
         from .. import geometry3d as G3
         path = self.current_path()
+        if getattr(self, "_plane_target", None) is not None:
+            self._extrusion_on_face(path)
+            return
         gi = E.preview_geometry(self.model, path)
         if gi is None:
             return
@@ -1014,6 +1073,8 @@ class MainWindow(QMainWindow):
 
     def update_view(self):
         path = self.current_path()
+        if getattr(self, "_plane_target", None) not in (None, path):    # another node: no more picking
+            self._plane_target = None
         if path[:1] == (E.RESULTS,):
             return
         if self._show_manifold(path):
@@ -1032,9 +1093,11 @@ class MainWindow(QMainWindow):
             title, shape, pieces, highlighted, domain, pickable = preview
             if handles:
                 title += " — drag the handles to move or resize"
+            reference, self._reference = getattr(self, "_reference", None), None
             try:
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
-                                          pickable=pickable, key=title.split(" — ")[0].split(":")[0])
+                                          pickable=pickable, key=title.split(" — ")[0].split(":")[0],
+                                          reference=reference)
                 self.viewer.set_handles(handles, lambda name, point, p=path: self._handle_preview(p, name, point))
                 if E.polygon_to_enter(self.model, path):
                     self.viewer.enter_polygon()
@@ -1200,6 +1263,12 @@ class MainWindow(QMainWindow):
 
     def _panel_action(self, ident: str):
         path = self.current_path()
+        if ident.startswith("pick_plane:"):   # the next click on a face gives the plane
+            self._plane_target = path
+            self._plane_kind = ident.split(":", 1)[1]
+            self.update_view()
+            self.state.setText("Click the plane face to put the extrusion on (Escape: cancel)")
+            return
         if ident == "cmd:build_mesh":
             self.build_mesh(E.get_at(self.model, path + ("name",)))
             return

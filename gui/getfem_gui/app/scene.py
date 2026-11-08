@@ -32,6 +32,7 @@ import pyvista as pv
 SURFACE = "#dfe3e8"
 EDGES = "#5b6472"
 HIGHLIGHT = "#e4572e"
+REFERENCE = "#5b9bd5"         # the section of the rest of a 3D geometry under a profile
 FADED = "#eef0f3"
 CMAP = "viridis"
 
@@ -325,17 +326,61 @@ def _fill(shape: dict, n: int = 240, level=None) -> pv.DataSet:
     return grid.clip_scalar(scalars="d", value=0.0, invert=True)
 
 
+def reference_lines(reference) -> pv.PolyData | None:
+    """The zero lines of a section grid (xs, ys, values) (geometry3d.section_grid),
+    joined into polylines."""
+    xs, ys, values = reference
+    if len(xs) < 2 or len(ys) < 2:
+        return None
+    img = pv.ImageData(dimensions=(len(xs), len(ys), 1), spacing=(xs[1] - xs[0], ys[1] - ys[0], 1.0),
+                       origin=(xs[0], ys[0], 0.0))
+    img.point_data["d"] = np.asarray(values, float).ravel(order="F")
+    lines = img.contour([0.0], scalars="d")
+    if lines.n_points == 0:
+        return None
+    return lines.strip()
+
+
+def reference_corners(lines: pv.PolyData | None, angle: float = 35.0) -> np.ndarray:
+    """The ends and the corners (turn larger than angle) of reference lines."""
+    if lines is None or lines.n_cells == 0:
+        return np.zeros((0, 2))
+    out = []
+    P = np.asarray(lines.points)[:, :2]
+    cells = np.asarray(lines.lines)
+    i, cos = 0, np.cos(np.radians(angle))
+    while i < len(cells):
+        n = cells[i]
+        ids = cells[i + 1:i + 1 + n]
+        i += n + 1
+        Q = P[ids]
+        closed = len(Q) > 2 and np.allclose(Q[0], Q[-1])
+        if not closed:
+            out += [Q[0], Q[-1]]
+        for k in range(1, len(Q) - 1):
+            a, b = Q[k] - Q[k - 1], Q[k + 1] - Q[k]
+            na, nb = np.linalg.norm(a), np.linalg.norm(b)
+            if na > 0 and nb > 0 and a @ b < cos * na * nb:
+                out.append(Q[k])
+    return np.array(out) if out else np.zeros((0, 2))
+
+
 def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain: bool = False,
-                     title: str = "", reset: bool = True) -> None:
+                     title: str = "", reset: bool = True, reference=None) -> None:
     """Exact preview of a 2D geometry: the domain, the interfaces between its
     regions, its boundary pieces, some of them highlighted (a boundary
     selection); domain=True highlights the domain, a function the part where
-    it is negative (geometry2d.domain_level)."""
+    it is negative (geometry2d.domain_level). reference: lines drawn under
+    it (the section of the rest of a 3D geometry, for a profile)."""
     from .. import geometry2d as G
     clear(plotter)
+    if reference is not None and reference.n_points:
+        plotter.add_mesh(reference, color=REFERENCE, line_width=2, lighting=False, name="reference",
+                         pickable=False)
     if G.is_empty(shape):               # nothing yet: a frame to draw in
-        plotter.add_mesh(_polyline(np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], float)), color="#c8ced4",
-                         line_width=1, lighting=False, name="frame")
+        if reference is None or not reference.n_points:
+            plotter.add_mesh(_polyline(np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], float)),
+                             color="#c8ced4", line_width=1, lighting=False, name="frame")
         plotter.add_text("Empty geometry: draw shapes, or add them in the tree", position="upper_left",
                          font_size=10, color="#444444", name="title")
         if reset:
@@ -526,6 +571,8 @@ def _swept_surface(prim: dict, h: float) -> pv.PolyData:
         tri = np.array(surf.faces).reshape(-1, 4)
         good = (tri[:, 1] != tri[:, 2]) & (tri[:, 2] != tri[:, 3]) & (tri[:, 1] != tri[:, 3])
         surf = _rebuilt(surf, tri, good)
+    if G3.frame(prim) is not None:        # built in its work plane, then placed
+        surf.points = G3.to_global(prim, np.asarray(surf.points))
     return surf
 
 
@@ -579,6 +626,31 @@ def face_refs(surf) -> list[dict] | None:
     if "face_refs" not in surf.field_data or "face_id" not in surf.cell_data:
         return None
     return json.loads(str(surf.field_data["face_refs"][0]))
+
+
+def face_plane(surf, fid: int, shape: dict):
+    """The plane of a face of a preview surface (its visible part): (center,
+    outward unit normal), or None if the face is not plane."""
+    from .. import geometry3d as G3
+    ids = np.flatnonzero(np.asarray(surf.cell_data["face_id"]) == fid)
+    if not len(ids):
+        return None
+    tri = np.array(surf.faces).reshape(-1, 4)[ids, 1:]
+    X = np.asarray(surf.points)[tri]                       # cells x 3 x 3
+    cross = np.cross(X[:, 1] - X[:, 0], X[:, 2] - X[:, 0])
+    area = np.linalg.norm(cross, axis=1) / 2
+    if area.sum() <= 0:
+        return None
+    C = (X.mean(axis=1) * area[:, None]).sum(axis=0) / area.sum()
+    n = np.linalg.svd(X.reshape(-1, 3) - C)[2][-1]
+    lo, hi = G3.bounds(shape)
+    size = float(np.linalg.norm(hi - lo)) or 1.0
+    if np.max(np.abs((X.reshape(-1, 3) - C) @ n)) > 1e-6 * size:
+        return None
+    eps = 1e-3 * size
+    if G3.sdf(shape, (C + eps * n)[None])[0] < G3.sdf(shape, (C - eps * n)[None])[0]:
+        n = -n
+    return C, n
 
 
 def cell_faces(surf) -> list | None:

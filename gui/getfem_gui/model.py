@@ -808,6 +808,16 @@ def _check_shape(shape, dim, where, errors):
         if t == "extrusion" and _check_vec(shape.get("z"), 2, f"{where}.z", errors):
             if shape["z"][0] >= shape["z"][1]:
                 errors.append(f"{where}.z: z0 < z1 expected")
+        if "origin" in shape:                     # its work plane
+            _check_vec(shape.get("origin"), 3, f"{where}.origin", errors)
+        if "axes" in shape:
+            axes = shape["axes"]
+            if not isinstance(axes, list) or len(axes) != 2:
+                errors.append(f"{where}.axes: two axes (vectors of 3 numbers) expected")
+            elif all(_check_vec(a, 3, f"{where}.axes[{j}]", errors) for j, a in enumerate(axes)):
+                a, b = (np.asarray(x, float) for x in axes)
+                if np.linalg.norm(np.cross(a, b)) <= 1e-9 * max(np.linalg.norm(a) * np.linalg.norm(b), 1e-300):
+                    errors.append(f"{where}.axes: the two axes of the work plane must not be parallel")
         profile = shape.get("profile")
         if not isinstance(profile, dict):
             errors.append(f"{where}.profile: 2D shape expected")

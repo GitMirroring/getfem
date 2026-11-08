@@ -431,6 +431,31 @@ def pieces(shape: dict, samples: int = 720, level=None) -> list[Piece]:
     return out
 
 
+def key_points(shape: dict) -> np.ndarray:
+    """The points that the drawing snaps to: corners and centers of the
+    primitives, vertices of the polygons, ends of the boundary pieces and of
+    the interfaces (where sides cross)."""
+    out = []
+    for _, s in primitives(shape):
+        t = s["type"]
+        if t == "rectangle":
+            (x0, y0), (x1, y1) = s["min"], s["max"]
+            out += [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        elif t in ("ball", "ellipse"):
+            out.append(list(s["center"]))
+        elif t == "polygon":
+            out += [list(p) for p in s["points"]]
+    try:
+        for p in pieces(shape) + interfaces(shape):
+            if not (p.side.closed and p.t1 - p.t0 >= 1 - 1e-9):
+                out += p.side.points([p.t0, p.t1]).tolist()
+    except (ValueError, KeyError, TypeError, IndexError):
+        pass
+    if not out:
+        return np.zeros((0, 2))
+    return np.unique(np.round(np.asarray(out, float), 12), axis=0)
+
+
 def interfaces(shape: dict, samples: int = 720) -> list[Piece]:
     """The parts of the sides of the primitives that lie inside the domain:
     the interfaces between its regions (e.g. the circle of an inclusion)."""

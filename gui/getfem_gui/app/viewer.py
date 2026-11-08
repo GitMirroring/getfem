@@ -201,6 +201,7 @@ class Viewer(QWidget):
     handleMoved = Signal(str, object)     # handle name, new position (snapped)
     cutDrawn = Signal(object)             # cut line [a, b] drawn on a field
     cutCleared = Signal()
+    escaped = Signal()                    # Escape pressed in the view (drawing stopped)
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -267,6 +268,7 @@ class Viewer(QWidget):
 
     def _leave_field(self) -> None:
         """Another kind of display: the tools of the results go away."""
+        self._snap_points = None
         if self._tool == "line":
             self.cut_button.setChecked(False)
         self.result_bar.hide()
@@ -307,7 +309,8 @@ class Viewer(QWidget):
         self.plotter.render()
 
     def show_geometry(self, shape: dict, pieces: list, highlighted=(), domain=False,
-                      status: str = "", pickable: bool = False, key: str | None = None) -> None:
+                      status: str = "", pickable: bool = False, key: str | None = None,
+                      reference=None) -> None:
         """Exact preview of a 2D geometry; domain: True (the whole domain) or a
         function negative in the highlighted part (geometry2d.domain_level).
         pickable: True or "edges", clicks on boundary pieces are reported by
@@ -325,8 +328,12 @@ class Viewer(QWidget):
         from . import scene
         # the camera is kept while the same geometry is edited (key: its name)
         key = ("geometry", key if key is not None else repr(shape))
+        from .. import geometry2d as G
+        lines = scene.reference_lines(reference) if reference is not None else None
         scene.show_geometry_2d(self.plotter, shape, pieces, highlighted, domain,
-                               reset=key != self._shown_key)
+                               reset=key != self._shown_key, reference=lines)
+        corners = scene.reference_corners(lines)
+        self._snap_points = np.concatenate([G.key_points(shape), corners]) if len(corners) else G.key_points(shape)
         self._shown_key = key
         if self._grid_wanted():
             self._show_grid(True)
@@ -399,7 +406,16 @@ class Viewer(QWidget):
     def pick_face_display(self, x: float, y: float) -> None:
         found = self.face_at_display(x, y)
         if found is not None:
+            self.last_face = found[0]
             self.faceClicked.emit(found[1])
+
+    def face_plane(self, fid: int):
+        """(center, outward normal) of a face of the 3D preview, None if it is
+        not plane."""
+        from . import scene
+        if self._faces is None or self._last is None or self._last[0] != "geometry3d":
+            return None
+        return scene.face_plane(self._faces[0], fid, self._last[1])
 
     def hover_face_display(self, x: float, y: float) -> None:
         from . import scene
@@ -554,7 +570,7 @@ class Viewer(QWidget):
         self._handles, self._handle_preview, self._grabbed = [], None, None
         self._poly = []                   # vertices of the polygon being drawn
         self._entering = False            # the polygon is the one of the tree being entered
-        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.stop_drawing)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self._escape)
         for key, slot in ((Qt.Key.Key_Return, self.polygon_close), (Qt.Key.Key_Enter, self.polygon_close),
                           (Qt.Key.Key_Backspace, self.polygon_back)):
             sc = QShortcut(QKeySequence(key), self, slot)
@@ -620,6 +636,10 @@ class Viewer(QWidget):
         if not enabled:
             self.stop_drawing()
         self.draw_bar.setVisible(enabled and self.plotter is not None)
+
+    def _escape(self) -> None:
+        self.stop_drawing()
+        self.escaped.emit()
 
     def stop_drawing(self) -> None:
         for b in self.draw_buttons.values():
@@ -742,9 +762,22 @@ class Viewer(QWidget):
         self.grid_edit.clearFocus()
         self.refresh_grid()
 
+    SNAP_PIXELS = 8                       # the distance at which a point snaps to a vertex
+
     def _snapped(self, world):
+        """The point snapped: to a vertex of the geometry (or of the section
+        under a profile) within SNAP_PIXELS, else to the grid."""
         from .. import geometry2d as G
-        if self._draw_step and self.snap_box.isChecked():
+        if not self.snap_box.isChecked():
+            return [float(world[0]), float(world[1])]
+        pts = getattr(self, "_snap_points", None)
+        if pts is not None and len(pts) and self.plotter is not None:
+            from . import scene
+            d = np.linalg.norm(pts - np.asarray(world[:2], float), axis=1)
+            k = int(np.argmin(d))
+            if d[k] <= self.SNAP_PIXELS * scene.pixel_size(self.plotter):
+                return [float(pts[k][0]), float(pts[k][1])]
+        if self._draw_step:
             return G.snap(world, self._draw_step)
         return [float(world[0]), float(world[1])]
 
@@ -858,6 +891,7 @@ class Viewer(QWidget):
         view = dict(view or {})
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status, view)
+        self._snap_points = None
         self._pieces, self._regions_of = [], None
         self._faces = None
         self.probe_label.setText("")
