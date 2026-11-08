@@ -1459,6 +1459,137 @@ namespace getfem {
   (const pmesher_signed_distance &d2)
   { return std::make_shared<mesher_mapped_2d>(d2, true); }
 
+
+  // Rigid placement of an object given in a local frame: its origin at O,
+  // its axes along the orthonormal columns of R (in 3D: e1, e2, e1 x e2).
+  // P -> Q = R^T (P - O); the distance is preserved, G = R G_loc and
+  // H = R H_loc R^T.
+  struct mesher_frame {
+    base_node O; base_matrix R;
+    void local(const base_node &P, base_node &Q) const {
+      size_type n = O.size(); Q.resize(n); gmm::clear(Q);
+      for (size_type j = 0; j < n; ++j)
+	for (size_type i = 0; i < n; ++i) Q[j] += R(i, j) * (P[i] - O[i]);
+    }
+    void global_vector(const base_small_vector &g, base_small_vector &G) const
+    { G.resize(O.size()); gmm::mult(R, g, G); }
+    void global_matrix(const base_matrix &h, base_matrix &H) const {
+      size_type n = O.size(); base_matrix A(n, n);
+      gmm::resize(H, n, n);
+      gmm::mult(R, h, A); gmm::mult(A, gmm::transposed(R), H);
+    }
+  };
+
+  // A constraint of the placed object, seen in the global frame.
+  class mesher_placed_constraint : public mesher_signed_distance {
+    const mesher_signed_distance *c;
+    const mesher_frame &f;
+  public:
+    mesher_placed_constraint(const mesher_signed_distance *c_,
+			     const mesher_frame &f_) : c(c_), f(f_) {}
+    size_type constraint_id() const { return id; }
+    bool bounding_box(base_node &, base_node &) const { return false; }
+    virtual scalar_type operator()(const base_node &P) const
+    { base_node Q; f.local(P, Q); return (*c)(Q); }
+    virtual scalar_type operator()(const base_node &P,
+				   dal::bit_vector &bv) const {
+      scalar_type d = (*this)(P);
+      bv[id] = (gmm::abs(d) < SEPS);
+      return d;
+    }
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      base_node Q; base_small_vector g; f.local(P, Q);
+      scalar_type d = c->grad(Q, g);
+      f.global_vector(g, G);
+      return d;
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      base_node Q; base_matrix h; f.local(P, Q);
+      c->hess(Q, h); f.global_matrix(h, H);
+    }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>& list) const
+    { id = list.size(); list.push_back(this); }
+  };
+
+  class mesher_placed : public mesher_signed_distance {
+    pmesher_signed_distance d;
+    mesher_frame f;
+    mutable std::vector<const mesher_signed_distance*> list2;
+    mutable std::vector<std::shared_ptr<mesher_placed_constraint>> placed;
+    mutable dal::bit_vector bv2;
+  public:
+    mesher_placed(const pmesher_signed_distance &d_, const base_node &O,
+		  const base_matrix &R) : d(d_) { f.O = O; f.R = R; }
+    bool bounding_box(base_node &bmin, base_node &bmax) const {
+      base_node b0, b1;
+      if (!d->bounding_box(b0, b1)) return false;
+      size_type n = b0.size();
+      bmin = base_node(n); bmax = base_node(n);
+      for (size_type i = 0; i < n; ++i) {     // the box of the moved box
+	bmin[i] = bmax[i] = f.O[i];
+	for (size_type j = 0; j < n; ++j) {
+	  scalar_type a = f.R(i, j) * b0[j], b = f.R(i, j) * b1[j];
+	  bmin[i] += std::min(a, b); bmax[i] += std::max(a, b);
+	}
+      }
+      return true;
+    }
+    virtual scalar_type operator()(const base_node &P) const
+    { base_node Q; f.local(P, Q); return (*d)(Q); }
+    virtual scalar_type operator()(const base_node &P,
+				   dal::bit_vector &bv) const {
+      base_node Q; f.local(P, Q);
+      bv2.clear();
+      scalar_type r = (*d)(Q, bv2);
+      for (dal::bv_visitor i(bv2); !i.finished(); ++i)
+	if (i < placed.size()) bv[placed[i]->constraint_id()] = true;
+      return r;
+    }
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      base_node Q; base_small_vector g; f.local(P, Q);
+      scalar_type r = d->grad(Q, g);
+      f.global_vector(g, G);
+      return r;
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      base_node Q; base_matrix h; f.local(P, Q);
+      d->hess(Q, h); f.global_matrix(h, H);
+    }
+    virtual void register_constraints(std::vector<const
+				      mesher_signed_distance*>& list) const {
+      list2.clear();
+      d->register_constraints(list2);
+      placed.clear();
+      for (const mesher_signed_distance *c : list2) {
+	placed.push_back(std::make_shared<mesher_placed_constraint>(c, f));
+	placed.back()->register_constraints(list);
+      }
+    }
+  };
+
+  // The object d (given in its local frame) placed at O, its local axes
+  // along the columns of R (orthonormalized here).
+  inline pmesher_signed_distance new_mesher_placed
+  (const pmesher_signed_distance &d, const base_node &O, base_matrix R) {
+    size_type n = O.size();
+    GMM_ASSERT1(gmm::mat_nrows(R) == n && gmm::mat_ncols(R) == n,
+		"The frame should have " << n << " axes of dimension " << n);
+    for (size_type j = 0; j < n; ++j) {       // Gram-Schmidt
+      for (size_type k = 0; k < j; ++k) {
+	scalar_type a = 0;
+	for (size_type i = 0; i < n; ++i) a += R(i, j) * R(i, k);
+	for (size_type i = 0; i < n; ++i) R(i, j) -= a * R(i, k);
+      }
+      scalar_type no = 0;
+      for (size_type i = 0; i < n; ++i) no += R(i, j) * R(i, j);
+      no = sqrt(no);
+      GMM_ASSERT1(no > 1e-12, "The axes of the frame should be independent");
+      for (size_type i = 0; i < n; ++i) R(i, j) /= no;
+    }
+    return std::make_shared<mesher_placed>(d, O, R);
+  }
+
   // mesher
   void build_mesh(mesh &m, const pmesher_signed_distance& dist_,
 		  scalar_type h0, const std::vector<base_node> &fixed_points

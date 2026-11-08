@@ -245,6 +245,37 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      psd = getfem::new_mesher_revolution(psd2);
      );
 
+  /*@INIT MF = ('placed', @tmo object, @vec origin, @vec axis1[, @vec axis2])
+    The object `object`, given in a local frame, placed with the origin of
+    its frame at `origin` and its first axes along `axis1` (and `axis2`
+    in 3D; the third one is axis1 x axis2): a rigid motion. The axes are
+    orthonormalized (`axis2` is made orthogonal to `axis1`). For instance,
+    an extrusion of a 2D object in any plane.@*/
+  sub_command
+    ("placed", 3, 4, 0, 1,
+     getfem::pmesher_signed_distance psd2 = to_mesher_object(in.pop());
+     darray o = in.pop().to_darray();
+     size_type n = o.size();
+     getfem::base_node O(n);
+     for (size_type i = 0; i < n; ++i) O[i] = o[i];
+     GMM_ASSERT1(n == 2 || n == 3, "A 2D or 3D object is expected");
+     getfem::base_matrix R(n, n);
+     darray a1 = in.pop().to_darray(int(n));
+     for (size_type i = 0; i < n; ++i) R(i, 0) = a1[i];
+     if (n == 2) {
+       R(0, 1) = -a1[1]; R(1, 1) = a1[0];
+     } else {
+       GMM_ASSERT1(in.remaining(), "Two axes are expected in 3D");
+       darray a2 = in.pop().to_darray(int(n));
+       for (size_type i = 0; i < n; ++i) R(i, 1) = a2[i];
+       // the third axis: a1 x a2 (normalized with the others)
+       R(0, 2) = a1[1]*a2[2] - a1[2]*a2[1];
+       R(1, 2) = a1[2]*a2[0] - a1[0]*a2[2];
+       R(2, 2) = a1[0]*a2[1] - a1[1]*a2[0];
+     }
+     psd = getfem::new_mesher_placed(psd2, O, R);
+     );
+
 } // build_sub_command_table
 
 

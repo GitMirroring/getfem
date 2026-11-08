@@ -18,6 +18,7 @@
 if QHULL
 optpy = check_levelset.py                               \
         check_mesher_extrusion.py                       \
+        check_mesher_placed.py                          \
         check_mesher_polygon.py                         \
         check_mesher_ellipse.py                         \
         demo_thermo_elasticity_electrical_coupling.py
@@ -32,6 +33,7 @@ EXTRA_DIST=                                       \
     check_global_functions.py                     \
     check_levelset.py                             \
     check_mesher_extrusion.py                     \
+    check_mesher_placed.py                        \
     check_mesher_polygon.py                       \
     check_mesher_ellipse.py                       \
     check_asm.py                                  \
