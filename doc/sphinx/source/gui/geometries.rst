@@ -61,10 +61,10 @@ The primitives (:ref:`gui-ref-shapes`) are:
 * ``polygon``: its vertices, in either order, not necessarily convex (but
   it must not cross itself). Its vertices are edited in a table: *Add* adds
   one after the last, *Insert* adds a vertex in the middle of a side,
-  *Remove* removes one. *Add a polygon* gives an empty polygon: in a 2D
-  geometry, the polygon tool of the view starts, and its vertices are
-  clicked (as for drawing, below); in a profile, they are typed in the
-  table.
+  *Remove* removes one. *Add a polygon* gives an empty polygon: the
+  polygon tool of the view starts, and its vertices are clicked (as for
+  drawing, below), in a 2D geometry as in the profile of an extrusion or
+  a revolution; they can also be typed in the table.
 
 Every number may be a parameter or an expression of parameters. The type
 of a primitive can be changed in its form: a rectangle or a disk changed
@@ -161,6 +161,12 @@ profile, itself a 2D constructive tree edited under the shape:
   two values of z;
 * ``revolution``: the profile, in the (r, z) half plane, turned about the z
   axis (its part with r < 0 is ignored).
+
+The profile node, or one of its shapes, selected in the tree shows the
+profile in its plane, (x, y) or (r, z), as a 2D geometry: shapes are drawn
+in it (they go to the profile), the primitives have their handles, and the
+vertices of a new polygon are clicked. The extrusion or revolution node
+shows the 3D shape.
 
 3D geometries are previewed without meshing: the surface of each
 primitive is clipped to its part on the boundary of the whole shape, so

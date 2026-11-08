@@ -351,7 +351,9 @@ class PropertiesPanel(QScrollArea):
         rows = E.vertex_rows(model, f.key)
         table = QTableWidget(len(rows), 2)
         table.setObjectName("vertices_table")
-        table.setHorizontalHeaderLabels(["x", "y"])
+        prof = E.profile_root(f.key)
+        around = prof is not None and E.get_at(model, prof[:-1], {}).get("type") == "revolution"
+        table.setHorizontalHeaderLabels(["r", "z"] if around else ["x", "y"])
         table.setVerticalHeaderLabels([str(i + 1) for i in range(len(rows))])
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)

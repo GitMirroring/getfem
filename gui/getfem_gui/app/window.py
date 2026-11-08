@@ -703,6 +703,21 @@ class MainWindow(QMainWindow):
         if gi is None or gi >= len(geoms):
             return None
         geom = geoms[gi]
+        prof = E.profile_root(path)
+        if prof is not None:                  # the profile of an extrusion or a revolution, in its plane
+            shape = E.get_at(model, prof)
+            if not isinstance(shape, dict):
+                return None
+            try:
+                pieces = G.pieces(shape)
+            except (KeyError, TypeError, ValueError, IndexError):
+                return None
+            swept = E.get_at(model, prof[:-1], {})
+            plane = "(r, z)" if swept.get("type") == "revolution" else "(x, y)"
+            csg = tuple(path[len(prof) + 1::2])
+            highlighted = [p for p in pieces if p.side.shape[:len(csg)] == csg] if len(path) > len(prof) else []
+            return (f"Profile of the {swept.get('type')} of {geom.get('name')!r}, in the {plane} plane",
+                    shape, pieces, highlighted, False, False)
         shape = G.shape_of(geom.get("source", {}))
         if shape is None:
             return None
@@ -864,9 +879,10 @@ class MainWindow(QMainWindow):
         gi = E.can_draw(self.model, path)
         if gi is None:
             return
+        root = E.draw_root(self.model, path)
         before = copy.deepcopy(self.model)
         try:
-            _, notes = E.add_shape_2d(self.model, gi, shape, op)
+            _, notes = E.add_shape_2d(self.model, gi, shape, op, root)
         except (ValueError, KeyError, TypeError) as exc:
             self.model = before
             self.state.setText(f"Not added: {exc}")
@@ -874,7 +890,7 @@ class MainWindow(QMainWindow):
         self._undo.append(before)
         self._redo.clear()
         self._update_undo()
-        self._changed(select=("geometries", gi))
+        self._changed(select=E.profile_root(path) or ("geometries", gi))
         what = {"rectangle": "Rectangle", "ball": "Disk", "ellipse": "Ellipse", "polygon": "Polygon"}.get(shape["type"], "Shape")
         verb = {"union": "added", "difference": "subtracted", "intersection": "intersected"}[op]
         self.state.setText(f"{what} {verb}" + (": " + "; ".join(notes) if notes else ""))

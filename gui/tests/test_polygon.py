@@ -292,12 +292,32 @@ def test_adding_a_polygon_enters_its_vertices():
     lo, hi = G.bounds(shape)
     assert list(lo) == [0, 0] and list(hi) == [1, 1]
     assert G.sdf(shape, np.array([[1.5, 0.5]]))[0] > 0
-    # in a profile: no clicks (a 3D view), typed vertices
+    # in a profile too: it is shown in its plane, its vertices clicked
     model = M.default_model()
     path = E.do_action(model, ("geometries",), "add_geometry:extrusion")
     prof = path + ("source", "shape", "profile")
     poly = E.do_action(model, prof, "add_shape:polygon")
-    assert not E.polygon_to_enter(model, poly)
+    assert E.polygon_to_enter(model, poly) and E.draw_root(model, poly) == prof
+    assert E.can_draw(model, path + ("source", "shape")) is None          # the extrusion: 3D
+
+
+def test_drawing_in_a_profile():
+    """A shape drawn in the profile of a revolution: added to the profile;
+    when it is wrapped in a new boolean, the faces swept by its sides follow."""
+    model = M.load(Path(__file__).resolve().parents[1] / "examples" / "pulley_3d.json")
+    prof = ("geometries", 0, "source", "shape", "profile")
+    rect = prof + ("of", 0)
+    assert E.draw_root(model, rect) == prof and E.primitive_node(model, rect)["type"] == "rectangle"
+    assert len(E.shape_handles(model, rect)) == 5                       # corners and center
+    new, _ = E.add_shape_2d(model, 0, {"type": "ball", "center": [0.03, 0.01], "radius": 0.002},
+                            "difference", prof)
+    assert new == prof + ("of", 2) and E.get_at(model, prof)["type"] == "difference"
+    new, _ = E.add_shape_2d(model, 0, {"type": "rectangle", "min": [0.02, 0.0], "max": [0.03, 0.002]},
+                            "union", prof)
+    assert new == prof + ("of", 1) and E.get_at(model, prof + ("of", 0))["type"] == "difference"
+    face = model["geometries"][0]["selections"]["bore"]["criteria"]["faces"][0]
+    assert face["profile"]["shape"] == [0, 0] and face["shape"] == []
+    assert M.validate(model) == []
 
 
 def test_entering_a_polygon_in_the_window():
@@ -347,6 +367,26 @@ def test_entering_a_polygon_in_the_window():
             assert len(E.get_at(win.model, poly)["points"]) == 3
             assert not [e for e in win.errors if e.startswith(f"geometries[{g[1]}]")], win.errors
             assert "fill" in v.plotter.actors
+            # in the profile of a new revolution: shown in the (r, z) plane, vertices clicked
+            win.select(("geometries",))
+            win._panel_action("add_geometry:revolution")
+            g = win.current_path()
+            prof = g + ("source", "shape", "profile")
+            win.select(prof)
+            assert not v.draw_bar.isHidden() and "(r, z)" in v.status.text()
+            win._panel_action("add_shape:polygon")
+            poly = win.current_path()
+            assert v._entering and "grid" in v.plotter.actors
+            for p in ([0.4, 0.2], [0.7, 0.2], [0.55, 0.6], [0.4, 0.2]):
+                v.draw_begin(p)
+                v.draw_end(p)
+            assert E.get_at(win.model, poly)["points"] == [[0.4, 0.2], [0.7, 0.2], [0.55, 0.6]]
+            assert not [e for e in win.errors if e.startswith(f"geometries[{g[1]}]")], win.errors
+            win.select(prof)                                       # a rectangle drawn in it
+            v.findChild(QToolButton, "draw:rectangle").setChecked(True)
+            v.draw_begin([0.8, 0.0])
+            v.draw_end([0.9, 0.3])
+            assert len(E.get_at(win.model, prof)["of"]) == 2 and win.current_path() == prof
         finally:
             win.setWindowModified(False)
             win.close()

@@ -2509,15 +2509,36 @@ def polygon_to_enter(model: dict, path: Path) -> bool:
     in the view: its vertices are then clicked there."""
     shape = get_at(model, path) if path else None
     return isinstance(shape, dict) and shape.get("type") == "polygon" and not shape.get("points") \
-        and can_draw(model, path) is not None and "profile" not in path[4:]
+        and can_draw(model, path) is not None
+
+
+def profile_root(path: Path) -> Path | None:
+    """The path of the profile (2D tree) of an extrusion or a revolution that
+    holds the node at path (the profile itself or one of its shapes), or None."""
+    if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape") \
+            and "profile" in path[4:]:
+        return tuple(path[:path.index("profile", 4) + 1])
+    return None
+
+
+def draw_root(model: dict, path: Path) -> Path | None:
+    """The path of the 2D tree that a shape drawn in the view goes to: the
+    profile of an extrusion or a revolution (a node of it selected), or the
+    tree of a 2D box or csg geometry; None when nothing is drawn."""
+    if can_draw(model, path) is None:
+        return None
+    return profile_root(path) or ("geometries", path[1], "source", "shape")
 
 
 def can_draw(model: dict, path: Path) -> int | None:
-    """Index of the 2D geometry (box or csg) that a drawn shape goes to, when
-    the node at path is that geometry or one of its shapes; None otherwise."""
+    """Index of the geometry that a drawn shape goes to, when the node at
+    path is a 2D geometry (box or csg), one of its shapes, or the profile of
+    an extrusion or a revolution or one of its shapes; None otherwise."""
     if path[:1] != ("geometries",) or len(path) < 2 or (len(path) > 2 and path[2] != "source"):
         return None
     gi = path[1]
+    if profile_root(path) is not None and isinstance(get_at(model, profile_root(path)), dict):
+        return gi
     src = get_at(model, ("geometries", gi, "source"), {})
     if src.get("type") == "box" and len(src.get("size", [])) == 2:
         return gi
@@ -2648,27 +2669,31 @@ def _box_to_csg(model: dict, gi: int) -> list[str]:
     return notes
 
 
-def add_shape_2d(model: dict, gi: int, shape: dict, op: str) -> tuple[Path, list[str]]:
-    """Combine a drawn primitive with a 2D geometry: op is union, difference
-    (the shape is removed) or intersection. Returns the path of the new shape
-    node and notes about what was changed."""
+def add_shape_2d(model: dict, gi: int, shape: dict, op: str, root: Path | None = None) -> tuple[Path, list[str]]:
+    """Combine a drawn primitive with a 2D tree (root: its path, by default
+    the tree of the 2D geometry gi; or a profile, see draw_root): op is union,
+    difference (the shape is removed) or intersection. Returns the path of
+    the new shape node and notes about what was changed."""
     if op not in M.SHAPES_BOOLEAN:
         raise ValueError(f"unknown operation {op!r}")
     notes: list[str] = []
     geom = model["geometries"][gi]
-    if geom["source"].get("type") == "box":
+    base = tuple(root) if root is not None else ("geometries", gi, "source", "shape")
+    if geom["source"].get("type") == "box" and base == ("geometries", gi, "source", "shape"):
         notes += _box_to_csg(model, gi)
-    src = geom["source"]
-    root = src["shape"]
-    base = ("geometries", gi, "source", "shape")
-    if root.get("type") in M.SHAPES_BOOLEAN and not root.get("of"):     # the first shape
-        root["of"] = [shape]
+    tree = get_at(model, base)
+    if tree.get("type") in M.SHAPES_BOOLEAN and not tree.get("of"):     # the first shape
+        tree["of"] = [shape]
         return base + ("of", 0), notes
-    if root.get("type") == op:            # a \ b \ c, a u b u c...: one more operand
-        root.setdefault("of", []).append(shape)
-        return base + ("of", len(root["of"]) - 1), notes
-    src["shape"] = {"type": op, "of": [root, shape]}
-    _prefix_edge_refs(geom, (0,))
+    if tree.get("type") == op:            # a \ b \ c, a u b u c...: one more operand
+        tree.setdefault("of", []).append(shape)
+        return base + ("of", len(tree["of"]) - 1), notes
+    set_at(model, base, {"type": op, "of": [tree, shape]})
+    swept, inner = _shape_location(base)
+    if swept is None:
+        _prefix_edge_refs(geom, (0,))
+    else:                                 # the sides of the profile in the faces of the swept shape
+        _remap_shape_refs(geom, lambda p: (0,) + tuple(p), swept)
     return base + ("of", 1), notes
 
 

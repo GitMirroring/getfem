@@ -820,8 +820,9 @@ def show_grid(plotter, lo, hi, step: float) -> None:
     pts = np.array(lines, float).reshape(-1, 3)
     cells = np.hstack([[2, 2 * i, 2 * i + 1] for i in range(len(lines))])
     grid = pv.PolyData(pts, lines=cells)
-    plotter.add_mesh(grid, color="#9fb3c2", opacity=0.35, line_width=1, lighting=False, name="grid",
-                     pickable=False)
+    # opaque: a translucent grid is hidden behind the (opaque) domain, in its
+    # plane, by some OpenGL drivers
+    plotter.add_mesh(grid, color="#aebfcc", line_width=1, lighting=False, name="grid", pickable=False)
 
 
 def show_axes_2d(plotter, lo, hi, major: float | None) -> None:
