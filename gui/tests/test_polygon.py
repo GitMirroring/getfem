@@ -398,7 +398,7 @@ def test_grid_and_axes_while_drawing():
     import os
     import shutil
     try:
-        from PySide6.QtWidgets import QApplication, QToolButton
+        from PySide6.QtWidgets import QApplication, QCheckBox, QToolButton
     except ImportError:
         return
     os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
@@ -433,6 +433,26 @@ def test_grid_and_axes_while_drawing():
             assert v._draw_step == 0.025
             v.findChild(QToolButton, "draw:grid_auto").click()
             assert v._draw_step == auto and v.grid_label.text() == "auto"
+            # a primitive selected: its handles snap to the grid, which is shown and set
+            win.select(("geometries", 0, "source", "shape"))
+            v.stop_drawing()
+            ball = ("geometries", 0, "source", "shape", "of", 1)
+            E.add_shape_2d(win.model, 0, {"type": "ball", "center": [0.1, 0.05], "radius": 0.02}, "union")
+            win._changed(select=ball)
+            assert v._handles and "grid" in v.plotter.actors and v.grid_edit.text() != ""
+            v.grid_edit.setText("0.03")
+            v._grid_typed()
+            assert v._draw_step == 0.03
+            assert v.handle_press([0.1, 0.05])
+            v.handle_release([0.13, 0.08])
+            assert E.get_at(win.model, ball)["center"] == [0.12, 0.09]           # snapped to 0.03
+            v.findChild(QCheckBox, "draw:snap").setChecked(False)
+            assert v.handle_press([0.12, 0.09])
+            v.handle_release([0.1234, 0.0876])
+            assert E.get_at(win.model, ball)["center"] == [0.1234, 0.0876]       # anywhere
+            v.findChild(QCheckBox, "draw:snap").setChecked(True)
+            v.findChild(QToolButton, "draw:grid_auto").click()
+            win.select(("geometries", 0))
             v.stop_drawing()                    # the axes stay on the geometry, not the grid
             assert "axes" in v.plotter.actors and "grid" not in v.plotter.actors and v.grid_edit.text() == ""
             win.select(("models", 0))

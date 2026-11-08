@@ -35,8 +35,8 @@ import numpy as np
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QToolButton, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QToolButton,
+                               QVBoxLayout, QWidget)
 
 
 def prepare_opengl() -> None:
@@ -328,7 +328,7 @@ class Viewer(QWidget):
         scene.show_geometry_2d(self.plotter, shape, pieces, highlighted, domain,
                                reset=key != self._shown_key)
         self._shown_key = key
-        if self._tool is not None:
+        if self._grid_wanted():
             self._show_grid(True)
         else:
             self._show_axes()
@@ -534,6 +534,12 @@ class Viewer(QWidget):
         self.grid_label = QLabel("")
         self.grid_label.setStyleSheet("color: #555;")
         row.addWidget(self.grid_label)
+        self.snap_box = QCheckBox("snap")
+        self.snap_box.setObjectName("draw:snap")
+        self.snap_box.setChecked(True)
+        self.snap_box.setToolTip("The drawn points and the dragged handles snap to the grid "
+                                 "(unchecked: anywhere)")
+        row.addWidget(self.snap_box)
         self._grid_fixed = None           # a step chosen by the user (None: it follows the zoom)
         self._grid_timer = QTimer(self)
         self._grid_timer.setSingleShot(True)
@@ -560,6 +566,8 @@ class Viewer(QWidget):
         """Handles [(name, position)] of the selected primitive; preview(name,
         point) gives the shape while a handle is dragged."""
         self._handles, self._handle_preview, self._grabbed = list(handles), preview, None
+        if self.plotter is not None and self._tool is None:
+            self._show_grid(self._grid_wanted())
         self._draw_handles()
 
     def _draw_handles(self, active=None):
@@ -584,7 +592,8 @@ class Viewer(QWidget):
         if d[i] > 9 * px:
             return False
         self._grabbed = i
-        self._draw_step = self._grid_fixed or G.grid_step(px * max(self.view_widget.width(), 100))
+        if not self._draw_step:
+            self._draw_step = self._grid_fixed or G.grid_step(px * max(self.view_widget.width(), 100))
         self._draw_handles(active=i)
         return True
 
@@ -602,7 +611,6 @@ class Viewer(QWidget):
         name = self._handles[self._grabbed][0]
         self._grabbed = None
         point = self._snapped(world)
-        self._draw_step = None
         self.draw_cancel()
         self._draw_handles()
         self.handleMoved.emit(name, point)
@@ -641,7 +649,13 @@ class Viewer(QWidget):
             self._tool = None
         self._poly = []
         self.draw_cancel()
-        self._show_grid(self._tool is not None)
+        self._show_grid(self._grid_wanted())
+
+    def _grid_wanted(self) -> bool:
+        """The grid is shown while drawing, and while a primitive with handles
+        is selected (its handles snap to it)."""
+        return self._tool is not None or (bool(self._handles) and self.draw_bar.isVisibleTo(self)
+                                          and bool(self._last) and self._last[0] == "geometry")
 
     def _show_grid(self, on: bool):
         if self.plotter is None:
@@ -698,7 +712,7 @@ class Viewer(QWidget):
         """The grid and the axes again (after a zoom or a pan)."""
         if self.plotter is None:
             return
-        if self._tool is not None:
+        if self._grid_wanted():
             self._show_grid(True)
         elif self._last and self._last[0] == "geometry":
             self._show_axes()
@@ -730,7 +744,9 @@ class Viewer(QWidget):
 
     def _snapped(self, world):
         from .. import geometry2d as G
-        return G.snap(world, self._draw_step) if self._draw_step else [float(world[0]), float(world[1])]
+        if self._draw_step and self.snap_box.isChecked():
+            return G.snap(world, self._draw_step)
+        return [float(world[0]), float(world[1])]
 
     def draw_begin(self, world) -> None:
         if self._tool is not None:

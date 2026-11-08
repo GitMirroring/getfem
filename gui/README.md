@@ -109,7 +109,8 @@ to the interpreter that runs the computations (`getfem.util_version()`).
   tools of the view draw a shape by dragging (corner to corner, center to
   circle), snapped to a grid (the axes and their coordinates are shown on
   every 2D geometry, the grid while drawing;
-  its step follows the zoom, or is set with − and +, or typed); it is added to,
+  its step follows the zoom, or is set with − and +, or typed; also shown
+  while dragging handles; "snap" unchecked: anywhere); it is added to,
   subtracted from or intersected with the geometry (Escape stops drawing).
   The *Ellipse* tool draws the ellipse inscribed in the rectangle of two
   corners. The *Polygon* tool takes a vertex per click; clicking the first vertex

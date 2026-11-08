@@ -94,7 +94,9 @@ A 2D geometry is shown with the x and y axes and the coordinates of their
 main lines; while drawing, the view also shows the grid. The step of the grid follows the zoom
 (*Auto*), or is set: **−** and **+** give the next finer or coarser round
 step (1, 2, 5 × 10\ :sup:`n`), and a step can be typed in the *Grid* field.
-The points (and the handles, below) snap to it.
+The points (and the handles, below) snap to it; *snap* unchecked, they go
+anywhere. The grid is also shown, and set, while a primitive with handles
+is selected.
 
 The shape is added to, subtracted from or intersected with the geometry
 (*Escape* stops drawing). It joins the root boolean of the tree when it is
