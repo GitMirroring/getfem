@@ -104,6 +104,48 @@ polygon
 
 Sides: ``side1``, ``side2``, ``...``.
 
+.. _gui-ref-constraints:
+
+Constraints of a polygon
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``constraints`` of a polygon (sides and vertices numbered from 1; the values may be expressions of parameters):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 40 40
+
+   * - Type
+     - Constraint
+     - Keys
+   * - ``horizontal``
+     - horizontal side
+     - ``side``
+   * - ``vertical``
+     - vertical side
+     - ``side``
+   * - ``length``
+     - length of a side
+     - ``side``, ``value``
+   * - ``angle``
+     - angle at a vertex
+     - ``vertex``, ``value`` (degrees)
+   * - ``parallel``
+     - parallel sides
+     - ``side``, ``other``
+   * - ``perpendicular``
+     - perpendicular sides
+     - ``side``, ``other``
+   * - ``equal``
+     - sides of equal length
+     - ``side``, ``other``
+   * - ``fixed``
+     - fixed vertex
+     - ``vertex``, ``at`` ([x, y])
+   * - ``coincident``
+     - vertex on a vertex of another polygon
+     - ``vertex``, ``shape`` (path of the other polygon), ``other`` (its vertex)
+
 .. _gui-ref-shape-rectangle-3d:
 
 rectangle (3D): box

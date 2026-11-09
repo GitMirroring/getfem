@@ -359,6 +359,7 @@ class Viewer(QWidget):
         if self._handles:
             from . import scene as _s
             _s.show_handles(self.plotter, [p for _, p in self._handles], minor=self._minor_handles())
+            _s.show_marks(self.plotter, getattr(self, "_marks", []))
         self.plotter.render()
 
     def show_geometry_3d(self, shape: dict, highlighted=None, part=None, status: str = "",
@@ -595,10 +596,12 @@ class Viewer(QWidget):
 
     # -------------------------------------------------------------- handles
 
-    def set_handles(self, handles, preview=None) -> None:
+    def set_handles(self, handles, preview=None, marks=()) -> None:
         """Handles [(name, position)] of the selected primitive; preview(name,
-        point) gives the shape while a handle is dragged."""
+        point) gives the shape while a handle is dragged; marks [(position,
+        text)]: its constraints, drawn by its sides and vertices."""
         self._handles, self._handle_preview, self._grabbed = list(handles), preview, None
+        self._marks = list(marks)
         if self.plotter is not None and self._tool is None:
             self._show_grid(self._grid_wanted())
         self._draw_handles()
@@ -606,6 +609,8 @@ class Viewer(QWidget):
     def _draw_handles(self, active=None):
         if self.plotter is None:
             return
+        from . import scene as _scene
+        _scene.show_marks(self.plotter, getattr(self, "_marks", []))
         from . import scene
         scene.show_handles(self.plotter, [p for _, p in self._handles], active, minor=self._minor_handles())
         self.plotter.render()

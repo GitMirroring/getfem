@@ -201,6 +201,29 @@ def work_plane_3d(win):
     v.draw_end([0.0, 0.01, 0.0])
 
 
+def constraints(win):
+    """A polygon drawn roughly, then constrained: a horizontal base, parallel
+    sides, a length and an angle; the angle selected."""
+    v = win.viewer
+    win.select(("geometries",))
+    win._panel_action("add_geometry:csg2")
+    root = win.current_path() + ("source", "shape")
+    win.select(root)
+    win._panel_action("add_shape:polygon")
+    poly = win.current_path()
+    for p in ([0.0, 0.0], [0.42, 0.03], [0.5, 0.31], [0.12, 0.27], [0.0, 0.0]):
+        v.draw_begin(p)
+        v.draw_end(p)
+    for t in ("horizontal", "parallel", "length", "angle"):
+        win.select(poly)
+        win._panel_action("constrain:" + t)
+    c = E.get_at(win.model, poly)["constraints"]
+    c[0]["side"] = 1
+    c[2]["value"] = 0.4
+    c[3]["value"] = 60
+    win._changed(select=poly + ("constraints", 3))
+
+
 def array_3d(win):
     """The hole of the block copied in a linear array: its selection holds
     the three holes."""
@@ -225,6 +248,7 @@ SHOTS = {
     "faces_3d.png": ("block_with_hole_3d.json", faces_3d),
     "work_plane.png": ("block_with_hole_3d.json", work_plane),
     "work_plane_3d.png": ("block_with_hole_3d.json", work_plane_3d),
+    "constraints.png": ("plate_with_hole.json", constraints),
     "array_3d.png": ("block_with_hole_3d.json", array_3d),
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),

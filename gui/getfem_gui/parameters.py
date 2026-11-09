@@ -390,6 +390,14 @@ def _resolve_shape(shape, where, vals, errors):
         return
     _resolve(shape, SHAPE_KEYS, where, vals, errors)
     _resolve(shape, ("count",), where, vals, errors, integer=True, scalars=("count",))
+    if shape.get("constraints") and isinstance(shape.get("points"), list):
+        # the coordinates given by expressions stay where they are (sketch.py)
+        shape["_fixed"] = [[True, True] if isinstance(v, str) else
+                           [isinstance(v, list) and len(v) > k and isinstance(v[k], str) for k in (0, 1)]
+                           for v in shape["points"]]
+        for j, c in enumerate(shape["constraints"]):
+            if isinstance(c, dict):
+                _resolve(c, ("value", "at"), f"{where}.constraints[{j}]", vals, errors, scalars=("value",))
     if isinstance(shape.get("points"), list):
         for j, v in enumerate(shape["points"]):
             if isinstance(v, (list, str)):
@@ -407,6 +415,22 @@ def _resolve_shape(shape, where, vals, errors):
     _resolve_shape(shape.get("profile"), f"{where}.profile", vals, errors)
 
 
+def _solve_sketches(shape, dim, where, errors):
+    """The constraints of the polygons (sketch.py), solved in each 2D tree:
+    the tree itself in 2D, the profiles of the extrusions and revolutions in
+    3D."""
+    from . import sketch
+    if not isinstance(shape, dict):
+        return
+    if dim == 2:
+        errors += [f"{where}{e}" for e in sketch.solve_tree(shape)]
+        return
+    if isinstance(shape.get("profile"), dict):
+        _solve_sketches(shape["profile"], 2, f"{where}.profile", errors)
+    for j, s in enumerate(shape.get("of", []) or []):
+        _solve_sketches(s, 3, f"{where}.of[{j}]", errors)
+
+
 def _resolve_geometries(geoms, meshes, prefix, vals, errors):
     for i, g in enumerate(geoms):
         src = g.get("source", {})
@@ -415,8 +439,10 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
             _resolve(src, BOX_KEYS, where, vals, errors)
         elif src.get("type") == "csg":
             _resolve_shape(src.get("shape"), f"{where}.shape", vals, errors)
+            _solve_sketches(src.get("shape"), 3 if src.get("dim") == 3 else 2, f"{where}.shape", errors)
         elif src.get("type") == "surface":
             _resolve_shape(src.get("shape"), f"{where}.shape", vals, errors)
+            _solve_sketches(src.get("shape"), 2, f"{where}.shape", errors)
             _resolve(src, ("origin",), where, vals, errors)
             for j, ax in enumerate(src.get("axes") or []):
                 if isinstance(ax, (list, str)):

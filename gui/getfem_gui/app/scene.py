@@ -973,6 +973,18 @@ def show_axes_2d(plotter, lo, hi, major: float | None) -> None:
                                  show_points=False, always_visible=True, name="axes_labels", pickable=False)
 
 
+def show_marks(plotter, marks) -> None:
+    """The constraints of a polygon: their symbols by its sides and vertices
+    [(position, text)] (empty: remove)."""
+    plotter.remove_actor("marks")
+    if not marks:
+        return
+    pts = np.array([[p[0], p[1], 0.0] for p, _ in marks], float)
+    plotter.add_point_labels(pts, [t for _, t in marks], font_size=12, text_color="#8a3b12", shape="rounded_rect",
+                             shape_color="#fff3e8", shape_opacity=0.7, point_size=1, show_points=False,
+                             always_visible=True, name="marks")
+
+
 def show_handles(plotter, positions, active: int | None = None, minor=None) -> None:
     """Handles of the selected primitive (empty: remove); minor: True for the
     secondary handles (middles of the sides of a polygon), drawn smaller."""

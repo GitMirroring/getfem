@@ -449,6 +449,19 @@ is unchanged, the clicks being taken where their ray meets z = 0
 (`scene.display_to_world`). The GetFEM mesher needs its `placed` object
 (GetFEM patch "mesher: objects placed in a frame").
 
+## Constraints of polygons
+
+A polygon may have `"constraints"` (`sketch.py`): horizontal, vertical,
+length, angle, parallel, perpendicular, equal, fixed, coincident (sides and
+vertices numbered from 1). They are solved when the model is resolved
+(`parameters.resolved`, per 2D tree): the vertices of the model are the
+drawing, moved as little as possible (weighted least squares, Gauss-Newton
+with a minimum-norm correction), the coordinates given by expressions
+staying fixed. Dragging a vertex solves with a large weight on it and
+writes the result to the model. The editing (`E.add_constraint`,
+`E.constraint_marks`, renumbering when vertices are inserted or removed)
+is in `editing.py`.
+
 ## Transformations and arrays
 
 A shape of a CSG tree (2D or 3D, profiles included) can be put in a

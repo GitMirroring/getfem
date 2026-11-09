@@ -74,7 +74,8 @@ Geometry sources
 - csg       : {"type": "csg", "dim": 2, "shape": <shape>}            primitives + booleans
               shape = {"type": "rectangle", "min": [...], "max": [...]}
                     | {"type": "ball", "center": [...], "radius": r}
-                    | {"type": "polygon", "points": [[x, y], ...]}   (2D, simple, any orientation)
+                    | {"type": "polygon", "points": [[x, y], ...]}   (2D, simple, any orientation;
+                       optional "constraints": [...], see sketch.py)
                     | {"type": "ellipse", "center": [x, y], "radii": [r1, r2], "angle": a}
                       (2D; the semi-axis r1 at a degrees from the x axis)
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
@@ -803,6 +804,9 @@ def _check_shape(shape, dim, where, errors):
             problem = G.polygon_problem(pts)
             if problem:
                 errors.append(f"{where}.points: not a simple polygon ({problem})")
+        cons = shape.get("constraints", [])
+        if not isinstance(cons, list) or any(not isinstance(c, dict) for c in cons):
+            errors.append(f"{where}.constraints: a list of constraints expected")
     elif t == "cylinder":
         if dim != 3:
             errors.append(f"{where}: cylinder only exists in 3D")

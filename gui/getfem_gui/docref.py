@@ -203,6 +203,8 @@ def shapes() -> str:
             if t == "polygon":
                 sides = ("side1", "side2", "...")
             out += "Sides: " + ", ".join(_lit(s) for s in sides) + ".\n\n"
+            if t == "polygon":
+                out += _constraints_doc()
         else:
             faces = [f["face"] for f in G3.primitive_faces(shape) if "profile" not in f]
             text = ", ".join(_lit(f) for f in faces)
@@ -213,6 +215,21 @@ def shapes() -> str:
                     "the side of the profile)"
             out += "Faces: " + text + ".\n\n"
     return out
+
+
+def _constraints_doc() -> str:
+    """The constraints of a polygon (sketch.py): their keys."""
+    from . import sketch as SK
+    out = (".. _gui-ref-constraints:\n\n" + _title("Constraints of a polygon", "^")
+           + "The ``constraints`` of a polygon (sides and vertices numbered from 1; the values may be "
+             "expressions of parameters):\n\n")
+    keys = {"horizontal": "``side``", "vertical": "``side``", "length": "``side``, ``value``",
+            "angle": "``vertex``, ``value`` (degrees)", "parallel": "``side``, ``other``",
+            "perpendicular": "``side``, ``other``", "equal": "``side``, ``other``",
+            "fixed": "``vertex``, ``at`` ([x, y])",
+            "coincident": "``vertex``, ``shape`` (path of the other polygon), ``other`` (its vertex)"}
+    rows = [[_lit(t), SK.LABELS[t], keys[t]] for t in SK.TYPES]
+    return out + _table(["Type", "Constraint", "Keys"], rows, [20, 40, 40])
 
 
 def selections() -> str:

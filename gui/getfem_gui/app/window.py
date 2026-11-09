@@ -695,7 +695,29 @@ class MainWindow(QMainWindow):
     def _preview(self, path):
         """What the exact 2D preview shows for a node, or None when it does not
         apply (mesh and result nodes, 3D or imported geometries):
-        (title, shape, pieces, highlighted pieces, domain highlighted, pickable)."""
+        (title, shape, pieces, highlighted pieces, domain highlighted, pickable).
+        A constraint of a polygon: the polygon, the sides it refers to highlighted."""
+        poly = E.constraint_owner(path)
+        if poly is None:
+            return self._preview_of(path)
+        out = self._preview_of(poly)
+        if out is None:
+            return None
+        title, shape, pieces, _, domain, pickable = out
+        from .. import sketch
+        c = E.get_at(self.model, path, {})
+        root = E.profile_root(poly) or tuple(poly[:4])
+        src = tuple(poly[len(root) + 1::2])
+        sides = {f"side{k}" for kind, k in sketch.references(c) if kind == "side"}
+        if c.get("type") in ("angle",):          # the two sides at the vertex
+            n = len(E.get_at(self.model, poly, {}).get("points") or [])
+            k = c.get("vertex", 1)
+            sides = {f"side{(k - 2) % n + 1}", f"side{k}"} if n else set()
+        highlighted = [p for p in pieces if p.side.shape == src and p.side.side in sides]
+        return title.split(" — ")[0] + f" — constraint: {sketch.label(c)}", shape, pieces, highlighted, \
+            domain, pickable
+
+    def _preview_of(self, path):
         if path[:1] in (("meshes",), (E.RESULTS,)):
             return None
         model = P.resolved(self.model)
@@ -852,7 +874,7 @@ class MainWindow(QMainWindow):
         return T.flatten(E.get_at(P.resolved(m), path), 2, A, b)
 
     def _handle_moved(self, name: str, point):
-        path = self.current_path()
+        path = E.constraint_owner(self.current_path()) or self.current_path()
         before = copy.deepcopy(self.model)
         try:
             notes = E.move_handle(self.model, path, name, point)
@@ -1113,7 +1135,8 @@ class MainWindow(QMainWindow):
             self.viewer.set_handles([])
             return
         self.viewer.set_drawing(preview is not None and E.can_draw(self.model, path) is not None)
-        handles = E.shape_handles(self.model, path) if preview is not None else []
+        spath = E.constraint_owner(path) or path          # a constraint: the handles of its polygon
+        handles = E.shape_handles(self.model, spath) if preview is not None else []
         self.viewer.set_handles([])
         if preview is not None:
             title, shape, pieces, highlighted, domain, pickable = preview
@@ -1125,7 +1148,8 @@ class MainWindow(QMainWindow):
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
                                           pickable=pickable, key=title.split(" — ")[0].split(":")[0],
                                           reference=reference, context=context)
-                self.viewer.set_handles(handles, lambda name, point, p=path: self._handle_preview(p, name, point))
+                self.viewer.set_handles(handles, lambda name, point, p=spath: self._handle_preview(p, name, point),
+                                        marks=E.constraint_marks(self.model, path))
                 if E.polygon_to_enter(self.model, path):
                     self.viewer.enter_polygon()
             except Exception as exc:  # noqa: BLE001

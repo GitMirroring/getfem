@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import model as M, parameters as P, transforms as T
+from . import model as M, parameters as P, sketch as SK, transforms as T
 
 Path = tuple
 
@@ -316,6 +316,10 @@ def _shape_label(shape: dict) -> str:
 EMPTY_SHAPE = {"type": "union", "of": []}       # a constructive geometry started from nothing
 
 
+def _capitalized(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
 def _a(word: str) -> str:
     return "an" if word[0] in "aeio" else "a"
 
@@ -329,6 +333,11 @@ def _shape_node(shape: dict, path: Path) -> Node:
         child = _shape_node(shape["profile"], path + ("profile",))
         child.label = f"Profile: {child.label}"
         node.children.append(child)
+    elif shape.get("type") == "polygon":
+        for j, c in enumerate(shape.get("constraints") or []):
+            if isinstance(c, dict):
+                text = format_value(c.get("value")) if "value" in c else None
+                node.children.append(Node(path + ("constraints", j), _capitalized(SK.label(c, text)), "constraint"))
     return node
 
 
@@ -592,6 +601,10 @@ def _shape_fields(model, path, dim) -> list[Field]:
         out.append(Field(path + ("points",), "Vertices", "vertex_table",
                          help="Vertices in order (either direction); values or expressions. In the "
                               "view, drag a vertex, the middle of a side (adds a vertex) or the center."))
+        if shape.get("constraints"):
+            out.append(Field(path, "", "info", help="With constraints (below in the tree): the vertices are "
+                                                    "moved as little as possible for them to hold; a "
+                                                    "coordinate given by an expression stays."))
     elif t == "cylinder":
         out += [_vec_field(path + ("origin",), "Origin", "numbers", dim),
                 _vec_field(path + ("axis",), "Axis", "numbers", dim),
@@ -987,6 +1000,8 @@ def fields(model: dict, path: Path) -> list[Field]:
             elif t in ("cad", "mesh_file"):
                 out.append(Field(base + ("file",), "File", "file"))
             return out
+        if path[2] == "source" and constraint_owner(path) is not None:
+            return _constraint_fields(model, path)
         if path[2] == "source":
             return _shape_fields(model, path, shape_dim(model, path))
         if path[2] == "selections" and n == 3:
@@ -1226,6 +1241,9 @@ def _vertex_inserted(model: dict, path: Path, i: int) -> None:
             return [name]
         return [f"side{k}", f"side{k + 1}"] if k == i + 1 else [f"side{k + 1 if k > i + 1 else k}"]
     _map_side_refs(model, path, mapping)
+    # constraints: those of the split side dropped, the numbers after it shifted
+    _remap_constraints(model, path, lambda k: None if k == i + 1 else (k + 1 if k > i + 1 else k),
+                       lambda k: k + 1 if k > i + 1 else k)
 
 
 def _vertex_removed(model: dict, path: Path, i: int, n: int) -> None:
@@ -1241,6 +1259,13 @@ def _vertex_removed(model: dict, path: Path, i: int, n: int) -> None:
             return [f"side{i}"]
         return [f"side{k - 1 if k > i + 1 else k}"]
     _map_side_refs(model, path, mapping)
+    v = i + 1                          # 1-based: the vertex v gone, its two sides merged
+
+    def side(k):
+        if k in (v - 1 if v > 1 else n, v):
+            return None
+        return k - 1 if k > v else k
+    _remap_constraints(model, path, side, lambda k: None if k == v else (k - 1 if k > v else k))
 
 
 def chain_rows(model: dict, gi: int) -> tuple[int, list[tuple]]:
@@ -1441,6 +1466,8 @@ def field_value(model: dict, f: Field):
         return "custom" if "origin" in shape or "axes" in shape else "xy"
     if f.op == "array_kind":
         return get_at(model, f.key, "linear")
+    if f.op == "constraint_shape":
+        return ",".join(str(i) for i in get_at(model, f.key, []))
     return get_at(model, f.key)
 
 
@@ -1542,6 +1569,16 @@ def apply(model: dict, f: Field, value) -> Path | None:
         else:
             shape.pop("origin", None)
             shape.pop("axes", None)
+        return None
+    if f.op == "constraint_type":
+        c = get_at(model, key[:-1])
+        if c.get("type") != value:
+            set_at(model, key[:-1], _default_constraint(model, constraint_owner(key[:-1]), value))
+        return None
+    if f.op == "constraint_shape":
+        c = get_at(model, key[:-1])
+        c["shape"] = [int(x) for x in str(value).split(",") if x.strip() != ""]
+        c["other"] = 1
         return None
     if f.op == "array_kind":
         arr = get_at(model, key[:-1])
@@ -1875,6 +1912,8 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out += [("add_selection", "Add a selection"), ("add_mesh", "Add a mesh of this geometry")]
         if len(model.get("geometries", [])) > 1:
             out.append(("remove", "Remove"))
+    elif path[:1] == ("geometries",) and n > 3 and path[2] == "source" and constraint_owner(path) is not None:
+        out.append(("remove", "Remove"))
     elif path[:1] == ("geometries",) and n > 3 and path[2] == "source":
         shape = get_at(model, path, {})
         if isinstance(shape, dict) and shape.get("type"):
@@ -1889,6 +1928,9 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
                 out += [(f"wrap:{t}", f"Put in {_a(t)} {t}") for t in M.SHAPES_BOOLEAN]
                 out += [("transform:transform", "Transform: move or turn"),
                         ("transform:array", "Transform: copy in an array (linear, circular)")]
+            if shape.get("type") == "polygon" and len(shape.get("points") or []) >= 3:
+                out += [(f"constrain:{t}", f"Constrain: {SK.LABELS[t]}") for t in SK.TYPES
+                        if t != "coincident" or _other_polygons(model, path)]
             if shape.get("type") in M.SHAPES_TRANSFORM:
                 out.append(("unwrap", f"Remove the {shape['type']} only"))
             if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
@@ -2065,6 +2107,11 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         elif verb == "move_down" and i + 1 < len(items):
             items[i + 1], items[i] = items[i], items[i + 1]
         return path
+    if action == "remove" and constraint_owner(path) is not None:
+        remove_at(model, path)
+        return constraint_owner(path)
+    if action.startswith("constrain:"):
+        return add_constraint(model, path, action.split(":", 1)[1])
     if action == "remove" and path[:1] == ("geometries",) and len(path) > 5 and path[2] == "source" \
             and path[-2] == "of":
         # the shape of a transform or an array goes with it
@@ -2820,6 +2867,23 @@ def _remap_shape_refs(geom: dict, moved, swept=None) -> None:
     update the edges, faces and regions of the selections. swept: the path of
     the extrusion or revolution whose profile changed (the profile sides of
     its faces are then updated) or None (the CSG tree itself changed)."""
+    # the coincidences between polygons of the 2D tree that changed
+    tree = geom.get("source", {}).get("shape")
+    if swept is not None:
+        for i in swept:
+            tree = (tree or {}).get("of", [None])[i] if isinstance(tree, dict) and i < len(tree.get("of", [])) else None
+        tree = tree.get("profile") if isinstance(tree, dict) else None
+    for _, poly in SK.polygons(tree):
+        if poly.get("constraints"):
+            out = []
+            for c in poly["constraints"]:
+                if c.get("type") == "coincident":
+                    new = moved(c.get("shape", []))
+                    if new is None:
+                        continue
+                    c = dict(c, shape=list(new))
+                out.append(c)
+            poly["constraints"] = out
     for sel in geom.get("selections", {}).values():
         crit = sel.get("criteria", {})
         t = crit.get("type")
@@ -2924,6 +2988,201 @@ def add_shape_2d(model: dict, gi: int, shape: dict, op: str, root: Path | None =
     return base + ("of", 1), notes
 
 
+# ------------------------------------------------------------------ constraints of polygons (sketch.py)
+
+def constraint_owner(path: Path) -> Path | None:
+    """The path of the polygon of a constraint node, or None."""
+    if len(path) >= 2 and path[-2] == "constraints" and path[:1] == ("geometries",):
+        return tuple(path[:-2])
+    return None
+
+
+def _tree_root(path: Path) -> Path:
+    """The 2D tree that holds the shape at path (a profile, or the tree of
+    the geometry)."""
+    return profile_root(path) or tuple(path[:4])
+
+
+def _other_polygons(model: dict, path: Path) -> list[tuple]:
+    """(path in the tree, label) of the other polygons of the 2D tree of the
+    polygon at path."""
+    root = _tree_root(path)
+    tree = get_at(model, root)
+    own = tuple(path[len(root) + 1::2])
+    return [(q, f"polygon {k + 1}") for k, (q, p) in enumerate(SK.polygons(tree))
+            if q != own and len(p.get("points") or []) >= 3]
+
+
+def _resolved_points(model: dict, path: Path):
+    try:
+        pts = get_at(P.resolved(model), path)["points"]
+        return np.asarray(pts, float)
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        return None
+
+
+def _default_constraint(model: dict, path: Path, t: str) -> dict:
+    """A new constraint of the polygon at path, that holds as it is drawn
+    (its value measured; rounded) on the sides or vertices it fits best."""
+    V = _resolved_points(model, path)
+    n = len(V) if V is not None else 3
+    used = {(c.get("type"), c.get("side")) for c in get_at(model, path).get("constraints") or []}
+    r = lambda v: float(f"{v:.4g}")          # noqa: E731
+    if V is None:
+        V = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    D = np.roll(V, -1, axis=0) - V                             # side k + 1: from vertex k to k + 1
+    L = np.linalg.norm(D, axis=1)
+    if t in ("horizontal", "vertical"):
+        a = 1 if t == "horizontal" else 0                      # the component that must vanish
+        free = [k for k in range(n) if ("horizontal", k + 1) not in used and ("vertical", k + 1) not in used]
+        k = min(free or range(n), key=lambda k: abs(D[k, a]) / (L[k] or 1.0))
+        return {"type": t, "side": k + 1}
+    if t == "length":
+        free = [k for k in range(n) if ("length", k + 1) not in used] or list(range(n))
+        return {"type": t, "side": free[0] + 1, "value": r(L[free[0]])}
+    if t == "angle":
+        c = {"type": t, "vertex": 1}
+        return dict(c, value=r(SK.measure(dict(c, value=0), V)))
+    if t in SK.PAIR_TYPES:
+        pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+
+        def score(ij):
+            d, e = D[ij[0]] / (L[ij[0]] or 1), D[ij[1]] / (L[ij[1]] or 1)
+            if t == "parallel":
+                return abs(d[0] * e[1] - d[1] * e[0])
+            if t == "perpendicular":
+                return abs(d @ e)
+            return abs(L[ij[0]] - L[ij[1]]) / (max(L) or 1)
+        i, j = min(pairs, key=score)
+        return {"type": t, "side": i + 1, "other": j + 1}
+    if t == "fixed":
+        return {"type": t, "vertex": 1, "at": [r(V[0, 0]), r(V[0, 1])]}
+    # coincident: the vertex and the vertex of another polygon closest to each other
+    root = _tree_root(path)
+    best = None
+    for q, _ in _other_polygons(model, path):
+        W = _resolved_points(model, root + sum((("of", i) for i in q), ()))
+        if W is None:
+            continue
+        d = np.linalg.norm(V[:, None, :] - W[None, :, :], axis=2)
+        i, j = np.unravel_index(np.argmin(d), d.shape)
+        if best is None or d[i, j] < best[0]:
+            best = (d[i, j], i, q, j)
+    if best is None:
+        return {"type": t, "vertex": 1, "shape": [], "other": 1}
+    return {"type": t, "vertex": int(best[1]) + 1, "shape": list(best[2]), "other": int(best[3]) + 1}
+
+
+def add_constraint(model: dict, path: Path, t: str) -> Path:
+    shape = get_at(model, path)
+    shape.setdefault("constraints", []).append(_default_constraint(model, path, t))
+    return path + ("constraints", len(shape["constraints"]) - 1)
+
+
+def _constraint_fields(model: dict, path: Path) -> list[Field]:
+    c = get_at(model, path, {})
+    t = c.get("type")
+    poly = constraint_owner(path)
+    n = len(get_at(model, poly, {}).get("points") or [])
+    out = [Field(path + ("type",), "Constraint", "choice", tuple((x, SK.LABELS[x]) for x in SK.TYPES
+                                                                  if x != "coincident" or t == x
+                                                                  or _other_polygons(model, poly)),
+                 op="constraint_type")]
+    if t in SK.SIDE_TYPES or t in SK.PAIR_TYPES:
+        out.append(Field(path + ("side",), "Side", "int", help=f"1 to {n}: side k goes from vertex k to k + 1"))
+    if t in SK.PAIR_TYPES:
+        out.append(Field(path + ("other",), "Other side", "int"))
+    if t in SK.VERTEX_TYPES:
+        out.append(Field(path + ("vertex",), "Vertex", "int", help=f"1 to {n}"))
+    if t == "length":
+        out.append(Field(path + ("value",), "Length", "number", help="a number or an expression of parameters"))
+    if t == "angle":
+        out.append(Field(path + ("value",), "Angle (degrees)", "number",
+                         help="between the two sides at the vertex (0 to 180)"))
+    if t == "fixed":
+        out.append(_vec_field(path + ("at",), "At", "numbers", 2))
+    if t == "coincident":
+        others = _other_polygons(model, poly)
+        out += [Field(path + ("shape",), "Polygon", "choice", tuple((",".join(map(str, q)), lab) for q, lab in others),
+                      op="constraint_shape"),
+                Field(path + ("other",), "Its vertex", "int")]
+    out.append(Field(path, "", "info", help="The vertices of the polygon are moved as little as possible for "
+                                            "its constraints to hold (those given by expressions stay)."))
+    return out
+
+
+def _remap_constraints(model: dict, path: Path, side, vertex) -> None:
+    """The sides and vertices of the polygon at path renumbered (side(k),
+    vertex(k): the new 1-based number, None if gone): its constraints, and
+    the coincidences of other polygons with its vertices, follow (dropped
+    when what they refer to is gone)."""
+    poly = get_at(model, path)
+    kept = []
+    for c in poly.get("constraints") or []:
+        new = dict(c)
+        ok = True
+        for key, f in (("side", side), ("other", side if c.get("type") in SK.PAIR_TYPES else None),
+                       ("vertex", vertex)):
+            if f is not None and key in c:
+                k = f(c[key]) if isinstance(c[key], int) else c[key]
+                ok = ok and k is not None
+                new[key] = k
+        if ok:
+            kept.append(new)
+    if "constraints" in poly:
+        poly["constraints"] = kept
+    root = _tree_root(path)
+    own = list(path[len(root) + 1::2])
+    for _, other in SK.polygons(get_at(model, root)):
+        if other is poly or not other.get("constraints"):
+            continue
+        out = []
+        for c in other["constraints"]:
+            if c.get("type") == "coincident" and list(c.get("shape", [])) == own and isinstance(c.get("other"), int):
+                k = vertex(c["other"])
+                if k is None:
+                    continue
+                c = dict(c, other=k)
+            out.append(c)
+        other["constraints"] = out
+
+
+def constraint_marks(model: dict, path: Path) -> list[tuple[list[float], str]]:
+    """The marks of the constraints of the polygon at path (or of the
+    polygon of the constraint at path), where its sides and vertices are
+    drawn: (position, text)."""
+    poly = constraint_owner(path) or path
+    shape = get_at(model, poly)
+    if not isinstance(shape, dict) or shape.get("type") != "polygon" or not shape.get("constraints"):
+        return []
+    V = _resolved_points(model, poly)
+    if V is None or len(V) < 3:
+        return []
+    A, b = handle_frame(model, poly)
+    V = V @ A.T + b
+    n = len(V)
+    size = float(np.max(np.ptp(V, axis=0))) or 1.0
+    out: dict[tuple, list] = {}
+    resolved = (get_at(P.resolved(model), poly) or {}).get("constraints") or []
+    for c, rc in zip(shape["constraints"], resolved):
+        if SK.check(rc, n) is not None:
+            continue
+        t = c["type"]
+        text = SK.SYMBOLS.get(t, "")
+        if t == "length":
+            text = f"L={format_value(c['value'])}"
+        elif t == "angle":
+            text = f"{format_value(c['value'])}°"
+        for kind, k in SK.references(c):
+            if kind == "side":
+                pos = (V[k - 1] + V[k % n]) / 2
+            else:                             # out of the polygon, beside its handle
+                d = V[k - 1] - V.mean(axis=0)
+                pos = V[k - 1] + 0.15 * size * d / (np.linalg.norm(d) or 1.0)
+            out.setdefault((kind, k, tuple(pos)), []).append(text)
+    return [(list(pos), " ".join(texts)) for (_, _, pos), texts in out.items()]
+
+
 # ------------------------------------------------------------------ handles of 2D primitives
 
 class LockedValue(ValueError):
@@ -2995,6 +3254,43 @@ def _local_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
     return [("center", [cx, cy]), ("radius", [cx + rad, cy])]
 
 
+def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, V: list, notes: list) -> list:
+    """A handle of a polygon with constraints dragged: the vertex (or the
+    whole polygon, by its center) goes there as far as the constraints let
+    it, the other vertices move as little as possible; the result is
+    written to the model (the coordinates that are numbers)."""
+    from . import geometry2d as G
+    n = len(V)
+    W = np.asarray(V, float)
+    w = np.ones(n)
+    if handle == "center":
+        W = W + (np.array([x, y]) - W.mean(axis=0))
+        w[:] = 1e3
+    else:
+        i = int(handle[1:])
+        W[i] = [x, y]
+        w[i] = 1e3
+    root = _tree_root(path)
+    tree = copy.deepcopy(get_at(P.resolved(model), root))
+    own = tuple(path[len(root) + 1::2])
+    SK.node_at(tree, own)["points"] = W.tolist()
+    errors = SK.solve_tree(tree, weights={own: w})
+    if errors:
+        raise ValueError(errors[-1].split(": ", 1)[-1])
+    new = SK.node_at(tree, own)["points"]
+    problem = G.polygon_problem(new)
+    if problem:
+        raise ValueError(f"not a simple polygon ({problem})")
+    raw = get_at(model, path)["points"]
+    for i, v in enumerate(new):
+        for k in range(2):
+            if isinstance(raw[i], str) or (isinstance(raw[i], list) and isinstance(raw[i][k], str)):
+                continue                          # an expression: the solver keeps it (it does not move)
+            if abs(v[k] - float(raw[i][k])) > 1e-12 * max(1.0, abs(v[k])):
+                _set_number(model, path + ("points", i, k), float(f"{v[k]:.10g}"), notes)
+    return notes
+
+
 def _set_number(model: dict, key: Path, value: float, notes: list[str]) -> None:
     """Set a numerical value: a number is replaced; a bare parameter name sets
     that parameter (when it is a number itself); an expression is locked."""
@@ -3058,6 +3354,8 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
             return notes
         if shape["type"] == "polygon":
             V = [list(map(float, v)) for v in r["points"]]
+            if shape.get("constraints") and not handle.startswith("m"):
+                return _move_constrained(model, path, handle, x, y, V, notes)
             if handle == "center":
                 cx, cy = sum(v[0] for v in V) / len(V), sum(v[1] for v in V) / len(V)
                 new = [[v[0] + x - cx, v[1] + y - cy] for v in V]

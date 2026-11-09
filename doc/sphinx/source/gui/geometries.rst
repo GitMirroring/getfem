@@ -127,6 +127,37 @@ expression (``"L/2"``) is locked, and the status bar says so.
 Any shape of a boolean can be removed (right click); a boolean left with a
 single shape is replaced by it.
 
+.. _gui-geometries-constraints:
+
+Constraints of a polygon
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. image:: images/constraints.png
+   :width: 100%
+   :alt: A polygon with a horizontal base of length 0.4, parallel sides and an angle of 60 degrees
+
+A polygon drawn roughly is made exact by constraints (*Constrain…* on the
+polygon): a horizontal or vertical side, the length of a side, the angle
+between the two sides at a vertex, parallel or perpendicular sides, sides
+of equal length, a vertex fixed at a point, a vertex on a vertex of
+another polygon of the same tree. A new constraint holds as the polygon is
+drawn (its value is measured, rounded; the side is the one that fits
+best); its side, vertex or value are then changed in its form. The values
+may be parameters: ``"value": "L"`` makes the length follow ``L``. See
+:ref:`gui-ref-constraints` for the keys.
+
+The constraints are shown under the polygon in the tree, and by its sides
+and vertices in the view (``H``, ``V``, ``//``, ``perp``, ``=``, ``L=…``,
+the angle, ``fixed``, ``on``); a constraint selected highlights the sides it
+refers to. The vertices given in the model are those of the drawing: they
+are moved as little as possible (least squares) for the constraints to
+hold, the vertices given by expressions of parameters staying where they
+are; the polygons of a tree are solved together. Dragging a vertex moves it
+as far as the constraints let it go, the other vertices following. A side
+split by a new vertex (or two sides merged by the removal of a vertex) loses
+its constraints; contradictory constraints are reported as an error of the
+polygon.
+
 .. _gui-geometries-building:
 
 Building the tree
