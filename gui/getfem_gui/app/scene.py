@@ -839,19 +839,56 @@ def show_hover(plotter, piece) -> None:
                          name="hover")
 
 
-def display_to_world(plotter, x: float, y: float) -> np.ndarray:
-    """World point (in the z = 0 plane for a 2D view) under display pixel (x, y)."""
-    ren = plotter.renderer
-    ren.SetDisplayPoint(float(x), float(y), 0.0)
+def _display_point(ren, x: float, y: float, depth: float) -> np.ndarray:
+    ren.SetDisplayPoint(float(x), float(y), depth)
     ren.DisplayToWorld()
     w = np.asarray(ren.GetWorldPoint(), float)
     return w[:3] / (w[3] if w[3] else 1.0)
 
 
+def display_to_world(plotter, x: float, y: float) -> np.ndarray:
+    """World point of the z = 0 plane under display pixel (x, y): where the
+    ray of the pixel meets that plane (a 2D view, or a work plane seen in 3D;
+    the point of the focal plane when the ray is along the plane)."""
+    ren = plotter.renderer
+    a, b = _display_point(ren, x, y, 0.0), _display_point(ren, x, y, 1.0)
+    d = b - a
+    if abs(d[2]) <= 1e-9 * (np.linalg.norm(d) or 1.0):
+        return a
+    t = -a[2] / d[2]
+    return a + t * d
+
+
 def pixel_size(plotter) -> float:
-    """World length of one pixel (parallel projection)."""
-    a, b = display_to_world(plotter, 0, 0), display_to_world(plotter, 1, 0)
+    """World length of one pixel in the z = 0 plane, at the center of the view."""
+    w, h = plotter.renderer.GetSize()
+    cx, cy = max(w, 2) / 2, max(h, 2) / 2
+    a, b = display_to_world(plotter, cx, cy), display_to_world(plotter, cx + 1, cy)
     return float(np.linalg.norm(b - a)) or 1e-9
+
+
+PROFILE_3D = "#e8a060"
+
+
+def show_context(plotter, surface) -> None:
+    """The 3D geometry around a work plane (in the coordinates of the plane,
+    z along its normal), translucent, when the profile is drawn in 3D."""
+    plotter.remove_actor("context")
+    if surface is not None and surface.n_points:
+        plotter.add_mesh(surface, color="#9aa7b2", opacity=0.25, smooth_shading=False, name="context",
+                         pickable=False)
+        fill = plotter.actors.get("fill")
+        if fill is not None:              # the profile stands out of the geometry around it
+            fill.prop.color = PROFILE_3D
+            fill.prop.opacity = 0.85
+
+
+def view_plane_3d(plotter) -> None:
+    """An oblique view of a work plane (the z = 0 plane), free rotation."""
+    plotter.view_isometric()
+    plotter.disable_parallel_projection()
+    set_style(plotter, False)
+    plotter.reset_camera()
 
 
 def show_rubber(plotter, shape: dict | None) -> None:

@@ -232,6 +232,68 @@ def test_section_and_snapping_in_the_window():
             win.close()
 
 
+def test_drawing_on_the_plane_in_3d():
+    """The 3D button on a profile: the profile on its plane, in the 3D
+    geometry seen from aside (translucent); a rectangle drawn there goes to
+    the profile, in the coordinates of the plane; XY: flat again. For a
+    revolution, the geometry in its (r, z) half plane."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication, QToolButton
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui import docshots as D
+    from getfem_gui.app import scene
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    with tempfile.TemporaryDirectory() as tmp:
+        win = MainWindow(shutil.copy(examples / "block_with_hole_3d.json", tmp))
+        try:
+            v = win.viewer
+            D.work_plane(win)                          # a boss with a disk on the top face
+            prof = win.current_path()
+            assert not v.plane_3d and "context" not in v.plotter.actors
+            v._view("view_isometric")
+            assert v.plane_3d and "context" in v.plotter.actors and "in 3D" in v.status.text()
+            cam = np.asarray(v.plotter.camera.direction)
+            assert abs(cam[2]) < 0.99                  # seen from aside
+            ctx = v._context.bounds                    # the block, in the frame of its top face
+            assert abs(ctx[4] + 0.05) < 1e-3 and ctx[5] > 0      # under the face: the block; above: the boss
+            w, h = v.plotter.renderer.GetSize()
+            for x, y in ((0.3 * w, 0.4 * h), (0.6 * w, 0.7 * h)):
+                p = scene.display_to_world(v.plotter, x, y)
+                assert abs(p[2]) < 1e-12               # on the plane
+            v.findChild(QToolButton, "draw:rectangle").setChecked(True)
+            v.draw_begin([0.011, 0.012, 0.0])
+            v.draw_move([0.031, 0.029, 0.0])
+            v.draw_end([0.031, 0.029, 0.0])
+            rect = E.get_at(win.model, prof)["of"][-1]
+            assert rect["type"] == "rectangle" and np.allclose(rect["min"], [0.01, 0.01]) \
+                and np.allclose(rect["max"], [0.03, 0.03])
+            assert v.plane_3d and win.current_path() == prof
+            lo, hi = v._view_box()                     # the grid covers the plane around the block
+            assert lo[0] < -0.1 and hi[0] > 0.1
+            v._view("view_xy")
+            assert not v.plane_3d and "context" not in v.plotter.actors
+            assert abs(np.asarray(v.plotter.camera.direction)[2]) > 0.99
+            # a revolution: the geometry in its (r, z) half plane
+            win.select(("geometries",))
+            win._panel_action("add_geometry:revolution")
+            g = win.current_path()
+            win.select(g + ("source", "shape", "profile"))
+            win._panel_action("add_shape:rectangle")
+            win.select(g + ("source", "shape", "profile"))
+            v._view("view_isometric")
+            b = v._context.bounds
+            assert b[0] < 0 < b[1] and b[4] < 0 < b[5]       # around the axis, both sides of the plane
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

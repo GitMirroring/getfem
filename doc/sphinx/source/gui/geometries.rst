@@ -94,6 +94,9 @@ A 2D geometry is shown with the x and y axes and the coordinates of their
 main lines; while drawing, the view also shows the grid. The step of the grid follows the zoom
 (*Auto*), or is set: **−** and **+** give the next finer or coarser round
 step (1, 2, 5 × 10\ :sup:`n`), and a step can be typed in the *Grid* field.
+The view keeps its zoom while the geometry is edited, unless the geometry
+goes out of it (a shape moved by a transform, a value typed in a form): it
+is then fitted to it again.
 The points (and the handles, below) snap to it; *snap* unchecked, they go
 anywhere. The grid is also shown, and set, while a primitive with handles
 is selected.
@@ -217,6 +220,18 @@ plane, where it is drawn (*Escape* cancels the choice of the face).
 revolution is shown on the section of the rest of the geometry by its plane
 (just behind the plane for an extrusion, so that the face it stands on
 shows; the (r, z) half plane for a revolution), in blue.
+
+**In 3D.** With a profile shown, the **3D** button of the view shows it on
+its plane in the 3D view, in the rest of the geometry (translucent; for a
+revolution, the geometry around its (r, z) half plane): the view turns with
+the mouse, the grid and the axes are those of the plane, and the shapes
+are drawn on the plane as in 2D (a click is taken where its ray meets the
+plane), with the same tools, handles and snapping. **XY** shows it flat
+again. The choice is kept from a profile to the next one.
+
+.. image:: images/work_plane_3d.png
+   :width: 100%
+   :alt: The profile of a boss drawn on its plane in the 3D view
 
 **Snapping.** While drawing or dragging a handle in 2D, a point within a
 few pixels of a vertex snaps to it: corners and centers of the primitives,

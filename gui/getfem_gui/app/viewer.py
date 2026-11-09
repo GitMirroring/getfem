@@ -217,7 +217,8 @@ class Viewer(QWidget):
         self._buttons = []
         for text, tip, slot in (("Fit", "Zoom to fit (F)", self.fit),
                                 ("XY", "View the XY plane (pan and zoom; Ctrl + drag to rotate)", lambda: self._view("view_xy")),
-                                ("3D", "Isometric view, free rotation", lambda: self._view("view_isometric")),
+                                ("3D", "Isometric view, free rotation (a profile: drawn on its plane, in the "
+                                       "3D geometry)", lambda: self._view("view_isometric")),
                                 ("Edges", "Show or hide the element edges", self.toggle_edges)):
             b = QToolButton()
             b.setText(text)
@@ -231,6 +232,9 @@ class Viewer(QWidget):
         self.edges = {"mesh": True, "field": False}   # element edges, per kind of display
         self._last = None
         self._shown_key = None
+        self.plane_3d = False      # a profile drawn on its plane in the 3D view (else flat)
+        self._context = None       # the 3D geometry around the plane of the profile shown
+        self._plane_box = None     # the part of the plane shown in 3D (grid, axes)
         self.error = ""            # why the 3D view is unavailable (with the traceback)
         self._pieces, self._hover = [], None     # picking state (edges)
         self._faces = None                       # picking state (3D faces): (surface, refs)
@@ -310,14 +314,21 @@ class Viewer(QWidget):
 
     def show_geometry(self, shape: dict, pieces: list, highlighted=(), domain=False,
                       status: str = "", pickable: bool = False, key: str | None = None,
-                      reference=None) -> None:
+                      reference=None, context=None) -> None:
         """Exact preview of a 2D geometry; domain: True (the whole domain) or a
         function negative in the highlighted part (geometry2d.domain_level).
         pickable: True or "edges", clicks on boundary pieces are reported by
-        edgeClicked; "regions", clicks in the domain by regionClicked."""
+        edgeClicked; "regions", clicks in the domain by regionClicked.
+        context: for a profile, the 3D geometry in the coordinates of its
+        plane (a surface): with plane_3d (the 3D button), the profile is
+        shown and drawn on its plane in the 3D view, with the geometry
+        around it."""
         self._leave_field()
-        self.status.setText(status)
-        self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable, key)
+        self._context = context
+        in_3d = self.plane_3d and context is not None
+        self.status.setText(status + (" — in 3D: rotate with the mouse, draw on the plane (XY: flat)"
+                                      if in_3d else ""))
+        self._last = ("geometry", shape, pieces, highlighted, domain, status, pickable, key, reference, context)
         self._pieces = pieces if pickable in (True, "edges") else []
         self._faces = None
         self._regions_of = shape if pickable == "regions" else None
@@ -327,11 +338,17 @@ class Viewer(QWidget):
             return
         from . import scene
         # the camera is kept while the same geometry is edited (key: its name)
-        key = ("geometry", key if key is not None else repr(shape))
+        key = ("geometry3" if in_3d else "geometry", key if key is not None else repr(shape))
         from .. import geometry2d as G
         lines = scene.reference_lines(reference) if reference is not None else None
+        self._plane_box = self._plane_extent(shape, context, lines) if in_3d else None
+        reset = key != self._shown_key or (not in_3d and self._outside_view(shape))
         scene.show_geometry_2d(self.plotter, shape, pieces, highlighted, domain,
-                               reset=key != self._shown_key, reference=lines)
+                               reset=reset and not in_3d, reference=lines)
+        if in_3d:
+            scene.show_context(self.plotter, context)
+            if reset:
+                scene.view_plane_3d(self.plotter)
         corners = scene.reference_corners(lines)
         self._snap_points = np.concatenate([G.key_points(shape), corners]) if len(corners) else G.key_points(shape)
         self._shown_key = key
@@ -690,14 +707,12 @@ class Viewer(QWidget):
             self._show_axes()                 # kept on a 2D geometry
             self.plotter.render()
             return
-        width = scene.pixel_size(self.plotter) * max(self.view_widget.width(), 100)
+        lo, hi = self._view_box()
+        width = float(hi[0] - lo[0]) if self._plane_box is not None \
+            else scene.pixel_size(self.plotter) * max(self.view_widget.width(), 100)
         self._draw_step = self._grid_fixed or G.grid_step(width)
         if not self.grid_edit.hasFocus():
             self.grid_edit.setText(f"{self._draw_step:g}")
-        lo = scene.display_to_world(self.plotter, 0, 0)
-        hi = scene.display_to_world(self.plotter, self.view_widget.width() * self.view_widget.devicePixelRatioF(),
-                                    self.view_widget.height() * self.view_widget.devicePixelRatioF())
-        lo, hi = np.minimum(lo, hi), np.maximum(lo, hi)
         shown = (np.ceil(hi[0] / self._draw_step) - np.floor(lo[0] / self._draw_step) + 1) * \
             (np.ceil(hi[1] / self._draw_step) - np.floor(lo[1] / self._draw_step) + 1) <= 40000
         self.grid_label.setText(("auto" if self._grid_fixed is None else "fixed")
@@ -706,11 +721,48 @@ class Viewer(QWidget):
         scene.show_axes_2d(self.plotter, lo, hi, G.major_step(self._draw_step, float(hi[0] - lo[0])))
         self.plotter.render()
 
+    @staticmethod
+    def _plane_extent(shape, context, lines):
+        """The part of the plane of a profile shown in 3D: around the profile,
+        the section under it and the geometry seen in the plane."""
+        from .. import geometry2d as G
+        boxes = []
+        if not G.is_empty(shape):
+            try:
+                boxes.append(G.bounds(shape))
+            except ValueError:
+                pass
+        for data in (context, lines):
+            if data is not None and data.n_points:
+                b = data.bounds
+                boxes.append((np.array([b[0], b[2]]), np.array([b[1], b[3]])))
+        if not boxes:
+            return np.zeros(3), np.ones(3)
+        lo = np.min([b[0] for b in boxes], axis=0)
+        hi = np.max([b[1] for b in boxes], axis=0)
+        m = 0.1 * float(np.max(hi - lo) or 1.0)
+        return np.append(lo - m, 0.0), np.append(hi + m, 0.0)
+
+    def _outside_view(self, shape: dict) -> bool:
+        """The geometry goes out of the view (moved or copied by a transform,
+        a value typed in a form): the view is then fitted to it again."""
+        from .. import geometry2d as G
+        if self.plotter is None or G.is_empty(shape):
+            return False
+        try:
+            lo, hi = G.bounds(shape)
+            vlo, vhi = self._view_box()
+        except Exception:  # noqa: BLE001 -- no view yet: nothing to refit
+            return False
+        return bool(np.any(lo[:2] < vlo[:2]) or np.any(hi[:2] > vhi[:2]))
+
     def _view_box(self):
+        if self._plane_box is not None and self._last and self._last[0] == "geometry":
+            return self._plane_box               # a profile in 3D: the part of its plane shown
         from . import scene
+        w, h = self.plotter.renderer.GetSize()           # in pixels of the render window
         lo = scene.display_to_world(self.plotter, 0, 0)
-        hi = scene.display_to_world(self.plotter, self.view_widget.width() * self.view_widget.devicePixelRatioF(),
-                                    self.view_widget.height() * self.view_widget.devicePixelRatioF())
+        hi = scene.display_to_world(self.plotter, w, h)
         return np.minimum(lo, hi), np.maximum(lo, hi)
 
     def _show_axes(self) -> None:
@@ -1011,6 +1063,12 @@ class Viewer(QWidget):
             self.plotter.render()
 
     def _view(self, method):
+        if self.plotter is not None and self._last and self._last[0] == "geometry" \
+                and self._context is not None:   # a profile: flat, or on its plane in the 3D geometry
+            self.plane_3d = method == "view_isometric"
+            self._shown_key = None
+            self.refresh()
+            return
         if self.plotter is not None:
             from . import scene
             getattr(self.plotter, method)()

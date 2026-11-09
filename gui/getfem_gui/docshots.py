@@ -189,6 +189,18 @@ def work_plane(win):
     win.select(prof)
 
 
+def work_plane_3d(win):
+    """The profile of the boss drawn on its plane, in the 3D view."""
+    work_plane(win)
+    win.viewer._view("view_isometric")
+    from PySide6.QtWidgets import QToolButton
+    v = win.viewer
+    v.findChild(QToolButton, "draw:rectangle").setChecked(True)
+    v.draw_begin([-0.06, -0.01, 0.0])
+    v.draw_move([0.0, 0.01, 0.0])
+    v.draw_end([0.0, 0.01, 0.0])
+
+
 def array_3d(win):
     """The hole of the block copied in a linear array: its selection holds
     the three holes."""
@@ -212,6 +224,7 @@ SHOTS = {
     "preview_3d.png": ("heat_sink_3d.json", preview_3d),
     "faces_3d.png": ("block_with_hole_3d.json", faces_3d),
     "work_plane.png": ("block_with_hole_3d.json", work_plane),
+    "work_plane_3d.png": ("block_with_hole_3d.json", work_plane_3d),
     "array_3d.png": ("block_with_hole_3d.json", array_3d),
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),

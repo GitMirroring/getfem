@@ -442,7 +442,11 @@ extrusion on a plane face clicked in the 3D view: a boss (united, out of
 the face) or a pocket (subtracted, into the solid), its profile starting
 from nothing. A profile is shown on the section of the rest of the geometry
 by its plane, and points snap to the vertices of the geometry and of that
-section (else to the grid). The GetFEM mesher needs its `placed` object
+section (else to the grid). The **3D** button shows a profile on its plane
+in the 3D view (`Viewer.plane_3d`): the 3D geometry is shown in the
+coordinates of the plane (z along its normal), so that the 2D drawing code
+is unchanged, the clicks being taken where their ray meets z = 0
+(`scene.display_to_world`). The GetFEM mesher needs its `placed` object
 (GetFEM patch "mesher: objects placed in a frame").
 
 ## Transformations and arrays

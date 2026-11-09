@@ -716,6 +716,7 @@ class MainWindow(QMainWindow):
             swept = E.get_at(model, prof[:-1], {})
             plane = "(r, z)" if swept.get("type") == "revolution" else "(x, y)"
             self._reference = self._section_under(model, gi, prof)
+            self._context = self._plane_context(model, gi, prof)
             csg = tuple(path[len(prof) + 1::2])
             highlighted = [p for p in pieces if p.side.shape[:len(csg)] == csg] if len(path) > len(prof) else []
             return (f"Profile of the {swept.get('type')} of {geom.get('name')!r}, in the {plane} plane",
@@ -846,7 +847,9 @@ class MainWindow(QMainWindow):
             E.move_handle(m, path, name, point)
         except ValueError:
             return None
-        return E.get_at(P.resolved(m), path)
+        from .. import transforms as T
+        A, b = E.handle_frame(m, path)            # where the transforms above it put it
+        return T.flatten(E.get_at(P.resolved(m), path), 2, A, b)
 
     def _handle_moved(self, name: str, point):
         path = self.current_path()
@@ -907,6 +910,29 @@ class MainWindow(QMainWindow):
         z = E.get_at(self.model, prof[:-1])["z"]
         self.state.setText("Extrusion " + ("out of" if z[0] >= 0 else "into") + " the face: draw its profile "
                            "(the section of the solid is shown under it)")
+
+    def _plane_context(self, model: dict, gi: int, prof):
+        """The 3D geometry in the coordinates of the plane of a profile (the
+        plane z = 0; for a revolution, its (r, z) half plane), for the
+        profile drawn in the 3D view; None without 3D view."""
+        if not self.viewer.available:
+            return None
+        from .. import geometry3d as G3
+        from . import scene
+        try:
+            root = G3.shape_of(model["geometries"][gi]["source"])
+            G3.bounds(root)
+            surf = scene.geometry_surface_3d(root)
+            swept = E.placed_swept(model, prof)
+            O, R = G3.frame(swept) or (np.zeros(3), np.eye(3))
+            Q = (np.asarray(surf.points, float) - O) @ R
+            if swept["type"] == "revolution":           # (x, z, -y): the (r, z) half plane at z = 0
+                Q = np.column_stack([Q[:, 0], Q[:, 2], -Q[:, 1]])
+            out = surf.copy()
+            out.points = Q
+            return out
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError):
+            return None
 
     def _section_under(self, model: dict, gi: int, prof) -> tuple | None:
         """The section of the rest of the 3D geometry in the plane of a
@@ -1094,10 +1120,11 @@ class MainWindow(QMainWindow):
             if handles:
                 title += " — drag the handles to move or resize"
             reference, self._reference = getattr(self, "_reference", None), None
+            context, self._context = getattr(self, "_context", None), None
             try:
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
                                           pickable=pickable, key=title.split(" — ")[0].split(":")[0],
-                                          reference=reference)
+                                          reference=reference, context=context)
                 self.viewer.set_handles(handles, lambda name, point, p=path: self._handle_preview(p, name, point))
                 if E.polygon_to_enter(self.model, path):
                     self.viewer.enter_polygon()

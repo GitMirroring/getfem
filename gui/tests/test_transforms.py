@@ -266,6 +266,41 @@ def test_preview_surfaces():
     assert np.allclose(G3.bounds(part)[0], [0.0, 0.0, 2.0])
 
 
+def test_view_fitted_when_moved():
+    """The 2D view is fitted again when the geometry goes out of it (a
+    transform typed in the form), kept otherwise; the preview of a dragged
+    handle of a moved primitive is where the transforms put it."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    with tempfile.TemporaryDirectory() as tmp:
+        path = shutil.copy(Path(__file__).resolve().parents[1] / "examples" / "plate_with_hole.json", tmp)
+        win = MainWindow(path)
+        try:
+            v = win.viewer
+            rect = ("geometries", 0, "source", "shape", "of", 0)
+            win.select(rect)
+            win._panel_action("transform:transform")
+            lo0, hi0 = v._view_box()
+            f = next(f for f in E.fields(win.model, rect) if f.key[-1] == "translate")
+            win.change(f, [0.002, 0.0])                      # still in the view: the camera is kept
+            assert np.allclose(v._view_box()[0], lo0)
+            win.change(f, [0.3, 0.0])                        # out of it: fitted again
+            lo, hi = v._view_box()
+            assert lo[0] > 0.2 and hi[0] > 0.5
+            moved = win._handle_preview(rect + ("of", 0), "center", [0.42, 0.05])
+            assert np.allclose(np.mean(G.bounds(moved), axis=0), [0.42, 0.05])     # moved by (0.3, 0)
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
