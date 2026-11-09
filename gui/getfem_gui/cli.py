@@ -16,6 +16,7 @@
 
 """Command line interface.
 
+    getfem_gui [model.json]                   # the window (also: python -m getfem_gui)
     python -m getfem_gui new model.json
     python -m getfem_gui validate model.json
     python -m getfem_gui mesh model.json [-m fine] [-w dir]   # all meshes by default
@@ -39,7 +40,9 @@ def _workdir(args) -> Path:
 
 def parser() -> argparse.ArgumentParser:
     """The parser of the command line (also used to document it)."""
-    p = argparse.ArgumentParser(prog="getfem_gui")
+    p = argparse.ArgumentParser(prog="getfem_gui",
+                                description="Without a command (no argument, or a model file): "
+                                            "the graphical interface.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def cmd(name, help_):
@@ -75,8 +78,20 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+def with_command(argv: list[str]) -> list[str]:
+    """The arguments with the command "gui" added when none is given: no
+    argument, or a model file (and the options of the window), opens the
+    window."""
+    commands = parser()._subparsers._group_actions[0].choices      # noqa: SLF001
+    if any(a in ("-h", "--help") for a in argv[:1]):
+        return argv
+    if not argv or argv[0] not in commands:
+        return ["gui"] + argv
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+    args = parser().parse_args(with_command(list(sys.argv[1:] if argv is None else argv)))
 
     if args.cmd == "gui":
         from .app import main as gui_main

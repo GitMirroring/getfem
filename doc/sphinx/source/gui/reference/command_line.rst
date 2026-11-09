@@ -6,7 +6,7 @@
 Command line
 ============
 
-``python -m getfem_gui COMMAND ...``, run from the ``gui`` directory.
+``getfem_gui COMMAND ...`` (the command installed by ``pip install -e gui``), or ``python -m getfem_gui COMMAND ...`` from the ``gui`` directory. Without a command (no argument, or a model file and the options of ``gui``), the graphical interface opens.
 
 new
 --------

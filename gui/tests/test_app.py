@@ -185,6 +185,25 @@ def test_main_with_splash_screen():
         w.close()
 
 
+def test_command_line_default():
+    """No command, or a model file: the window (getfem_gui [model.json],
+    installed by pip from pyproject.toml); the other commands unchanged."""
+    from getfem_gui import cli
+    assert cli.with_command([]) == ["gui"]
+    assert cli.with_command(["m.json", "--no-splash"]) == ["gui", "m.json", "--no-splash"]
+    assert cli.with_command(["run", "m.json"]) == ["run", "m.json"]
+    assert cli.with_command(["--help"]) == ["--help"]
+    args = cli.parser().parse_args(cli.with_command(["m.json"]))
+    assert args.cmd == "gui" and args.model == "m.json"
+    try:
+        import tomllib
+    except ImportError:                     # Python < 3.11
+        return
+    with open(Path(__file__).resolve().parents[1] / "pyproject.toml", "rb") as f:
+        project = tomllib.load(f)
+    assert project["project"]["scripts"]["getfem_gui"] == "getfem_gui.cli:main"
+
+
 def test_click_filter():
     """Clicks are seen at the Qt level: press and release without moving."""
     from PySide6.QtCore import QEvent, QPointF, Qt

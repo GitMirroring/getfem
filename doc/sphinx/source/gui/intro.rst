@@ -44,19 +44,26 @@ Requirements
   geometries as STEP, IGES or BREP; Netgen (``pip install netgen-mesher``).
 
 The package is neither compiled nor installed by the build of |gf|: it is
-run from the ``gui`` directory of the sources.
+run from the ``gui`` directory of the sources, or installed with ``pip``
+from there, which gives the command ``getfem_gui``::
+
+  pip install -e gui              # from the sources of GetFEM (editable: the examples
+                                  # and the library of materials stay where they are)
+  pip install -e "gui[window]"    # with PySide6, PyVista and pyvistaqt
 
 Starting
 --------
 
 ::
 
-  cd gui
   # the getfem module must be importable, e.g. after a build:
   export PYTHONPATH=<prefix>/lib/python3.X/site-packages
-  python -m getfem_gui gui                                  # the window
-  python -m getfem_gui gui examples/plate_hole_tension.json # with a model
-  python -m getfem_gui run examples/plate.json -w /tmp/plate  # without window
+  getfem_gui                                       # the window
+  getfem_gui gui/examples/plate_hole_tension.json  # with a model
+  getfem_gui run gui/examples/plate.json -w /tmp/plate   # without window
+
+Without installing it, ``python -m getfem_gui`` from the ``gui`` directory
+does the same (``python -m getfem_gui examples/plate.json``).
 
 ``--python /path/to/python`` selects the interpreter that runs the
 computations (the one that provides |gf|, |gmsh| and Netgen), when it is not

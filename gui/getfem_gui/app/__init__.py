@@ -17,7 +17,7 @@
 
 """Graphical interface (PySide6 for the window, PyVista for the 3D view).
 
-    python -m getfem_gui gui [model.json]      or    python -m getfem_gui.app [model.json]
+    getfem_gui [model.json]    or    python -m getfem_gui [model.json]    or    python -m getfem_gui.app
 """
 
 from __future__ import annotations

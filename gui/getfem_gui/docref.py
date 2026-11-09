@@ -431,7 +431,9 @@ def export_formats() -> str:
 
 def command_line() -> str:
     out = HEADER + ".. _gui-ref-cli:\n\n" + _title("Command line", "=")
-    out += "``python -m getfem_gui COMMAND ...``, run from the ``gui`` directory.\n\n"
+    out += ("``getfem_gui COMMAND ...`` (the command installed by ``pip install -e gui``), or "
+            "``python -m getfem_gui COMMAND ...`` from the ``gui`` directory. Without a command (no "
+            "argument, or a model file and the options of ``gui``), the graphical interface opens.\n\n")
     p = cli.parser()
     sub = next(a for a in p._actions if a.__class__.__name__ == "_SubParsersAction")
     helps = {a.dest: a.help for a in sub._choices_actions}

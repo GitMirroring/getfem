@@ -11,7 +11,9 @@ meshes, runs the computation and shows the results; everything it does is
 also available from the command line.
 
 This directory is a pure Python package, independent of the GetFEM build: it
-is neither compiled nor installed by `make` / CMake. It requires Python 3
+is neither compiled nor installed by `make` / CMake; `pip install -e gui`
+(from the sources of GetFEM; `pyproject.toml`) installs it with the command
+`getfem_gui` (`getfem_gui [model.json]` opens the window). It requires Python 3
 (tested with 3.13), NumPy and the `getfem` module; Gmsh (`pip install gmsh`)
 is optional. The graphical interface needs PySide6, and PyVista with
 pyvistaqt for the 3D view (`pip install pyside6 pyvista pyvistaqt`); the core
@@ -30,7 +32,8 @@ cd gui
 # the getfem module must be importable, e.g. after a CMake build:
 export PYTHONPATH=<prefix>/lib/python3.X/site-packages
 python -m getfem_gui run examples/plate.json -w /tmp/plate
-python -m getfem_gui gui examples/plate_hole_tension.json   # graphical interface
+python -m getfem_gui examples/plate_hole_tension.json       # graphical interface
+# or, after "pip install -e .":  getfem_gui examples/plate_hole_tension.json
 python -m pytest tests/        # or: python tests/test_heat.py
 ```
 
