@@ -177,6 +177,29 @@ def test_quadrangles_and_netgen_meshes():
         assert q["volume"] > 0
 
 
+def test_out_of_date_mesh_shown_only_for_its_geometry():
+    """A mesh out of date is still shown when its geometry was edited, not
+    when its name is that of a mesh of another geometry (a new mesh taking
+    the name of a deleted one): a 3D mesh shown for a 2D one."""
+    m = model_with(PLATE, 2, {"mesher": "getfem", "h": 0.3, "order": 1})
+    with tempfile.TemporaryDirectory() as tmp:
+        res = mesher.ensure_mesh(m, "mesh", tmp)
+        assert res.ok, res.error
+        assert res.info["origin"] == {"geometry": "geometry", "type": "csg", "dims": [2, 2]}
+        edited = copy.deepcopy(m)                         # the geometry edited: shown, out of date
+        edited["geometries"][0]["source"]["shape"]["of"][1]["radius"] = 0.3
+        assert mesher.cached_mesh(edited, "mesh", tmp) is None
+        assert mesher.cached_mesh(edited, "mesh", tmp, up_to_date=False).stale
+        other = copy.deepcopy(m)                          # the mesh on another (3D) geometry
+        other["geometries"].append({"name": "block", "source": {"type": "box", "size": [1, 1, 1]},
+                                    "selections": {}})
+        other["meshes"][0]["geometry"] = "block"
+        assert mesher.cached_mesh(other, "mesh", tmp, up_to_date=False) is None
+        same_name = copy.deepcopy(m)                      # same name, but now 3D
+        same_name["geometries"][0]["source"] = {"type": "box", "size": [1, 1, 1]}
+        assert mesher.cached_mesh(same_name, "mesh", tmp, up_to_date=False) is None
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

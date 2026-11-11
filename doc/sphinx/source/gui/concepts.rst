@@ -166,4 +166,6 @@ The working folder
 Meshes and results go to ``<model>_work/`` next to the model file (a
 temporary folder for a model not saved yet), and are found again when the
 model is reopened. Results are marked *out of date* as soon as the model
-changes (the display settings excepted).
+changes (the display settings excepted). A mesh whose geometry was edited
+is still shown, marked out of date, until it is rebuilt; a new mesh (even
+under the name of a deleted one) shows nothing before it is built.

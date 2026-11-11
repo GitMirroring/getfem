@@ -1023,6 +1023,7 @@ class MeshJob:
     folder: Path
     command: list[str]
     key: str
+    origin: dict | None = None   # what an out of date mesh may still show (see origin())
 
     @property
     def mesh_file(self) -> Path:
@@ -1037,6 +1038,8 @@ class MeshJob:
             return MeshResult(False, self.mesh_file, stderr=stderr or f"exit code {returncode}")
         info = json.loads(self.info_file.read_text(encoding="utf-8"))
         info["key"] = self.key
+        if self.origin is not None:
+            info["origin"] = self.origin
         self.info_file.write_text(json.dumps(info, indent=2), encoding="utf-8")
         return MeshResult(True, self.mesh_file, info, stderr=stderr)
 
@@ -1045,9 +1048,23 @@ def mesh_folder(workdir: str | Path) -> Path:
     return Path(workdir).resolve() / MESH_DIR
 
 
+def origin(model: dict, mesh: dict) -> dict:
+    """What a mesh is built on, apart from the details: its geometry (name,
+    kind, dimensions). A mesh out of date is still shown for the same origin
+    (the geometry was edited), not for another one: a new mesh, or a new
+    geometry, which takes the name of a deleted one."""
+    geom = M.geometry_of(model, mesh) or {}
+    try:
+        dims = [M.geometry_dim(model, geom), M.topological_dim(model, geom)]
+    except Exception:  # noqa: BLE001 (a file being edited)
+        dims = None
+    return {"geometry": mesh.get("geometry"), "type": geom.get("source", {}).get("type"), "dims": dims}
+
+
 def cached_mesh(model: dict, mesh_name: str, workdir: str | Path,
                 up_to_date: bool = True) -> MeshResult | None:
-    """The mesh already built in workdir, if any (only if up to date by default)."""
+    """The mesh already built in workdir, if any (only if up to date by
+    default; out of date, only if built on the same origin)."""
     model = P.resolved(M.with_defaults(model))
     mesh = M.find_mesh(model, mesh_name)
     if mesh is None:
@@ -1061,7 +1078,7 @@ def cached_mesh(model: dict, mesh_name: str, workdir: str | Path,
         current = info.get("key") == cache_key(model, mesh)
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    if up_to_date and not current:
+    if not current and (up_to_date or info.get("origin") != origin(model, mesh)):
         return None
     return MeshResult(True, mesh_file, info, cached=True, stale=not current)
 
@@ -1094,7 +1111,7 @@ def prepare_mesh(model: dict, mesh_name: str, workdir: str | Path,
     script.write_text(mesh_script(model, mesh, mesh_name, rkey, reuse), encoding="utf-8")
     (folder / f"{mesh_name}.json").unlink(missing_ok=True)
     return MeshJob(mesh_name, folder, [python or sys.executable, script.name],
-                   cache_key(model, mesh))
+                   cache_key(model, mesh), origin(model, mesh))
 
 
 def ensure_mesh(model: dict, mesh_name: str, workdir: str | Path,
