@@ -158,13 +158,17 @@ round all the corners* puts a fillet on every vertex (a fifth of the
 shortest side, to be changed), *Fillets: remove them* takes them off. With the polygon selected, a
 handle in the middle of each arc changes its radius. A fillet too large for
 its sides (the arcs of a side must not overlap) is an error of the polygon.
+In the profile of a revolution, a vertex on the axis cannot be rounded: its
+arc would be tangent to the axis, making a cusp of the solid there (an
+error; *round all the corners* leaves these vertices sharp).
 
 The arcs are sides of the polygon, ``fillet1``, ``fillet2``... (the number
 of the vertex), selected as the other sides; the straight sides keep their
 names, between the ends of the arcs. In a profile, they give the faces of
 the extrusion or the revolution. The shape is exact for all the meshers:
 lines and arcs of circle for |gmsh| and Netgen; for the GetFEM mesher, the
-polygon cut or filled by disks and half planes, the ends of the arcs being
+polygon cut or filled by disks and half planes (a reflex corner is filled
+by a polygon going about h into the shape, the disk then taken away), the ends of the arcs being
 given as vertices of the mesh (so that each face of the mesh lies on a side
 or on an arc). See ``examples/l_bracket.json``.
 

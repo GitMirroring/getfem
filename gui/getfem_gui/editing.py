@@ -2195,8 +2195,14 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         V = _resolved_points(model, path)
         L = np.linalg.norm(np.roll(V, -1, axis=0) - V, axis=1) if V is not None else np.ones(1)
         radius = float(f"{0.2 * float(np.min(L)):.2g}")
+        on_axis = set()                       # a profile of revolution: not its vertices on the axis
+        if "profile" in path:
+            swept = get_at(model, path[:len(path) - path[::-1].index("profile") - 1])
+            if isinstance(swept, dict) and swept.get("type") == "revolution" and V is not None:
+                scale = float(np.max(np.abs(V))) or 1.0
+                on_axis = {k for k in range(len(V)) if abs(V[k, 0]) <= 1e-9 * scale}
         get_at(model, path)["fillets"] = [{"vertex": k + 1, "radius": radius}
-                                          for k in range(len(get_at(model, path)["points"]))]
+                                          for k in range(len(get_at(model, path)["points"])) if k not in on_axis]
         return path
     if action.startswith("fillet:vertex:"):    # one vertex rounded: its sides shortened by a quarter
         k = int(action.rsplit(":", 1)[1])

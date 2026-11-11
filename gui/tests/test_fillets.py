@@ -191,6 +191,37 @@ def test_profile_in_3d():
     assert ref in [dict(r, shape=[]) for r in scene.face_refs(surf)]
 
 
+def test_reflex_fillet_in_3d():
+    """A reflex fillet in the profile of an extrusion, meshed by GetFEM (its
+    parts are not closer than h inside the shape: the mesher used to fail);
+    the volume."""
+    prof = {"type": "polygon", "points": [[0, 0], [2, 0], [2, 1], [1, 1], [1, 2], [0, 2]],
+            "fillets": [{"vertex": 4, "radius": 0.3}]}
+    m = model_with({"type": "extrusion", "z": [0, 0.3], "profile": prof}, 3,
+                   mesh={"mesher": "getfem", "h": 0.1, "order": 1})
+    m["models"][0]["modules"][0]["conditions"][0]["value"] = "x + 2*y + 3*z"
+    with tempfile.TemporaryDirectory() as tmp:
+        res = runner.run(m, tmp)
+        assert res.ok, f"{res.error}\n{res.stderr[-2000:]}"
+        q = res.results["models"]["heat"]["quantities"]
+    assert abs(q["area"] - 0.3 * (3 + CUT * 0.09)) < 2e-3
+
+
+def test_no_fillet_on_the_axis():
+    """A vertex of a profile of revolution on the axis: no fillet (its arc
+    would be tangent to the axis); "round all the corners" leaves it."""
+    prof = {"type": "polygon", "points": [[0, 0.5], [1, 0.3], [0.35, 0.75], [0.8, 0.95], [0, 1.1]]}
+    m = model_with({"type": "revolution", "profile": prof}, 3)
+    path = ROOT + ("profile",)
+    E.do_action(m, path, "fillet:all")
+    assert [f["vertex"] for f in E.get_at(m, path)["fillets"]] == [2, 3, 4] and M.validate(m) == []
+    E.get_at(m, path)["fillets"].append({"vertex": 5, "radius": 0.1})
+    assert any("vertex 5 is on the axis of the revolution" in e for e in M.validate(m))
+    m["geometries"][0]["source"]["shape"]["type"] = "extrusion"     # an extrusion: allowed
+    m["geometries"][0]["source"]["shape"]["z"] = [0, 1]
+    assert M.validate(m) == []
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

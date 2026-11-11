@@ -169,19 +169,44 @@ def _fillet_lines_3d(shape, h: float) -> np.ndarray:
     return np.unique(np.round(np.asarray(pts, float), 14), axis=0).T
 
 
+def _reflex_filler(base, f, vx, h):
+    """The polygon added at a reflex corner before the disk of its fillet is
+    taken away: from the tangent points, it goes a distance delta into the
+    polygon, along the radii of the tangent points, then parallel to the two
+    sides to the bisector. delta is about h, as far as the polygon allows it
+    (the GetFEM mesher fails when the sides of the parts are much closer than
+    h inside the shape), and at least a tenth of the radius."""
+    c, t1, t2 = (np.asarray(x, float) for x in (f.center, f.t1, f.t2))
+    e1, e2 = (t1 - c) / f.radius, (t2 - c) / f.radius
+    half = math.acos(max(-1.0, min(1.0, float(e1 @ e2)))) / 2      # half the angle at the center
+    u = (vx - c) / np.linalg.norm(vx - c)
+    delta = max(h or 0.0, 0.1 * f.radius)
+    while True:
+        T = [t1, t1 + delta * e1, vx + delta / max(math.cos(half), 1e-9) * u, t2 + delta * e2, t2]
+        s = np.linspace(0.05, 0.95, 19)[:, None]          # (the ends t1, t2 are on the sides)
+        X = np.vstack([T[0] + s * (T[1] - T[0]), T[1] + s * (T[2] - T[1]),
+                       T[2] + s * (T[3] - T[2]), T[3] + s * (T[4] - T[3])])
+        if delta <= 0.1 * f.radius or np.all(G.sdf(base, X) < 0):
+            return [p.tolist() for p in T]
+        delta = max(delta / 2, 0.1 * f.radius)
+
+
 def _gf_rounded_polygon(shape, v, w):
-    """A polygon with fillets for the GetFEM mesher. A reflex corner: the
-    quadrilateral K (center of the arc, tangent points pushed a little into
-    the polygon, the vertex pushed as much) less the disk of the arc is added
-    to the polygon. A convex corner: the polygon is intersected with the
-    disk united with the three half planes that leave out the corner: beyond
-    the radii from the center to the tangent points, or beyond the vertex
-    (the corner region of the disk: between these radii, before the vertex).
-    No boundary of the parts coincides with another one (the GetFEM mesher
-    projects badly on such unions)."""
+    """A polygon with fillets for the GetFEM mesher. A reflex corner: a
+    polygon covering the corner and going into the polygon (_reflex_filler)
+    is added to it, then the disk of the arc is taken away (it is outside
+    the polygon, tangent to the two sides). A convex corner: the polygon is
+    intersected with the disk united with the three half planes that leave
+    out the corner: beyond the radii from the center to the tangent points,
+    or beyond the vertex (the corner region of the disk: between these
+    radii, before the vertex). No boundary of the parts coincides with
+    another one (the GetFEM mesher projects badly on such unions), and no
+    two are close inside the shape (for a solid of revolution or an
+    extrusion of the polygon)."""
     pts = _points(shape)
     _, found, _ = G.fillets(pts, G.fillet_radii(shape, len(pts)))
     V = np.asarray(pts, float)
+    base = {"type": "polygon", "points": pts}
     w(f"# polygon with rounded vertices {[f.vertex for f in found]}")
     w(f"{v} = gf.MesherObject('polygon', np.array({pts}).T)")
     for f in found:
@@ -195,12 +220,9 @@ def _gf_rounded_polygon(shape, v, w):
                     f"gf.MesherObject('half space', {vx.tolist()!r}, {(vx - c).tolist()!r})", ball]
             w(f"{v} = gf.MesherObject('intersect', {v}, gf.MesherObject('union', {', '.join(keep)}))")
         else:
-            delta = 0.1 * f.radius
-            half = math.acos(max(-1.0, min(1.0, float(e1 @ e2)))) / 2      # half the angle at the center
-            out = vx + delta / max(math.cos(half), 1e-9) * (vx - c) / np.linalg.norm(vx - c)
-            K = [c.tolist(), (t1 + delta * e1).tolist(), out.tolist(), (t2 + delta * e2).tolist()]
-            w(f"{v} = gf.MesherObject('union', {v}, gf.MesherObject('set minus', "
-              f"gf.MesherObject('polygon', np.array({K!r}).T), {ball}))")
+            T = _reflex_filler(base, f, vx, getattr(w, "h", None))
+            w(f"{v} = gf.MesherObject('set minus', gf.MesherObject('union', {v}, "
+              f"gf.MesherObject('polygon', np.array({T!r}).T)), {ball})")
 
 
 def _box_as_shape(src):
@@ -220,6 +242,7 @@ def _build_getfem(model, geom, mesh, w):
     src = geom["source"]
     shape = _source_shape(src)
     w("# Implicit description of the geometry (MesherObject)")
+    w.h = float(mesh["h"])                   # (the fillers of the reflex fillets)
     top = _gf_shape(shape, w)
     h, K = float(mesh['h']), int(mesh.get('order', 1))
     V = G.interface_points(shape, h) if src["type"] == "csg" and src.get("dim") == 2 else np.zeros((2, 0))

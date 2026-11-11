@@ -837,6 +837,8 @@ def _check_shape(shape, dim, where, errors):
             errors.append(f"{where}.profile: 2D shape expected")
         else:
             _check_shape(profile, 2, f"{where}.profile", errors)
+            if t == "revolution" and not any(e.startswith(f"{where}.profile") for e in errors):
+                _check_axis_fillets(profile, f"{where}.profile", errors)
     elif t in SHAPES_BOOLEAN:
         parts = shape.get("of", [])
         if not parts:
@@ -854,6 +856,29 @@ def _check_shape(shape, dim, where, errors):
         errors.append(f"{where}.type: unknown shape {t!r} "
                       "(rectangle, ball, ellipse, polygon, cylinder, extrusion, revolution, union, intersection, "
                       "difference, transform, array)")
+
+
+def _check_axis_fillets(profile, where, errors):
+    """No fillet at a vertex of a profile of revolution on the axis: its arc
+    would be tangent to the axis, a point of the solid where its surface
+    comes to the axis tangentially (a cusp, which the meshers do not
+    handle)."""
+    from . import geometry2d as G
+    try:
+        prims = list(G.primitives(profile))
+    except (TypeError, ValueError, KeyError, IndexError):
+        return
+    for path, prim in prims:
+        pts = prim.get("points") or [] if prim.get("type") == "polygon" else []
+        if not pts:
+            continue
+        scale = max(abs(float(x)) for q in pts for x in q) or 1.0
+        for f in prim.get("fillets", []):
+            k = f.get("vertex")
+            if isinstance(k, int) and 1 <= k <= len(pts) and abs(float(pts[k - 1][0])) <= 1e-9 * scale:
+                at = where + "".join(f".of[{i}]" for i in path)
+                errors.append(f"{at}.fillets: vertex {k} is on the axis of the revolution: its fillet would "
+                              "be tangent to the axis (a cusp of the solid on the axis); remove it")
 
 
 def _check_fillets(shape, where, errors):
