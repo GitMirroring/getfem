@@ -256,6 +256,7 @@ def _build_getfem(model, geom, mesh, w):
     w("# GetFEM experimental mesher: element size h, geometric degree K")
     if V.shape[1] == 0:
         w(f"m = gf.Mesh('generate', {top}, {h!r}, {K})")
+        w("m.optimize_structure()   # the points numbered without holes (some removed by the mesher)")
         return
     w("# Fixed vertices along the interfaces between regions (sides of shapes")
     w("# inside the domain), and at the ends of the fillets: the elements follow")
@@ -263,6 +264,7 @@ def _build_getfem(model, geom, mesh, w):
     rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in V)
     w(f"interface_vertices = np.array([{rows}])")
     w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices)")
+    w("m.optimize_structure()   # the points numbered without holes (some removed by the mesher)")
 
 
 def _occ_shape(shape, dim, w) -> str:

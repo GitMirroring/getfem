@@ -315,6 +315,7 @@ import getfem as gf
 
 mesh_file, info_file, out = sys.argv[1:4]
 m = gf.Mesh('load', mesh_file)
+m.optimize_structure()               # (a mesh saved with holes in its numbering: no NaN points)
 info = json.load(open(info_file))
 cvs = m.cvid()
 gts, gidx = m.geotrans(cvs)          # the distinct transformations, the one of each element
