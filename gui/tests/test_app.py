@@ -258,6 +258,22 @@ def count(n):
     return len(renders)
 assert count(1) == 1 and count(3) == 1           # once for all
 BasePlotter.render = render
+# macOS: paint events render only after a change (Qt >= 6.10 repaints the
+# widget after each rendering: an endless loop otherwise)
+paints = []
+w.ren_win.AddObserver("StartEvent", lambda *a: paints.append(1))
+w.paint_only_when_changed = True
+w.repaint()
+assert paints == []                               # unchanged: kept as drawn
+w.render()
+w.repaint()                                       # changed: rendered once,
+w.repaint()
+assert len(paints) == 1, paints
+app.processEvents()                               # and not again by render()
+assert len(paints) == 1, paints
+w.resize(420, 300)
+w.repaint()
+assert len(paints) == 2, paints                   # resized: rendered
 cam = w.camera_position
 
 def send(kind, x, buttons):

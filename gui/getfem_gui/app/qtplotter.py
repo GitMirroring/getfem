@@ -30,9 +30,19 @@ for all the changes made meanwhile, and only when the widget is on screen
 widget not yet shown blocks on macOS, where the window of the widget is
 created by the window system only when shown: the main window would never
 open (pyvistaqt also renders from the event loop on macOS).
+
+On macOS with Qt >= 6.10, each rendering of VTK's widget makes Qt paint it
+again, and its paint event renders: an endless loop, in which the window
+never appears (Qt keeps the event loop busy). There, a paint event renders
+only when the view has changed since the last rendering (a change asked by
+render(), a resize, the first display); the other ones keep what is drawn.
+See https://discourse.vtk.org/t/16225 and pyvistaqt issue 793 (pyvistaqt
+>= 0.11.4 does the same).
 """
 
 from __future__ import annotations
+
+import sys
 
 import pyvista
 import vtkmodules.qt
@@ -63,6 +73,9 @@ class _NoEvents:
 class QtPlotter(QVTKRenderWindowInteractor, BasePlotter):
     """A Qt widget that is a PyVista plotter."""
 
+    # paint events render only when the view has changed (macOS: see above)
+    paint_only_when_changed = sys.platform == "darwin"
+
     def __init__(self, parent=None, multi_samples: int | None = None, **kwargs):
         # QVTKRenderWindowInteractor.__init__ initializes the Qt widget, whose
         # initialization would call BasePlotter.__init__ (without arguments)
@@ -90,6 +103,8 @@ class QtPlotter(QVTKRenderWindowInteractor, BasePlotter):
         self.iren.add_observer("KeyPressEvent", self.key_press_event)
         self.reset_key_events()
         self._first_time = False                 # BasePlotter: the window is set up, it may render
+        self._changed = True                     # not drawn yet
+        self._painting = False
 
     def render(self) -> None:
         """Render soon, from the event loop (the view calls it after each
@@ -97,6 +112,7 @@ class QtPlotter(QVTKRenderWindowInteractor, BasePlotter):
         if getattr(self, "_closed", False):
             return
         self._rendered = True
+        self._changed = True
         if not getattr(self, "_render_pending", False):
             self._render_pending = True
             QTimer.singleShot(0, self._render_now)
@@ -105,14 +121,26 @@ class QtPlotter(QVTKRenderWindowInteractor, BasePlotter):
         self._render_pending = False
         if getattr(self, "_closed", False) or not self.isVisible():
             return                               # drawn by its paint event when shown
+        if not self._changed:
+            return                               # drawn by a paint event meanwhile
+        self._changed = False
         BasePlotter.render(self)
 
     def paintEvent(self, ev):  # noqa: N802 (Qt)
-        if not getattr(self, "_closed", False):
+        if getattr(self, "_closed", False) or self._painting:
+            return                               # (a paint event within a rendering)
+        if self.paint_only_when_changed and not self._changed:
+            return                               # macOS: the loop paint -> render -> paint
+        self._changed = False
+        self._painting = True
+        try:
             super().paintEvent(ev)
+        finally:
+            self._painting = False
 
     def resizeEvent(self, ev):  # noqa: N802 (Qt)
         if not getattr(self, "_closed", False):
+            self._changed = True
             super().resizeEvent(ev)
 
     def close(self) -> None:
