@@ -70,7 +70,8 @@ does the same (``python -m getfem_gui examples/plate.json``).
 ``--python /path/to/python`` selects the interpreter that runs the
 computations (the one that provides |gf|, |gmsh| and Netgen), when it is not
 the one of the interface. A start-up window shows the versions of the
-interface and of |gf| (``--no-splash`` removes it).
+interface and of |gf| (``--no-splash``, or the environment variable
+``GETFEM_GUI_NO_SPLASH``, removes it).
 
 The tests of the interface are in ``gui/tests`` (``python -m pytest tests``);
 those of the window run without a screen.
@@ -84,6 +85,8 @@ Environment variables
 ``GETFEM_GUI_MATERIALS``
    the file of your own material library (default
    ``~/.config/getfem_gui/materials.json``).
+``GETFEM_GUI_NO_SPLASH``
+   no start-up window (as ``--no-splash``).
 ``GETFEM_GUI_NO_3D``
    replaces the 3D view by a placeholder (tests).
 ``GETFEM_GUI_OFFSCREEN_3D``

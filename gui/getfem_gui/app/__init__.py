@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 
@@ -56,7 +57,7 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
         windows.append(MainWindow(argv[0] if argv else None, python=python, versions=versions))
         return windows[-1]
 
-    if not splash:
+    if not splash or os.environ.get("GETFEM_GUI_NO_SPLASH"):
         build().show()
         return app.exec()
 
@@ -86,7 +87,13 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
             QTimer.singleShot(30, try_build)
             return
         state["built"] = True
-        win = build()
+        try:
+            win = build()
+        except BaseException:
+            state["failed"] = True
+            screen.close()                       # not left on screen: the error is reported
+            app.exit(1)
+            raise
 
         def done():
             if not win.isVisible():
@@ -100,7 +107,8 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
     screen.raise_()
     loader.start()
     QTimer.singleShot(30, try_build)
-    return app.exec()
+    code = app.exec()
+    return 1 if state.get("failed") else code
 
 
 def _preload_3d() -> None:

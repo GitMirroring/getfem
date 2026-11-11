@@ -24,7 +24,12 @@ use the rest of pyvistaqt (its windows, menus, render timer), and does not
 depend on it, since it is not packaged by every distribution.
 
 The plotter renders when asked (render()): the view calls it after each
-change.
+change. The rendering is not done at once but from the Qt event loop, once
+for all the changes made meanwhile, and only when the widget is on screen
+(a hidden widget is drawn when shown, by its paint event). Rendering a
+widget not yet shown blocks on macOS, where the window of the widget is
+created by the window system only when shown: the main window would never
+open (pyvistaqt also renders from the event loop on macOS).
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ import vtkmodules.qt
 vtkmodules.qt.PyQtImpl = "PySide6"      # the binding of the window, whatever is imported first
 
 from pyvista.plotting.render_window_interactor import RenderWindowInteractor  # noqa: E402
+from PySide6.QtCore import QTimer  # noqa: E402
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor  # noqa: E402
 
 try:
@@ -86,10 +92,19 @@ class QtPlotter(QVTKRenderWindowInteractor, BasePlotter):
         self._first_time = False                 # BasePlotter: the window is set up, it may render
 
     def render(self) -> None:
-        """Render now (the view calls it after each change)."""
+        """Render soon, from the event loop (the view calls it after each
+        change; PyVista also calls it from many of its methods)."""
         if getattr(self, "_closed", False):
             return
         self._rendered = True
+        if not getattr(self, "_render_pending", False):
+            self._render_pending = True
+            QTimer.singleShot(0, self._render_now)
+
+    def _render_now(self) -> None:
+        self._render_pending = False
+        if getattr(self, "_closed", False) or not self.isVisible():
+            return                               # drawn by its paint event when shown
         BasePlotter.render(self)
 
     def paintEvent(self, ev):  # noqa: N802 (Qt)

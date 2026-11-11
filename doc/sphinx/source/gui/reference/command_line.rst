@@ -214,4 +214,4 @@ Open the graphical interface (requires pyside6).
    * - ``--python``
      - Python interpreter that provides GetFEM
    * - ``--no-splash``
-     - no start-up window
+     - no start-up window (also: environment variable GETFEM\_GUI\_NO\_SPLASH)

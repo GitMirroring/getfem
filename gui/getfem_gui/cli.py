@@ -74,7 +74,7 @@ def parser() -> argparse.ArgumentParser:
     pgui = sub.add_parser("gui", help="open the graphical interface (requires PySide6)")
     pgui.add_argument("model", nargs="?")
     pgui.add_argument("--python", help="Python interpreter that provides GetFEM")
-    pgui.add_argument("--no-splash", action="store_true", help="no start-up window")
+    pgui.add_argument("--no-splash", action="store_true", help="no start-up window (also: environment variable GETFEM_GUI_NO_SPLASH)")
     return p
 
 

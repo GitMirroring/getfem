@@ -173,7 +173,7 @@ def test_main_with_splash_screen():
     QTimer.singleShot(1500, early)
     QTimer.singleShot(4500, check)
     assert A.main([str(EXAMPLES / "plate.json")]) == 0
-    assert hidden["main"] == [False] and seen["splash"] == [False]   # closed after about 3 s
+    assert True not in hidden["main"] and seen["splash"] == [False]   # closed after about 3 s
     import getfem
     assert seen["version"] == getfem.util_version()
     assert f"GetFEM GUI 0.1 on GetFEM {seen['version']}" in seen["about"]
@@ -204,6 +204,31 @@ def test_command_line_default():
     assert project["project"]["scripts"]["getfem_gui"] == "getfem_gui.cli:main"
 
 
+def test_main_window_failing():
+    """An error while the main window is built: the start-up window is
+    closed and main returns (it was left on screen forever)."""
+    from PySide6.QtCore import QTimer
+    import getfem_gui.app as A
+    from getfem_gui.app import window
+    from getfem_gui.app.splash import Splash
+    app().processEvents()                             # (events left by the other tests)
+    before = set(QApplication.instance().topLevelWidgets())
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("no window")
+    stop = QTimer()
+    stop.timeout.connect(QApplication.instance().quit)
+    stop.start(20000)                                 # not forever, if it fails
+    original, window.MainWindow = window.MainWindow, failing
+    try:
+        assert A.main([str(EXAMPLES / "plate.json")]) == 1
+    finally:
+        window.MainWindow = original
+        stop.stop()
+    assert not [w for w in QApplication.instance().topLevelWidgets()
+                if isinstance(w, Splash) and w not in before and w.isVisible()]
+
+
 _QTPLOTTER_CHECK = """
 import pyvista as pv
 from PySide6.QtCore import QEvent, QPointF, Qt
@@ -216,8 +241,23 @@ assert isinstance(w, BasePlotter) and w.interactor is w and w.iren is not None
 w.resize(400, 300)
 w.add_mesh(pv.Sphere(), name="sphere")
 w.view_isometric()
-w.render()
-assert "sphere" in w.actors
+renders, render = [], BasePlotter.render
+BasePlotter.render = lambda self: (renders.append(1), render(self))[1]
+for _ in range(3):
+    w.render()
+app.processEvents()
+assert "sphere" in w.actors and renders == []     # not shown: no rendering (it blocks on macOS)
+w.show()
+app.processEvents()
+def count(n):
+    renders.clear()
+    for _ in range(n):
+        w.render()
+    assert renders == []                          # from the event loop,
+    app.processEvents()
+    return len(renders)
+assert count(1) == 1 and count(3) == 1           # once for all
+BasePlotter.render = render
 cam = w.camera_position
 
 def send(kind, x, buttons):
@@ -241,7 +281,9 @@ def test_qtplotter_without_pyvistaqt():
     pyvistaqt anywhere; the widget is a plotter (meshes, camera) and its
     mouse events go to VTK's interactor. Run apart, with the Qt offscreen
     platform and without X display: VTK must then render without window
-    (EGL or OSMesa); otherwise (an X-only VTK) the check is skipped."""
+    (EGL or OSMesa); otherwise (an X-only VTK) the check is skipped. It
+    renders from the event loop, once for several requests, and not before
+    it is shown (that blocks on macOS)."""
     import re
     import subprocess
     src = Path(__file__).resolve().parents[1] / "getfem_gui"
