@@ -243,6 +243,42 @@ def test_vertex_table():
             win.close()
 
 
+def test_drag_preview():
+    """A point of a spline dragged in the view: the handle follows the
+    mouse, and the outline with its curves (not only the straight
+    polygon)."""
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "square.json"
+        M.save(model_with(SQUARE), path)
+        win = MainWindow(path)
+        try:
+            win.select(ROOT)
+            v = win.viewer
+            if v.plotter is None:
+                return
+            handles = dict(v._handles)
+            assert "s1_0" in handles and "m1" not in handles
+            assert v.handle_press(handles["s1_0"])
+            v._draw_step = 1e-3                               # (the snapping, fine)
+            v.handle_move([1.4, 0.35])
+            active = v.plotter.actors["handle_active"].GetMapper().GetInput()
+            assert np.allclose(np.asarray(active.GetPoint(0))[:2], [1.4, 0.35])
+            rubber = v.plotter.actors["rubber"].GetMapper().GetInput()
+            assert rubber.GetNumberOfPoints() > 50 and 1.4 - 1e-6 < rubber.GetBounds()[1] < 1.45   # through it
+            v.handle_release([1.4, 0.35])
+            assert E.get_at(win.model, ROOT)["splines"][0]["points"][0] == [1.4, 0.35]
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

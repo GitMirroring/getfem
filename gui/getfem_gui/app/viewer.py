@@ -738,7 +738,9 @@ class Viewer(QWidget):
             return
         from . import scene
         name = self._handles[self._grabbed][0]
-        scene.show_rubber(self.plotter, self._handle_preview(name, self._snapped(world)))
+        point = self._snapped(world)
+        scene.move_active_handle(self.plotter, point)          # the handle follows the mouse,
+        scene.show_rubber(self.plotter, self._handle_preview(name, point))   # the outline too, if valid
         self.plotter.render()
 
     def handle_release(self, world) -> None:

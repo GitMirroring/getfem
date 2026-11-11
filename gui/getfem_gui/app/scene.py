@@ -978,6 +978,13 @@ def show_rubber(plotter, shape: dict | None) -> None:
     elif shape["type"] == "ellipse":
         from .. import geometry2d as G
         pts = next(s for s in G.sides(shape)).points(np.linspace(0, 1, 129))
+    elif shape["type"] == "polygon" and (shape.get("splines") or shape.get("fillets")):
+        from .. import geometry2d as G         # with its curved sides and its arcs
+        try:
+            pts = G.boundary_polyline(shape, per_span=24, per_arc=16)
+        except (TypeError, ValueError, KeyError, IndexError, np.linalg.LinAlgError):
+            pts = np.array([p[:2] for p in shape["points"]], float)
+        pts = np.vstack([pts, pts[:1]])
     elif shape["type"] in ("polygon", "polyline"):
         pts = np.array([p[:2] for p in shape["points"]], float)
         if shape["type"] == "polygon":
@@ -1057,6 +1064,12 @@ def show_marks(plotter, marks) -> None:
     plotter.add_point_labels(pts, [t for _, t in marks], font_size=12, text_color="#8a3b12", shape="rounded_rect",
                              shape_color="#fff3e8", shape_opacity=0.7, point_size=1, show_points=False,
                              always_visible=True, name="marks")
+
+
+def move_active_handle(plotter, point) -> None:
+    """The grabbed handle drawn where the mouse is (while it is dragged)."""
+    plotter.add_mesh(pv.PolyData(np.array([[float(point[0]), float(point[1]), 0.0]])), color=HOVER,
+                     point_size=16, style="points", lighting=False, name="handle_active")
 
 
 def show_handles(plotter, positions, active: int | None = None, minor=None) -> None:
