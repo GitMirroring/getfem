@@ -122,6 +122,9 @@ class MainWindow(QMainWindow):
         self.viewer.polygonEntered.connect(self._polygon_entered)
         self.viewer.escaped.connect(self._cancel_plane_pick)
         self.viewer.handleMoved.connect(self._handle_moved)
+        self.viewer.handleAction.connect(self._handle_action)
+        self.viewer.handle_menu = lambda name: E.handle_actions(
+            self.model, E.constraint_owner(self.current_path()) or self.current_path(), name)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(tree_box)
         split.addWidget(self.props)
@@ -872,6 +875,23 @@ class MainWindow(QMainWindow):
         from .. import transforms as T
         A, b = E.handle_frame(m, path)            # where the transforms above it put it
         return T.flatten(E.get_at(P.resolved(m), path), 2, A, b)
+
+    def _handle_action(self, ident: str) -> None:
+        """An action chosen in the menu of a handle (right click in the view):
+        on the polygon (also when one of its constraints is selected); an
+        error goes to the status bar."""
+        path = E.constraint_owner(self.current_path()) or self.current_path()
+        before = copy.deepcopy(self.model)
+        try:
+            new_path = E.do_action(self.model, path, ident)
+        except (ValueError, KeyError, IndexError) as exc:
+            self.model = before
+            self.state.setText(str(exc))
+            return
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=new_path if new_path is not None else path)
 
     def _handle_moved(self, name: str, point):
         path = E.constraint_owner(self.current_path()) or self.current_path()

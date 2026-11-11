@@ -1297,6 +1297,29 @@ def fillet_cells(model: dict, path: Path) -> list:
     return out
 
 
+def _corner_radius(model: dict, path: Path, k: int) -> float:
+    """A radius for a new fillet of the vertex k: its arc takes a quarter of
+    the shorter of its two sides (less, if the fillets around do not leave
+    room for it); rounded."""
+    from . import geometry2d as G
+    r = get_at(P.resolved(model), path)
+    V = np.asarray(r["points"], float)
+    n, i = len(V), k - 1
+    u, w = V[i - 1] - V[i], V[(i + 1) % n] - V[i]
+    lu, lw = np.linalg.norm(u), np.linalg.norm(w)
+    half = math.acos(max(-1.0, min(1.0, float(u @ w) / ((lu * lw) or 1.0)))) / 2
+    radius = 0.25 * min(lu, lw) * math.tan(half)
+    for _ in range(20):
+        radius = float(f"{radius:.2g}")
+        trial = copy.deepcopy(r)
+        trial["fillets"] = [f for f in trial.get("fillets") or [] if f.get("vertex") != k] + \
+            [{"vertex": k, "radius": radius}]
+        if not G.fillet_problem(trial):
+            return radius
+        radius /= 2
+    raise ValueError(f"no room to round the vertex {k}")
+
+
 def set_fillet(model: dict, path: Path, k: int, radius) -> None:
     """The fillet of the vertex k (1-based) of the polygon at path: radius
     (a number or an expression), or None (sharp)."""
@@ -1309,6 +1332,30 @@ def set_fillet(model: dict, path: Path, k: int, radius) -> None:
         shape["fillets"] = kept
     else:
         shape.pop("fillets", None)
+
+
+def handle_actions(model: dict, path: Path, handle: str) -> list[tuple[str, str]]:
+    """The editing actions of a handle of the primitive at path, for the
+    menu of a right click on it: [(label, action)]. A vertex of a polygon:
+    remove it, round it or make it sharp again; the middle of a side: a
+    vertex there; the middle of an arc: remove the fillet."""
+    shape = get_at(model, path, {}) or {}
+    if shape.get("type") != "polygon" or not handle[1:].isdigit():
+        return []
+    i = int(handle[1:])
+    n = len(shape.get("points") or [])
+    if handle[0] == "v":
+        out = [(f"Remove vertex {i + 1}", f"remove_vertex:{i}")] if n > 3 else []
+        if fillet_cells(model, path)[i] is None:
+            out.append((f"Round vertex {i + 1} (fillet)", f"fillet:vertex:{i + 1}"))
+        else:
+            out.append((f"Remove the fillet of vertex {i + 1}", f"fillet:sharp:{i + 1}"))
+        return out
+    if handle[0] == "m":
+        return [(f"Insert a vertex in side {i + 1}", f"insert_vertex:{i}")]
+    if handle[0] == "f":
+        return [(f"Remove the fillet of vertex {i}", f"fillet:sharp:{i}")]
+    return []
 
 
 def vertex_rows(model: dict, path: Path) -> list[tuple]:
@@ -2150,6 +2197,13 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         radius = float(f"{0.2 * float(np.min(L)):.2g}")
         get_at(model, path)["fillets"] = [{"vertex": k + 1, "radius": radius}
                                           for k in range(len(get_at(model, path)["points"]))]
+        return path
+    if action.startswith("fillet:vertex:"):    # one vertex rounded: its sides shortened by a quarter
+        k = int(action.rsplit(":", 1)[1])
+        set_fillet(model, path, k, _corner_radius(model, path, k))
+        return path
+    if action.startswith("fillet:sharp:"):
+        set_fillet(model, path, int(action.rsplit(":", 1)[1]), None)
         return path
     if action == "fillet:remove":
         get_at(model, path).pop("fillets", None)

@@ -270,6 +270,83 @@ def test_drawing_a_polygon_in_the_window():
             win.close()
 
 
+def test_middle_and_right_clicks():
+    """Drawing a polygon: a middle click puts its last vertex and closes it;
+    a right click proposes to remove a vertex. A right click on a handle of
+    a polygon: remove the vertex, round it (a fillet), insert a vertex in a
+    side. The clicks are told from the drags (which pan and zoom the view)."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+        from PySide6.QtWidgets import QApplication, QToolButton, QWidget
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.viewer import ClickFilter
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+    # the filter: clicks of the middle and right buttons, not their drags
+    got = []
+    w = QWidget()
+    f = ClickFilter(lambda *a: None, w, other=lambda wid, x, y, b: got.append((round(x), round(y), b)))
+    w.installEventFilter(f)
+
+    def send(kind, x, button):
+        QApplication.sendEvent(w, QMouseEvent(kind, QPointF(x, 20), QPointF(x, 20), button, button,
+                                              Qt.KeyboardModifier.NoModifier))
+    for button, end in ((Qt.MouseButton.MiddleButton, 12), (Qt.MouseButton.RightButton, 11),
+                        (Qt.MouseButton.MiddleButton, 60)):
+        send(QEvent.Type.MouseButtonPress, 10, button)
+        send(QEvent.Type.MouseButtonRelease, end, button)
+    assert got == [(12, 20, Qt.MouseButton.MiddleButton), (11, 20, Qt.MouseButton.RightButton)]
+    app.processEvents()
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    with tempfile.TemporaryDirectory() as tmp:
+        win = MainWindow(shutil.copy(examples / "plate.json", tmp))
+        try:
+            v = win.viewer
+            win.select(("geometries", 0))
+            v.findChild(QToolButton, "draw:polygon").setChecked(True)
+            for p in ([0.02, 0.02], [0.06, 0.02], [0.07, 0.04]):
+                v.draw_begin(p)
+                v.draw_end(p)
+            items = dict(v.context_items([0.06, 0.02]))
+            assert set(items) == {"Remove this vertex (2)", "Remove the last vertex (Backspace)",
+                                  "Close the polygon (Enter, middle click)", "Start the polygon again"}
+            items["Remove this vertex (2)"]()
+            assert v._poly == [[0.02, 0.02], [0.07, 0.04]]
+            v.middle_click([0.03, 0.05])                         # the last vertex: closed
+            src = win.model["geometries"][0]["source"]
+            poly = ("geometries", 0, "source", "shape", "of", 1)
+            assert E.get_at(win.model, poly)["points"] == [[0.02, 0.02], [0.07, 0.04], [0.03, 0.05]]
+            assert src["shape"]["of"][1]["type"] == "polygon" and not v._poly
+            # the menu of the handles of the polygon selected
+            v.stop_drawing()
+            win.select(poly)
+            menu = [label for label, _ in v.context_items([0.07, 0.04])]
+            assert menu == ["Round vertex 2 (fillet)"]           # three vertices: none removed
+            assert E.handle_actions(win.model, poly, "m0") == [("Insert a vertex in side 1", "insert_vertex:0")]
+            dict(v.context_items([0.07, 0.04]))["Round vertex 2 (fillet)"]()
+            fl = E.get_at(win.model, poly)["fillets"]
+            assert len(fl) == 1 and fl[0]["vertex"] == 2 and 0 < fl[0]["radius"] < 0.01 and win.errors == []
+            win.select(poly)
+            assert "f2" in dict(v._handles)
+            win._handle_action("insert_vertex:0")
+            assert len(E.get_at(win.model, poly)["points"]) == 4
+            win.select(poly)
+            assert "Remove vertex 1" in [label for label, _ in v.context_items([0.02, 0.02])]
+            win._handle_action("fillet:sharp:3")                 # the fillet followed its vertex (now 3)
+            assert "fillets" not in E.get_at(win.model, poly)
+            win._handle_action("remove_vertex:1")
+            win._handle_action("remove_vertex:1")                # a triangle: not removed, said so
+            assert len(E.get_at(win.model, poly)["points"]) == 3 and "three vertices" in win.state.text()
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 def test_adding_a_polygon_enters_its_vertices():
     """"Add a polygon" gives an empty polygon: in a 2D geometry its vertices
     are clicked in the view; in a profile they are typed (Add a vertex)."""

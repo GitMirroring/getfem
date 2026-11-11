@@ -33,10 +33,10 @@ from pathlib import Path
 
 import numpy as np
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QSpinBox,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu,
+                               QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 
 def prepare_opengl() -> None:
@@ -152,11 +152,13 @@ class ClickFilter(QObject):
     PyVista then listens to them on the interactor style, which is replaced
     whenever the interaction style changes (2D / 3D)."""
 
-    def __init__(self, callback, parent=None, draw=None):
+    def __init__(self, callback, parent=None, draw=None, other=None):
         super().__init__(parent)
         self.callback = callback          # callback(widget, x, y), Qt logical coordinates
         self.draw = draw                  # object with active(), press/move/release(widget, x, y)
+        self.other = other                # other(widget, x, y, button): middle and right clicks
         self._press = None
+        self._other_press = {}            # button: position (a click of the middle or right button)
 
     def eventFilter(self, obj, ev):
         t = ev.type()
@@ -179,6 +181,16 @@ class ClickFilter(QObject):
         if self.draw is not None and (t == QEvent.Type.Wheel or t == QEvent.Type.MouseButtonRelease) \
                 and hasattr(self.draw, "view_changed"):
             self.draw.view_changed()          # a zoom or a pan: the grid follows
+        if self.other is not None and t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease) \
+                and ev.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            # a click (no move: the drags still pan and zoom the view)
+            if t == QEvent.Type.MouseButtonPress:
+                self._other_press[ev.button()] = ev.position()
+            else:
+                press, pos = self._other_press.pop(ev.button(), None), ev.position()
+                if press is not None and abs(pos.x() - press.x()) + abs(pos.y() - press.y()) <= 4:
+                    self.other(obj, pos.x(), pos.y(), ev.button())
+            return False
         if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
             self._press = ev.position()
         elif t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
@@ -199,6 +211,7 @@ class Viewer(QWidget):
     cutDrawn = Signal(object)             # cut line [a, b] drawn on a field
     cutCleared = Signal()
     escaped = Signal()                    # Escape pressed in the view (drawing stopped)
+    handleAction = Signal(str)            # an editing action chosen in the menu of a handle
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -250,6 +263,7 @@ class Viewer(QWidget):
         self._pieces, self._hover = [], None     # picking state (edges)
         self._faces = None                       # picking state (3D faces): (surface, refs)
         self._regions_of = None                  # shape whose regions are picked
+        self.handle_menu = None                  # handle name -> [(label, editing action)] (the window)
         try:
             self.plotter, self.view_widget = _load_plotter(self)
             layout.addWidget(self.view_widget, 1)
@@ -465,8 +479,77 @@ class Viewer(QWidget):
         if iren is None:              # off-screen plotter: see pick_world / hover_world
             return
         iren.add_observer("MouseMoveEvent", self._on_move)
-        self._click_filter = ClickFilter(self._on_click, self, draw=_DrawHooks(self))
+        self._click_filter = ClickFilter(self._on_click, self, draw=_DrawHooks(self), other=self._on_other_click)
         self.view_widget.installEventFilter(self._click_filter)
+
+    def _on_other_click(self, widget, x, y, button) -> None:
+        """A click of the middle button (the last vertex of a polygon being
+        drawn) or of the right one (a menu: the vertices)."""
+        world = _DrawHooks(self)._world(widget, x, y)
+        if button == Qt.MouseButton.MiddleButton:
+            self.middle_click(world)
+            return
+        items = self.context_items(world)
+        if items:
+            menu = QMenu(self)
+            for label, fn in items:
+                menu.addAction(label).triggered.connect(lambda _c=False, f=fn: f())
+            menu.exec(widget.mapToGlobal(QPoint(round(x), round(y))))
+
+    def middle_click(self, world) -> None:
+        """Drawing a polygon: the point is its last vertex (it is closed)."""
+        if self._tool != "polygon" or self.plotter is None:
+            return
+        from . import scene
+        p = self._snapped(world)
+        tol = 8 * scene.pixel_size(self.plotter)
+        near = [q for q in (self._poly[:1] + self._poly[-1:]) if np.hypot(p[0] - q[0], p[1] - q[1]) < tol]
+        if not near:
+            self._poly.append(p)
+        if len(self._poly) >= 3:
+            self.polygon_close()
+        else:
+            self._polygon_rubber()
+            self.status_message("A polygon needs at least three vertices")
+
+    def context_items(self, world) -> list:
+        """The entries of the menu of a right click at a point: [(label,
+        function)]. Drawing a polygon: remove the vertex clicked, the last one,
+        close, cancel. Otherwise, on a handle of the selected primitive: what
+        handle_menu (set by the window) gives for it."""
+        if self.plotter is None:
+            return []
+        from . import scene
+        tol = 8 * scene.pixel_size(self.plotter)
+        if self._tool == "polygon":
+            out = []
+            d = [np.hypot(world[0] - q[0], world[1] - q[1]) for q in self._poly]
+            if d and min(d) < tol:
+                j = int(np.argmin(d))
+                out.append((f"Remove this vertex ({j + 1})", lambda j=j: self._polygon_remove(j)))
+            if self._poly:
+                out.append(("Remove the last vertex (Backspace)", self.polygon_back))
+            if len(self._poly) >= 3:
+                out.append(("Close the polygon (Enter, middle click)", self.polygon_close))
+            if self._poly:
+                out.append(("Start the polygon again", lambda: self._polygon_remove(None)))
+            return out
+        if not self._handles or self.handle_menu is None:
+            return []
+        d = [np.hypot(world[0] - p[0], world[1] - p[1]) for _, p in self._handles]
+        i = int(np.argmin(d))
+        if d[i] > 9 * scene.pixel_size(self.plotter):
+            return []
+        return [(label, lambda ident=ident: self.handleAction.emit(ident))
+                for label, ident in self.handle_menu(self._handles[i][0])]
+
+    def _polygon_remove(self, j) -> None:
+        """A vertex of the polygon being drawn removed (None: all of them)."""
+        if j is None:
+            self._poly = []
+        elif 0 <= j < len(self._poly):
+            del self._poly[j]
+        self._polygon_rubber()
 
     def _event_world(self):
         from . import scene
@@ -548,8 +631,9 @@ class Viewer(QWidget):
                                 ("ellipse", "Ellipse", "Drag from a corner to the opposite one of the "
                                                        "rectangle around it (turn it with its handles)"),
                                 ("polygon", "Polygon", "Click the vertices; click the first one again, "
-                                                       "double-click or press Enter to close; Backspace "
-                                                       "removes the last one")):
+                                                       "double-click, press Enter or click the middle button "
+                                                       "(the last vertex) to close; Backspace removes the "
+                                                       "last vertex, a right click a vertex")):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(tip + " (Escape: stop drawing)")
@@ -691,7 +775,8 @@ class Viewer(QWidget):
         self.draw_buttons["polygon"].setChecked(True)
         self._entering = True
         self.status_message("Click the first vertex of the polygon (then the others; click the first "
-                            "one again, double-click or Enter to close)")
+                            "one again, double-click, Enter or a middle click (the last vertex) to close; "
+                            "right click: remove a vertex)")
 
     def _tool_toggled(self, kind, on):
         if not on and kind == "polygon":

@@ -89,7 +89,13 @@ dragging, snapped to a grid whose step follows the zoom:
 * *Disk*: from the center to a point of the circle;
 * *Ellipse*: the ellipse inscribed in the rectangle of two corners;
 * *Polygon*: a vertex per click; clicking the first vertex again,
-  double-clicking or *Enter* closes it, *Backspace* removes the last vertex.
+  double-clicking or *Enter* closes it; a click of the middle button puts
+  the last vertex and closes it. *Backspace* removes the last vertex; a
+  right click proposes to remove the vertex clicked (or the last one), to
+  close the polygon or to start it again.
+
+The middle and right buttons still pan and zoom the view when they are
+dragged: only their clicks (without moving) do these things.
 
 A 2D geometry is shown with the x and y axes and the coordinates of their
 main lines; while drawing, the view also shows the grid. The step of the grid follows the zoom
@@ -125,8 +131,13 @@ parameter (dragging the circle of the hole of
 ``examples/plate_hole_tension.json`` changes ``a``); a value given by an
 expression (``"L/2"``) is locked, and the status bar says so.
 
-Any shape of a boolean can be removed (right click); a boolean left with a
-single shape is replaced by it.
+A right click on a handle of a polygon proposes what applies to it: on a
+vertex, to remove it, to round it (a fillet, see :ref:`gui-geometries-fillets`)
+or to make it sharp again; on the middle of a side, to insert a vertex
+there; on the middle of an arc, to remove the fillet.
+
+Any shape of a boolean can be removed (right click in the tree); a boolean
+left with a single shape is replaced by it.
 
 .. _gui-geometries-fillets:
 
