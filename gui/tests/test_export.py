@@ -60,11 +60,12 @@ def test_outlines():
     with tempfile.TemporaryDirectory() as tmp:
         svg = X.export_geometry(m, "bracket", Path(tmp) / "b.svg").read_text()
         dxf = X.export_geometry(m, "bracket", Path(tmp) / "b.dxf").read_text()
-    assert svg.startswith("<?xml") and svg.count("<path") == 7          # 6 sides, the hole
-    hole = [d for d in re.findall(r'd="([^"]+)"', svg) if " A " in d][0]
-    assert hole.count(" A ") == 2                                        # a whole circle: two arcs
+    assert svg.startswith("<?xml") and svg.count("<path") == 8          # 6 sides, the fillet, the hole
+    arcs = sorted((d for d in re.findall(r'd="([^"]+)"', svg) if " A " in d), key=lambda d: d.count(" A "))
+    assert [d.count(" A ") for d in arcs] == [1, 2]                      # the fillet; a whole circle: two arcs
     lines = dxf.splitlines()
-    assert lines.count("LINE") == 6 and lines.count("CIRCLE") == 1 and lines[-1] == "EOF"
+    assert lines.count("LINE") == 6 and lines.count("ARC") == 1 and lines.count("CIRCLE") == 1 \
+        and lines[-1] == "EOF"
     # an ellipse cut by a rectangle: an arc of ellipse
     e = M.default_model()
     e["geometries"][0]["source"] = {"type": "csg", "dim": 2, "shape": {"type": "intersection", "of": [

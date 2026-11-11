@@ -69,9 +69,11 @@ L-shaped bracket (``l_bracket.json``)
 -------------------------------------
 
 A ``polygon`` with a hole, fixed at its top and loaded by a vertical
-traction at its end, the two sides being picked ``edges`` selections. The
-reaction on the top balances the applied force (the traction ``F`` times
-the width ``W``).
+traction at its end, the two sides being picked ``edges`` selections. Its
+inner corner is rounded by a fillet of radius ``Rf``: the stress there
+depends on it (without the fillet, it would be infinite). The reaction on
+the top balances the applied force (the traction ``F`` times the width
+``W``).
 
 .. _gui-example-block_with_hole_3d:
 

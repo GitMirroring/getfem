@@ -1285,6 +1285,32 @@ def chain_rows(model: dict, gi: int) -> tuple[int, list[tuple]]:
     return dim, rows
 
 
+def fillet_cells(model: dict, path: Path) -> list:
+    """The radii of the fillets of the vertices of the polygon at path (the
+    polygon, not its points), as given, None for a sharp vertex."""
+    shape = get_at(model, path, {}) or {}
+    n = len(shape.get("points") or [])
+    out = [None] * n
+    for f in shape.get("fillets") or []:
+        if isinstance(f, dict) and isinstance(f.get("vertex"), int) and 1 <= f["vertex"] <= n:
+            out[f["vertex"] - 1] = f.get("radius")
+    return out
+
+
+def set_fillet(model: dict, path: Path, k: int, radius) -> None:
+    """The fillet of the vertex k (1-based) of the polygon at path: radius
+    (a number or an expression), or None (sharp)."""
+    shape = get_at(model, path)
+    kept = [f for f in shape.get("fillets") or [] if not (isinstance(f, dict) and f.get("vertex") == k)]
+    if radius not in (None, ""):
+        kept.append({"vertex": k, "radius": radius})
+    kept.sort(key=lambda f: f.get("vertex", 0) if isinstance(f, dict) else 0)
+    if kept:
+        shape["fillets"] = kept
+    else:
+        shape.pop("fillets", None)
+
+
 def vertex_rows(model: dict, path: Path) -> list[tuple]:
     """Rows of the vertex table of a polygon at path (the points list):
     (x, y) as given (numbers or expressions) and their values."""
@@ -1569,6 +1595,9 @@ def apply(model: dict, f: Field, value) -> Path | None:
         else:
             shape.pop("origin", None)
             shape.pop("axes", None)
+        return None
+    if f.op == "vertex_fillet":             # key: the polygon, "fillets", the index of the vertex
+        set_fillet(model, key[:-2], key[-1] + 1, value)
         return None
     if f.op == "constraint_type":
         c = get_at(model, key[:-1])
@@ -1931,6 +1960,9 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
             if shape.get("type") == "polygon" and len(shape.get("points") or []) >= 3:
                 out += [(f"constrain:{t}", f"Constrain: {SK.LABELS[t]}") for t in SK.TYPES
                         if t != "coincident" or _other_polygons(model, path)]
+                out.append(("fillet:all", "Fillets: round all the corners"))
+                if shape.get("fillets"):
+                    out.append(("fillet:remove", "Fillets: remove them"))
             if shape.get("type") in M.SHAPES_TRANSFORM:
                 out.append(("unwrap", f"Remove the {shape['type']} only"))
             if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
@@ -2112,6 +2144,16 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return constraint_owner(path)
     if action.startswith("constrain:"):
         return add_constraint(model, path, action.split(":", 1)[1])
+    if action == "fillet:all":                # a radius of a fifth of the shortest side, at every vertex
+        V = _resolved_points(model, path)
+        L = np.linalg.norm(np.roll(V, -1, axis=0) - V, axis=1) if V is not None else np.ones(1)
+        radius = float(f"{0.2 * float(np.min(L)):.2g}")
+        get_at(model, path)["fillets"] = [{"vertex": k + 1, "radius": radius}
+                                          for k in range(len(get_at(model, path)["points"]))]
+        return path
+    if action == "fillet:remove":
+        get_at(model, path).pop("fillets", None)
+        return path
     if action == "remove" and path[:1] == ("geometries",) and len(path) > 5 and path[2] == "source" \
             and path[-2] == "of":
         # the shape of a transform or an array goes with it
@@ -3131,6 +3173,16 @@ def _remap_constraints(model: dict, path: Path, side, vertex) -> None:
             kept.append(new)
     if "constraints" in poly:
         poly["constraints"] = kept
+    if poly.get("fillets"):                    # the fillets follow their vertices
+        fl = []
+        for f in poly["fillets"]:
+            k = vertex(f["vertex"]) if isinstance(f, dict) and isinstance(f.get("vertex"), int) else None
+            if k is not None:
+                fl.append(dict(f, vertex=k))
+        if fl:
+            poly["fillets"] = fl
+        else:
+            poly.pop("fillets")
     root = _tree_root(path)
     own = list(path[len(root) + 1::2])
     for _, other in SK.polygons(get_at(model, root)):
@@ -3244,14 +3296,42 @@ def _local_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
         n = len(V)
         mids = [[(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2] for i in range(n)]
         center = [sum(v[0] for v in V) / n, sum(v[1] for v in V) / n]
+        from . import geometry2d as G
+        rounded = G._fillets_of(s)                          # the middles of the arcs: their radii
+        arcs = [(f"f{f.vertex}", f.points(3)[1].tolist()) for f in rounded[1]] if rounded else []
         return [(f"v{i}", v) for i, v in enumerate(V)] + [(f"m{i}", m) for i, m in enumerate(mids)] \
-            + [("center", center)]
+            + arcs + [("center", center)]
     if s["type"] == "rectangle":
         (x0, y0), (x1, y1) = s["min"], s["max"]
         return [("min", [x0, y0]), ("xmax_ymin", [x1, y0]), ("max", [x1, y1]), ("xmin_ymax", [x0, y1]),
                 ("center", [(x0 + x1) / 2, (y0 + y1) / 2])]
     (cx, cy), rad = s["center"], s["radius"]
     return [("center", [cx, cy]), ("radius", [cx + rad, cy])]
+
+
+def _move_fillet(model: dict, path: Path, k: int, x: float, y: float, r: dict, notes: list) -> list:
+    """The middle of the arc of the fillet of vertex k dragged to (x, y): its
+    radius, for the middle of the arc to be at the distance of the point
+    from the vertex (along the bisector of the corner)."""
+    from . import geometry2d as G
+    V = np.asarray(r["points"], float)
+    n, i = len(V), k - 1
+    u, w = V[i - 1] - V[i], V[(i + 1) % n] - V[i]
+    u, w = u / np.linalg.norm(u), w / np.linalg.norm(w)
+    half = math.acos(max(-1.0, min(1.0, float(u @ w)))) / 2
+    b = (u + w) / (np.linalg.norm(u + w) or 1.0)
+    s = float((np.array([x, y]) - V[i]) @ b)           # the middle of the arc is at r (1/sin - 1) from the vertex
+    radius = s / (1 / math.sin(half) - 1)
+    if radius <= 0:
+        raise ValueError("the fillet would vanish")
+    j = next(j for j, f in enumerate(get_at(model, path)["fillets"]) if f.get("vertex") == k)
+    trial = copy.deepcopy(r)
+    trial["fillets"][j]["radius"] = radius
+    problem = G.fillet_problem(trial)
+    if problem:
+        raise ValueError(problem)
+    _set_number(model, path + ("fillets", j, "radius"), float(f"{radius:.6g}"), notes)
+    return notes
 
 
 def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, V: list, notes: list) -> list:
@@ -3352,6 +3432,8 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
             if abs(angle - float(r.get("angle", 0.0))) > 1e-9:
                 _set_number(model, path + ("angle",), float(f"{angle:.10g}"), notes)
             return notes
+        if shape["type"] == "polygon" and handle[:1] == "f" and handle[1:].isdigit():
+            return _move_fillet(model, path, int(handle[1:]), x, y, r, notes)
         if shape["type"] == "polygon":
             V = [list(map(float, v)) for v in r["points"]]
             if shape.get("constraints") and not handle.startswith("m"):

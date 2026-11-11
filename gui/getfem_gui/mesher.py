@@ -98,6 +98,8 @@ def _gf_shape(shape, w) -> str:
         w(f"{v} = gf.MesherObject('rectangle', {_floats(shape['min'])}, {_floats(shape['max'])})")
     elif t == "ball":
         w(f"{v} = gf.MesherObject('ball', {_floats(shape['center'])}, {float(shape['radius'])!r})")
+    elif t == "polygon" and G.fillet_radii(shape, len(shape["points"])):
+        _gf_rounded_polygon(shape, v, w)
     elif t == "polygon":
         w(f"{v} = gf.MesherObject('polygon', np.array({_points(shape)}).T)")
     elif t == "ellipse":
@@ -131,6 +133,76 @@ def _gf_shape(shape, w) -> str:
     return v
 
 
+def _fillet_lines_3d(shape, h: float) -> np.ndarray:
+    """Points every h or so along the lines where the arcs of the fillets of
+    the profiles of extrusions and revolutions meet the sides (3 x n), on
+    the boundary of the solid: fixed vertices for the GetFEM mesher, so that
+    each face of the mesh is on a side or on an arc."""
+    pts = []
+    for _, prim in G3.primitives(shape):
+        if prim.get("type") not in ("extrusion", "revolution"):
+            continue
+        J = G.fillet_ends(prim["profile"])
+        if not len(J):
+            continue
+        if prim["type"] == "extrusion":
+            z0, z1 = sorted(float(z) for z in prim["z"])
+            z = np.linspace(z0, z1, max(1, int(math.ceil((z1 - z0) / h))) + 1)
+            local = [[x, y, zz] for x, y in J for zz in z]
+        else:
+            local = []
+            for r, zz in J:
+                if r <= 0:
+                    continue
+                n = max(8, int(math.ceil(2 * math.pi * r / h)))
+                local += [[r * math.cos(a), r * math.sin(a), zz] for a in np.linspace(0, 2 * math.pi, n,
+                                                                                        endpoint=False)]
+        if not local:
+            continue
+        X = np.asarray(local, float)
+        if G3.frame(prim) is not None:
+            X = G3.to_global(prim, X)
+        on = np.abs(G3.sdf(shape, X)) <= 1e-9 * max(1.0, float(np.max(np.abs(X))))
+        pts += X[on].tolist()
+    if not pts:
+        return np.zeros((3, 0))
+    return np.unique(np.round(np.asarray(pts, float), 14), axis=0).T
+
+
+def _gf_rounded_polygon(shape, v, w):
+    """A polygon with fillets for the GetFEM mesher. A reflex corner: the
+    quadrilateral K (center of the arc, tangent points pushed a little into
+    the polygon, the vertex pushed as much) less the disk of the arc is added
+    to the polygon. A convex corner: the polygon is intersected with the
+    disk united with the three half planes that leave out the corner: beyond
+    the radii from the center to the tangent points, or beyond the vertex
+    (the corner region of the disk: between these radii, before the vertex).
+    No boundary of the parts coincides with another one (the GetFEM mesher
+    projects badly on such unions)."""
+    pts = _points(shape)
+    _, found, _ = G.fillets(pts, G.fillet_radii(shape, len(pts)))
+    V = np.asarray(pts, float)
+    w(f"# polygon with rounded vertices {[f.vertex for f in found]}")
+    w(f"{v} = gf.MesherObject('polygon', np.array({pts}).T)")
+    for f in found:
+        c, t1, t2 = (np.asarray(x, float) for x in (f.center, f.t1, f.t2))
+        vx = V[f.vertex - 1]
+        e1, e2 = (t1 - c) / f.radius, (t2 - c) / f.radius
+        ball = f"gf.MesherObject('ball', {list(f.center)!r}, {f.radius!r})"
+        if f.convex:
+            keep = [f"gf.MesherObject('half space', {c.tolist()!r}, {(-e1).tolist()!r})",
+                    f"gf.MesherObject('half space', {c.tolist()!r}, {(-e2).tolist()!r})",
+                    f"gf.MesherObject('half space', {vx.tolist()!r}, {(vx - c).tolist()!r})", ball]
+            w(f"{v} = gf.MesherObject('intersect', {v}, gf.MesherObject('union', {', '.join(keep)}))")
+        else:
+            delta = 0.1 * f.radius
+            half = math.acos(max(-1.0, min(1.0, float(e1 @ e2)))) / 2      # half the angle at the center
+            out = vx + delta / max(math.cos(half), 1e-9) * (vx - c) / np.linalg.norm(vx - c)
+            K = [c.tolist(), (t1 + delta * e1).tolist(), out.tolist(), (t2 + delta * e2).tolist()]
+            w(f"{v} = gf.MesherObject('union', {v}, gf.MesherObject('set minus', "
+              f"gf.MesherObject('polygon', np.array({K!r}).T), {ball}))")
+
+
 def _box_as_shape(src):
     return {"type": "rectangle", "min": src["origin"],
             "max": [o + s for o, s in zip(src["origin"], src["size"])]}
@@ -151,12 +223,20 @@ def _build_getfem(model, geom, mesh, w):
     top = _gf_shape(shape, w)
     h, K = float(mesh['h']), int(mesh.get('order', 1))
     V = G.interface_points(shape, h) if src["type"] == "csg" and src.get("dim") == 2 else np.zeros((2, 0))
+    if src["type"] == "csg" and src.get("dim") == 2:     # the ends of the fillets: vertices, so that
+        J = G.fillet_ends(shape)                          # each face is on a side or on an arc
+        if len(J):
+            V = np.hstack([V, np.array([p for p in J if all(np.linalg.norm(p - q) > 1e-9 * h for q in V.T)],
+                                       float).T.reshape(2, -1)])
+    elif src["type"] == "csg" and src.get("dim") == 3:
+        V = _fillet_lines_3d(shape, h)
     w("# GetFEM experimental mesher: element size h, geometric degree K")
     if V.shape[1] == 0:
         w(f"m = gf.Mesh('generate', {top}, {h!r}, {K})")
         return
     w("# Fixed vertices along the interfaces between regions (sides of shapes")
-    w("# inside the domain): the elements follow them, each one is in one region")
+    w("# inside the domain), and at the ends of the fillets: the elements follow")
+    w("# them, each one is in one region, each boundary face on one side")
     rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in V)
     w(f"interface_vertices = np.array([{rows}])")
     w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices)")
@@ -189,6 +269,21 @@ def _occ_shape(shape, dim, w) -> str:
         w(f"{v} = [(2, {occ}.addDisk({cx!r}, {cy!r}, 0.0, {r1!r}, {r2!r}))]")
         if th:
             w(f"{occ}.rotate({v}, {cx!r}, {cy!r}, 0.0, 0.0, 0.0, 1.0, {th!r})")
+    elif t == "polygon" and G.fillet_radii(shape, len(shape["points"])):
+        outline, found, _ = G.fillets(_points(shape), G.fillet_radii(shape, len(shape["points"])))
+        centers = {tuple(f.t1): list(f.center) for f in found}
+        w(f"# polygon with rounded vertices {[f.vertex for f in found]}: lines and arcs of circle")
+        w(f"_p = [{occ}.addPoint(x, y, 0.0) for x, y in {outline}]")
+        w(f"_arcs = {{{', '.join(f'{outline.index(list(t))}: {c!r}' for t, c in centers.items())}}}")
+        w("_l = []")
+        w("for i in range(len(_p)):")
+        w("    j = (i + 1) % len(_p)")
+        w("    if i in _arcs:")
+        w(f"        _c = {occ}.addPoint(_arcs[i][0], _arcs[i][1], 0.0)")
+        w(f"        _l.append({occ}.addCircleArc(_p[i], _c, _p[j]))")
+        w("    else:")
+        w(f"        _l.append({occ}.addLine(_p[i], _p[j]))")
+        w(f"{v} = [(2, {occ}.addPlaneSurface([{occ}.addCurveLoop(_l)]))]")
     elif t == "polygon":
         w(f"_p = [{occ}.addPoint(x, y, 0.0) for x, y in {_points(shape)}]")
         w(f"_l = [{occ}.addLine(_p[i], _p[(i + 1) % len(_p)]) for i in range(len(_p))]")
@@ -317,10 +412,26 @@ def _ng_shape(shape, dim, w) -> str:
             w(f"{v} = Sphere(Pnt({c[0]!r}, {c[1]!r}, {c[2]!r}), {r!r})")
     elif t == "polygon":
         pts = _points(shape)
-        w(f"_wp = WorkPlane().MoveTo({pts[0][0]!r}, {pts[0][1]!r})")
-        for x, y in pts[1:]:
-            w(f"_wp.LineTo({x!r}, {y!r})")
-        w(f"{v} = _wp.Close().Face()")
+        radii = G.fillet_radii(shape, len(pts))
+        if radii:                          # the fillets: arcs tangent to the sides, through their ends
+            outline, found, _ = G.fillets(pts, radii)
+            arcs = {tuple(f.t1): f for f in found}
+            w(f"_wp = WorkPlane().MoveTo({outline[0][0]!r}, {outline[0][1]!r})")
+            n = len(outline)
+            for i in range(n):
+                q = outline[(i + 1) % n]
+                f = arcs.get(tuple(outline[i]))
+                if f is not None:
+                    w(f"_wp.ArcTo({q[0]!r}, {q[1]!r}, ({-math.sin(f.theta0) * math.copysign(1, f.sweep)!r}, "
+                      f"{math.cos(f.theta0) * math.copysign(1, f.sweep)!r}))")
+                elif i < n - 1:
+                    w(f"_wp.LineTo({q[0]!r}, {q[1]!r})")
+            w(f"{v} = _wp.Close().Face()")
+        else:
+            w(f"_wp = WorkPlane().MoveTo({pts[0][0]!r}, {pts[0][1]!r})")
+            for x, y in pts[1:]:
+                w(f"_wp.LineTo({x!r}, {y!r})")
+            w(f"{v} = _wp.Close().Face()")
     elif t == "cylinder":
         o, a = _floats(shape["origin"]), np.asarray(_floats(shape["axis"]))
         a = (a / np.linalg.norm(a)).tolist()
@@ -543,7 +654,7 @@ def _selection_code(name, sel, w, shape=None):
             if p["type"] == "rectangle":
                 w(f"    ('rectangle', {_floats(p['min'])}, {_floats(p['max'])}),")
             elif p["type"] == "polygon":
-                w(f"    ('polygon', {_points(p)}, None),")
+                w(f"    ('polygon', {G.rounded_outline(p) if p.get('fillets') else _points(p)}, None),")
             elif p["type"] == "ellipse":
                 w(f"    ('ellipse', {_floats(p['center'])}, ({_floats(p['radii'])}, "
                   f"{math.radians(float(p.get('angle', 0.0)))!r})),")

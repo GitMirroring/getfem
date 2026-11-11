@@ -125,6 +125,15 @@ def polygon_handles(win):
     shape = win.model["geometries"][0]["source"]["shape"]
     path = next((p for p, s in _shapes(shape, ("geometries", 0, "source", "shape")) if s["type"] == "polygon"))
     win.select(path)
+    _wide_form(win)
+
+
+def _wide_form(win):
+    """The form wide enough to be seen whole."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QSplitter
+    split = next(w for w in win.findChildren(QSplitter) if w.orientation() == Qt.Orientation.Horizontal)
+    split.setSizes([230, 470, 580])
 
 
 def _shapes(shape, path):
@@ -235,10 +244,7 @@ def array_3d(win):
     arr.update(count=3, step=["Lx/4", 0, 0])
     arr["of"][0]["origin"][0] = "Lx/4"
     win._changed(select=hole)
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QSplitter
-    split = next(w for w in win.findChildren(QSplitter) if w.orientation() == Qt.Orientation.Horizontal)
-    split.setSizes([230, 470, 580])              # the whole form
+    _wide_form(win)
 
 
 SHOTS = {

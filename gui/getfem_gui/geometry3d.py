@@ -520,6 +520,8 @@ def _face_spec(prim: dict, ref: dict) -> dict:
     side = next(sd for sd in G2.sides(prim["profile"])
                 if (list(sd.shape), sd.side) == (list(ref["profile"]["shape"]), ref["profile"]["side"]))
     curve = {"kind": side.kind, "a": [float(x) for x in side.a], "b": [float(x) for x in side.b]}
+    if side.kind == "fillet":           # the arc of a fillet: on its circle (the rest is off the boundary)
+        curve = {"kind": "arc", "a": curve["a"], "b": [float(side.b[0]), 0.0]}
     if t == "extrusion":
         return dict({"kind": "extruded_side", "curve": curve, "z": sorted(float(v) for v in prim["z"])}, **place)
     return dict({"kind": "revolved_side", "curve": curve}, **place)

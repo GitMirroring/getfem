@@ -59,7 +59,8 @@ The primitives (:ref:`gui-ref-shapes`) are:
 * ``ball`` (a disk in 2D): center and radius;
 * ``ellipse``: center, semi-axes, angle of the first semi-axis in degrees;
 * ``polygon``: its vertices, in either order, not necessarily convex (but
-  it must not cross itself). Its vertices are edited in a table: *Add* adds
+  it must not cross itself), each one possibly rounded (see
+  :ref:`gui-geometries-fillets`). Its vertices are edited in a table: *Add* adds
   one after the last, *Insert* adds a vertex in the middle of a side,
   *Remove* removes one. *Add a polygon* gives an empty polygon: the
   polygon tool of the view starts, and its vertices are clicked (as for
@@ -126,6 +127,35 @@ expression (``"L/2"``) is locked, and the status bar says so.
 
 Any shape of a boolean can be removed (right click); a boolean left with a
 single shape is replaced by it.
+
+.. _gui-geometries-fillets:
+
+Fillets
+^^^^^^^
+
+A vertex of a polygon is rounded by a *fillet*: an arc of circle of a given
+radius, tangent to its two sides, that cuts a convex corner or fills a
+reflex one (the inner corner of an L, where the stresses concentrate):
+
+.. code-block:: text
+
+  {"type": "polygon", "points": [...], "fillets": [{"vertex": 4, "radius": "Rf"}]}
+
+The radius of each vertex is the last column (*fillet*) of the table of
+the vertices (empty: a sharp corner); it may be a parameter. *Fillets:
+round all the corners* puts a fillet on every vertex (a fifth of the
+shortest side, to be changed), *Fillets: remove them* takes them off. With the polygon selected, a
+handle in the middle of each arc changes its radius. A fillet too large for
+its sides (the arcs of a side must not overlap) is an error of the polygon.
+
+The arcs are sides of the polygon, ``fillet1``, ``fillet2``... (the number
+of the vertex), selected as the other sides; the straight sides keep their
+names, between the ends of the arcs. In a profile, they give the faces of
+the extrusion or the revolution. The shape is exact for all the meshers:
+lines and arcs of circle for |gmsh| and Netgen; for the GetFEM mesher, the
+polygon cut or filled by disks and half planes, the ends of the arcs being
+given as vertices of the mesh (so that each face of the mesh lies on a side
+or on an arc). See ``examples/l_bracket.json``.
 
 .. _gui-geometries-constraints:
 

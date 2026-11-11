@@ -26,7 +26,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QDoubleSpinBox, QFileDialog, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
                                QToolButton, QVBoxLayout, QWidget)
 
@@ -384,14 +384,18 @@ class PropertiesPanel(QScrollArea):
         return holder
 
     def _vertex_table(self, model, f: E.Field, errors) -> QWidget:
-        """The vertices of a polygon: x, y (values or expressions); a vertex
+        """The vertices of a polygon: x, y (values or expressions) and the
+        radius of the fillet that rounds the vertex (empty: sharp); a vertex
         is inserted in the middle of the side after the selected one, or removed."""
         rows = E.vertex_rows(model, f.key)
-        table = QTableWidget(len(rows), 2)
+        radii = E.fillet_cells(model, f.key[:-1])
+        table = QTableWidget(len(rows), 3)
         table.setObjectName("vertices_table")
         prof = E.profile_root(f.key)
         around = prof is not None and E.get_at(model, prof[:-1], {}).get("type") == "revolution"
-        table.setHorizontalHeaderLabels(["r", "z"] if around else ["x", "y"])
+        table.setHorizontalHeaderLabels(["r", "z", "fillet"] if around else ["x", "y", "fillet"])
+        table.horizontalHeaderItem(2).setToolTip("Radius of the arc that rounds the vertex (empty: a sharp "
+                                                 "corner); a number or an expression")
         table.setVerticalHeaderLabels([str(i + 1) for i in range(len(rows))])
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -411,16 +415,35 @@ class PropertiesPanel(QScrollArea):
                         r[3] is None else f"= [{E.format_number(float(r[2]))}, {E.format_number(float(r[3]))}]"
                     item.setToolTip(tip)
                 table.setItem(i, j, item)
+            item = QTableWidgetItem("" if radii[i] is None else E.format_value(radii[i]))
+            item.setFont(_mono())
+            fkey = f.key[:-1] + ("fillets",)
+            msgs = [m for m in E.errors_at(errors, fkey) if f"vertex {i + 1}" in m] + \
+                [m for j2, fl in enumerate(E.get_at(model, fkey, []) or []) if isinstance(fl, dict)
+                 and fl.get("vertex") == i + 1 for m in E.errors_at(errors, fkey + (j2,))]
+            if msgs:
+                item.setBackground(Qt.GlobalColor.yellow)
+                item.setToolTip("\n".join(msgs))
+            table.setItem(i, 2, item)
         if E.errors_at(errors, f.key):
             table.setToolTip("\n".join(E.errors_at(errors, f.key)))
             table.setStyleSheet(ERROR_STYLE)
-        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)   # the three columns seen
 
         def edited(item):
             i, j = item.row(), item.column()
             if i >= len(rows):
                 return
-            value = E.parse_value(item.text().strip())
+            text = item.text().strip()
+            if j == 2:                     # the fillet of the vertex
+                value = E.parse_value(text) if text else None
+                if value == radii[i]:
+                    return
+                self._last_cell = (f.key, i, j)
+                self._commit(E.Field(f.key[:-1] + ("fillets", i), f"fillet of vertex {i + 1}", "value",
+                                     op="vertex_fillet"), value)
+                return
+            value = E.parse_value(text)
             if value == rows[i][j]:
                 return
             self._last_cell = (f.key, i, j)

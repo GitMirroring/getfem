@@ -35,7 +35,7 @@
      - getfem
      - heat_conduction
    * - :ref:`l_bracket.json <gui-example-l_bracket>`
-     - L-shaped bracket: polygon with a fillet hole, loaded at its end
+     - L-shaped bracket: polygon with a hole and a fillet, loaded at its end
      - csg 2D
      - getfem
      - linear_elasticity

@@ -75,7 +75,8 @@ Geometry sources
               shape = {"type": "rectangle", "min": [...], "max": [...]}
                     | {"type": "ball", "center": [...], "radius": r}
                     | {"type": "polygon", "points": [[x, y], ...]}   (2D, simple, any orientation;
-                       optional "constraints": [...], see sketch.py)
+                       optional "constraints": [...], see sketch.py; optional
+                       "fillets": [{"vertex": k, "radius": r}, ...], its vertices rounded)
                     | {"type": "ellipse", "center": [x, y], "radii": [r1, r2], "angle": a}
                       (2D; the semi-axis r1 at a degrees from the x axis)
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
@@ -807,6 +808,7 @@ def _check_shape(shape, dim, where, errors):
         cons = shape.get("constraints", [])
         if not isinstance(cons, list) or any(not isinstance(c, dict) for c in cons):
             errors.append(f"{where}.constraints: a list of constraints expected")
+        _check_fillets(shape, where, errors)
     elif t == "cylinder":
         if dim != 3:
             errors.append(f"{where}: cylinder only exists in 3D")
@@ -852,6 +854,39 @@ def _check_shape(shape, dim, where, errors):
         errors.append(f"{where}.type: unknown shape {t!r} "
                       "(rectangle, ball, ellipse, polygon, cylinder, extrusion, revolution, union, intersection, "
                       "difference, transform, array)")
+
+
+def _check_fillets(shape, where, errors):
+    """The fillets of a polygon: [{"vertex": k, "radius": r}, ...]."""
+    fl = shape.get("fillets", [])
+    if not fl:
+        return
+    if not isinstance(fl, list):
+        errors.append(f"{where}.fillets: a list of fillets expected")
+        return
+    n = len(shape.get("points") or [])
+    seen = set()
+    for j, f in enumerate(fl):
+        w = f"{where}.fillets[{j}]"
+        if not isinstance(f, dict):
+            errors.append(f"{w}: {{\"vertex\": k, \"radius\": r}} expected")
+            continue
+        k, r = f.get("vertex"), f.get("radius")
+        if isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= max(n, 1):
+            errors.append(f"{w}.vertex: a vertex number from 1 to {n} expected")
+        elif k in seen:
+            errors.append(f"{w}.vertex: vertex {k} is already rounded")
+        seen.add(k)
+        if isinstance(r, bool) or not isinstance(r, (int, float)) or r <= 0:
+            errors.append(f"{w}.radius: a positive number expected")
+    if n >= 3 and not any(e.startswith(f"{where}.fillets") for e in errors):
+        from . import geometry2d as G
+        try:
+            problem = G.fillet_problem(shape)
+        except (TypeError, ValueError):
+            problem = None
+        if problem:
+            errors.append(f"{where}.fillets: {problem}")
 
 
 def _check_transform(shape, dim, where, errors):

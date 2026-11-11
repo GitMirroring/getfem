@@ -167,6 +167,10 @@ def _outline(shape: dict) -> list:
             out.append(("segment", a, b))
         elif s.kind == "arc":
             out.append(("arc", np.asarray(s.a, float), s.b[0], 2 * math.pi * p.t0, 2 * math.pi * p.t1))
+        elif s.kind == "fillet":            # counterclockwise, from the smaller angle
+            r, th0, sw = s.b
+            a, b = sorted((th0 + sw * p.t0, th0 + sw * p.t1))
+            out.append(("arc", np.asarray(s.a, float), r, a, b))
         else:
             r1, r2, th = s.b
             out.append(("ellipse", np.asarray(s.a, float), r1, r2, th, 2 * math.pi * p.t0, 2 * math.pi * p.t1))

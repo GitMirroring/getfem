@@ -398,6 +398,9 @@ def _resolve_shape(shape, where, vals, errors):
         for j, c in enumerate(shape["constraints"]):
             if isinstance(c, dict):
                 _resolve(c, ("value", "at"), f"{where}.constraints[{j}]", vals, errors, scalars=("value",))
+    for j, f in enumerate(shape.get("fillets") or []):
+        if isinstance(f, dict):
+            _resolve(f, ("radius",), f"{where}.fillets[{j}]", vals, errors, scalars=("radius",))
     if isinstance(shape.get("points"), list):
         for j, v in enumerate(shape["points"]):
             if isinstance(v, (list, str)):

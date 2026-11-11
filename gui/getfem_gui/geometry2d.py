@@ -116,6 +116,9 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "polygon":
         if incomplete(shape):
             return np.full(len(P), np.inf)
+        rounded = _fillets_of(shape)
+        if rounded is not None:
+            return rounded_polygon_sdf(rounded[0], rounded[1], P)
         return polygon_sdf(np.asarray(shape["points"], float), P)
     if t == "ellipse":
         return ellipse_sdf(shape["center"], shape["radii"], float(shape.get("angle", 0.0)), P)
@@ -144,6 +147,9 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         if incomplete(shape):
             raise ValueError("a polygon being entered")
         V = np.asarray(shape["points"], float)
+        rounded = _fillets_of(shape)
+        if rounded is not None:
+            V = np.vstack([rounded[0]] + [f.points(65) for f in rounded[1]])
         return V.min(axis=0), V.max(axis=0)
     if t == "ellipse":
         c = np.asarray(shape["center"], float)
@@ -266,6 +272,173 @@ def polygon_problem(points) -> str | None:
     return None
 
 
+# ------------------------------------------------------------------ fillets of polygons
+
+@dataclass(frozen=True)
+class Fillet:
+    """The arc of circle that rounds the vertex k (1-based) of a polygon,
+    tangent to its two sides: from t1 (on the side before the vertex) to t2
+    (on the side after it); convex: the polygon is cut (a convex corner),
+    else filled (a reflex corner)."""
+    vertex: int
+    center: tuple
+    radius: float
+    t1: tuple
+    t2: tuple
+    theta0: float           # angle of t1 seen from the center (radians)
+    sweep: float            # signed angle from t1 to t2 (|sweep| < pi)
+    convex: bool
+
+    def points(self, n: int = 33) -> np.ndarray:
+        th = self.theta0 + self.sweep * np.linspace(0.0, 1.0, n)
+        return np.asarray(self.center) + self.radius * np.column_stack([np.cos(th), np.sin(th)])
+
+
+def fillet_radii(prim: dict, n: int) -> dict:
+    """{vertex (1-based): radius} of the (resolved) fillets of a polygon of
+    n vertices; radii that are not positive numbers are left out (errors of
+    the validation)."""
+    out = {}
+    for f in prim.get("fillets") or []:
+        k, r = (f.get("vertex"), f.get("radius")) if isinstance(f, dict) else (None, None)
+        if isinstance(k, int) and not isinstance(k, bool) and 1 <= k <= n \
+                and isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
+            out[k] = float(r)
+    return out
+
+
+def fillets(points, radii: dict) -> tuple[list, list[Fillet], str | None]:
+    """The outline of a polygon whose vertices are rounded: (the vertices
+    of the polygon with each rounded vertex replaced by its two tangent
+    points, the fillets, why it cannot be done or None)."""
+    V = np.asarray(points, float)
+    n = len(V)
+    orient = 1.0 if polygon_area(V) > 0 else -1.0
+    found, d = {}, np.zeros(n)
+    for k, r in radii.items():
+        i = k - 1
+        v, p, q = V[i], V[i - 1], V[(i + 1) % n]
+        lu, lw = np.linalg.norm(p - v), np.linalg.norm(q - v)
+        if lu <= 0 or lw <= 0:
+            return [], [], f"vertex {k}: its sides have no length"
+        u, w = (p - v) / lu, (q - v) / lw
+        theta = math.acos(max(-1.0, min(1.0, float(u @ w))))       # the angle between the two sides
+        if theta < 1e-9 or math.pi - theta < 1e-9:
+            return [], [], f"vertex {k}: no corner to round (the sides are aligned or folded)"
+        d[i] = r / math.tan(theta / 2)
+        b = (u + w) / np.linalg.norm(u + w)
+        c = v + r / math.sin(theta / 2) * b
+        t1, t2 = v + d[i] * u, v + d[i] * w
+        a1, a2 = math.atan2(*(t1 - c)[::-1]), math.atan2(*(t2 - c)[::-1])
+        sweep = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        e1, e2 = v - p, q - v
+        convex = float(e1[0] * e2[1] - e1[1] * e2[0]) * orient > 0
+        found[k] = Fillet(k, tuple(map(float, c)), r, tuple(map(float, t1)), tuple(map(float, t2)), a1, sweep,
+                          convex)
+    for i in range(n):                       # the side i + 1, from vertex i + 1 to i + 2
+        L = float(np.linalg.norm(V[(i + 1) % n] - V[i]))
+        if d[i] + d[(i + 1) % n] > L * (1 + 1e-9):
+            which = [str(k + 1) for k in (i, (i + 1) % n) if d[k] > 0]
+            return [], [], (f"side {i + 1}: the fillet{'s' if len(which) > 1 else ''} of vertex "
+                            f"{' and '.join(which)} too large for it")
+    outline = []
+    for i in range(n):
+        f = found.get(i + 1)
+        outline += [list(f.t1), list(f.t2)] if f else [[float(x) for x in V[i]]]
+    return outline, [found[k] for k in sorted(found)], None
+
+
+def _fillets_of(prim: dict):
+    """(outline, fillets) of a polygon with fillets, None without (or if
+    they cannot be made: the polygon is then left sharp, the validation
+    says why)."""
+    pts = prim.get("points") or []
+    radii = fillet_radii(prim, len(pts))
+    if not radii or len(pts) < 3:
+        return None
+    outline, found, problem = fillets(pts, radii)
+    return None if problem else (np.asarray(outline, float), found)
+
+
+def rounded_outline(prim: dict, per_arc: int = 16) -> list:
+    """The vertices of a polygon, its fillets drawn as per_arc segments
+    each (a polygon close to it: the inside tests of the meshing scripts)."""
+    rounded = _fillets_of(prim)
+    if rounded is None:
+        return [[float(x) for x in v] for v in prim["points"]]
+    outline, found = rounded
+    by = {f.t1: f for f in found}
+    out = []
+    for v in outline:
+        f = by.get(tuple(v))
+        out += f.points(per_arc + 1)[:-1].tolist() if f else [list(v)]
+    return out
+
+
+def fillet_ends(shape: dict) -> np.ndarray:
+    """The ends of the fillets on the boundary of a 2D shape (n x 2): where
+    a side meets an arc tangentially (no corner for the GetFEM mesher, which
+    is given them as vertices)."""
+    out = []
+    try:
+        for pc in pieces(shape):
+            if pc.side.kind == "fillet":
+                out += pc.side.points([pc.t0, pc.t1]).tolist()
+    except (ValueError, KeyError, TypeError, IndexError):
+        return np.zeros((0, 2))
+    return np.unique(np.round(np.asarray(out, float), 14), axis=0) if out else np.zeros((0, 2))
+
+
+def fillet_problem(prim: dict) -> str | None:
+    pts = prim.get("points") or []
+    radii = fillet_radii(prim, len(pts))
+    return fillets(pts, radii)[2] if radii and len(pts) >= 3 else None
+
+
+def _in_segment(f: Fillet, P: np.ndarray) -> np.ndarray:
+    """In the circular segment between the chord t1 t2 and the arc."""
+    c, t1, t2 = (np.asarray(x, float) for x in (f.center, f.t1, f.t2))
+    m = (t1 + t2) / 2
+    toward = m - c                                  # from the center to the chord, then the arc
+    return (np.linalg.norm(P - c, axis=1) < f.radius) & ((P - m) @ toward > 0)
+
+
+def _arc_distance(f: Fillet, P: np.ndarray) -> np.ndarray:
+    c = np.asarray(f.center, float)
+    D = P - c
+    ang = np.arctan2(D[:, 1], D[:, 0])
+    s = ((ang - f.theta0) * np.sign(f.sweep)) % (2 * math.pi)        # the angle along the arc
+    on = s <= abs(f.sweep)
+    ends = np.minimum(np.linalg.norm(P - np.asarray(f.t1), axis=1), np.linalg.norm(P - np.asarray(f.t2), axis=1))
+    return np.where(on, np.abs(np.linalg.norm(D, axis=1) - f.radius), ends)
+
+
+def rounded_polygon_sdf(outline: np.ndarray, found: list, P: np.ndarray) -> np.ndarray:
+    """Signed euclidean distance to a polygon with rounded vertices (outline,
+    fillets from fillets())."""
+    base = polygon_sdf(outline, P)                  # the polygon with its corners cut (or filled)
+    inside = base < 0
+    dist = np.abs(base)
+    corner = {tuple(f.t1): f for f in found}
+    n = len(outline)
+    chords = [i for i in range(n) if tuple(outline[i]) in corner and tuple(outline[(i + 1) % n]) ==
+              corner[tuple(outline[i])].t2]
+    if chords:                                       # the chords are not on the boundary: the arcs are
+        keep = [i for i in range(n) if i not in chords]
+        A, B = outline[keep], outline[[(i + 1) % n for i in keep]]
+        D = B - A
+        L2 = np.maximum(np.einsum("ij,ij->i", D, D), 1e-300)
+        W = P[:, None, :] - A[None, :, :]
+        t = np.clip(np.einsum("mnk,nk->mn", W, D) / L2, 0.0, 1.0)
+        dist = np.min(np.linalg.norm(W - t[:, :, None] * D[None], axis=2), axis=1) if keep else \
+            np.full(len(P), np.inf)
+    for f in found:
+        dist = np.minimum(dist, _arc_distance(f, P))
+        seg = _in_segment(f, P)
+        inside = (inside | seg) if f.convex else (inside & ~seg)
+    return np.where(inside, -dist, dist)
+
+
 def size(shape: dict) -> float:
     try:
         lo, hi = bounds(shape)
@@ -286,9 +459,10 @@ class Side:
     """A side of a primitive, parametrized by t in [0, 1]."""
     shape: tuple            # path of the primitive
     side: str               # xmin, xmax, ymin, ymax (rectangle) or circle (disk)
-    kind: str               # "segment", "arc" or "ellipse" (closed curves: t = 0 and 1 meet)
-    a: tuple                # segment: first point; arc, ellipse: center
-    b: tuple                # segment: second point; arc: (radius, 0); ellipse: (r1, r2, angle in radians)
+    kind: str               # "segment", "arc", "ellipse" (closed curves: t = 0 and 1 meet) or "fillet"
+    a: tuple                # segment: first point; arc, ellipse, fillet: center
+    b: tuple                # segment: second point; arc: (radius, 0); ellipse: (r1, r2, angle in radians);
+    #                         fillet (an arc from angle theta0, by sweep, in radians): (radius, theta0, sweep)
 
     @property
     def ref(self) -> dict:
@@ -296,13 +470,15 @@ class Side:
 
     @property
     def closed(self) -> bool:
-        return self.kind != "segment"
+        return self.kind not in ("segment", "fillet")
 
     def length(self, t0: float = 0.0, t1: float = 1.0) -> float:
         if self.kind == "segment":
             return float(np.linalg.norm(np.subtract(self.b, self.a))) * (t1 - t0)
         if self.kind == "arc":
             return 2 * math.pi * self.b[0] * (t1 - t0)
+        if self.kind == "fillet":
+            return abs(self.b[0] * self.b[2]) * (t1 - t0)
         P = self.points(np.linspace(t0, t1, 2049))
         return float(np.linalg.norm(np.diff(P, axis=0), axis=1).sum())
 
@@ -316,7 +492,7 @@ class Side:
             u, v = r1 * np.cos(2 * math.pi * t), r2 * np.sin(2 * math.pi * t)
             return c + np.column_stack([u * math.cos(th) - v * math.sin(th), u * math.sin(th) + v * math.cos(th)])
         c, r = np.asarray(self.a), self.b[0]
-        th = 2 * math.pi * t
+        th = self.b[1] + self.b[2] * t if self.kind == "fillet" else 2 * math.pi * t
         return c + r * np.column_stack([np.cos(th), np.sin(th)])
 
     def normals(self, t) -> np.ndarray:
@@ -330,7 +506,7 @@ class Side:
             nu, nv = np.cos(2 * math.pi * t) / r1, np.sin(2 * math.pi * t) / r2
             N = np.column_stack([nu * math.cos(th) - nv * math.sin(th), nu * math.sin(th) + nv * math.cos(th)])
             return N / np.linalg.norm(N, axis=1)[:, None]
-        th = 2 * math.pi * t
+        th = self.b[1] + self.b[2] * t if self.kind == "fillet" else 2 * math.pi * t
         return np.column_stack([np.cos(th), np.sin(th)])
 
 
@@ -342,7 +518,8 @@ def side_names(prim: dict) -> tuple:
     if t == "polygon":
         if prim.get("side_names"):            # a turned rectangle (transforms.flatten)
             return tuple(prim["side_names"])
-        return tuple(f"side{i + 1}" for i in range(len(prim.get("points", []))))
+        n = len(prim.get("points", []))
+        return tuple(f"side{i + 1}" for i in range(n)) + tuple(f"fillet{k}" for k in sorted(fillet_radii(prim, n)))
     if t == "ellipse":
         return ("ellipse",)
     return ("circle",)
@@ -365,7 +542,17 @@ def sides(shape: dict) -> list[Side]:
         elif p["type"] == "polygon":
             V = [tuple(float(x) for x in v) for v in p["points"]]
             names = side_names(p)
-            out += [Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
+            rounded = _fillets_of(p)
+            if rounded is None:
+                out += [Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
+                continue
+            n, by = len(V), {f.vertex: f for f in rounded[1]}
+            for i in range(n):                 # the sides, between the tangent points of the fillets
+                a = by[i + 1].t2 if i + 1 in by else V[i]
+                b = by[(i + 1) % n + 1].t1 if (i + 1) % n + 1 in by else V[(i + 1) % n]
+                out.append(Side(path, names[i], "segment", tuple(a), tuple(b)))
+            out += [Side(path, f"fillet{f.vertex}", "fillet", f.center, (f.radius, f.theta0, f.sweep))
+                    for f in rounded[1]]
     return out
 
 
@@ -378,7 +565,10 @@ class Piece:
     t1: float
 
     def points(self, n: int = 64) -> np.ndarray:
-        m = max(2, int(n * (self.t1 - self.t0)) + 2) if self.side.closed else 2
+        if self.side.kind == "fillet":
+            m = max(2, int(n * abs(self.side.b[2]) / (2 * math.pi) * (self.t1 - self.t0)) + 4)
+        else:
+            m = max(2, int(n * (self.t1 - self.t0)) + 2) if self.side.closed else 2
         return self.side.points(np.linspace(self.t0, self.t1, m))
 
     def criterion(self) -> dict:
@@ -390,6 +580,12 @@ class Piece:
             r1, r2, th = self.side.b
             return {"ellipse": {"center": [float(c) for c in self.side.a], "radii": [float(r1), float(r2)],
                                 "angle": float(th), "from": float(self.t0), "to": float(self.t1)}}
+        if self.side.kind == "fillet":
+            r, th0, sw = self.side.b
+            a, b = th0 + sw * self.t0, th0 + sw * self.t1
+            lo = min(a, b)
+            return {"arc": {"center": [float(c) for c in self.side.a], "radius": float(r),
+                            "from": float(math.degrees(lo) % 360.0), "sweep": float(math.degrees(abs(b - a)))}}
         return {"arc": {"center": [float(c) for c in self.side.a], "radius": float(self.side.b[0]),
                         "from": float(360.0 * self.t0), "sweep": float(360.0 * (self.t1 - self.t0))}}
 
@@ -636,8 +832,9 @@ def side_label(shape: dict, ref: dict) -> str:
     except ValueError:
         return f"{ref.get('side')} of a missing shape"
     side = str(ref.get("side"))
-    if side.startswith("side") and side[4:].isdigit():
-        side = f"side {side[4:]}"
+    for word in ("side", "fillet"):
+        if side.startswith(word) and side[len(word):].isdigit():
+            side = f"{word} {side[len(word):]}"
     return f"{side} of {prim['type'] if prim else '?'} {index}"
 
 

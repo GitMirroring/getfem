@@ -455,6 +455,18 @@ is unchanged, the clicks being taken where their ray meets z = 0
 (`scene.display_to_world`). The GetFEM mesher needs its `placed` object
 (GetFEM patch "mesher: objects placed in a frame").
 
+## Fillets
+
+A polygon may have `"fillets"`: `[{"vertex": k, "radius": r}]`, arcs of
+circle tangent to the two sides of the vertex (`geometry2d.fillets`). The
+exact signed distance, the sides (`fillet<k>`, of kind `"fillet"`: a part
+of a circle) and the outline are in `geometry2d.py`; Gmsh and Netgen get
+lines and arcs; the GetFEM mesher gets the polygon intersected with a disk
+and three half planes (convex corner) or united with a quadrilateral less
+a disk (reflex corner) — compositions on which its projection converges —
+and the ends of the arcs as fixed vertices (lines of vertices along the
+extruded or revolved arcs in 3D).
+
 ## Constraints of polygons
 
 A polygon may have `"constraints"` (`sketch.py`): horizontal, vertical,
