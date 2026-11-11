@@ -152,7 +152,11 @@ def test_profile_in_3d():
         res = runner.run(m, tmp)
         assert res.ok, f"{res.error}\n{res.stderr[-2000:]}"
         q = res.results["models"]["heat"]["quantities"]
-    assert abs(q["area"] - 0.5 * area) < 1e-3 and abs(q["face"] - 0.5 * length) < 2e-3
+    # (the meshes of the GetFEM mesher differ a little from one platform to
+    # another: 0.03 % here, 0.4 % on macOS for the volume; the curves as
+    # constraints for each of their parts gave 2 % on the face)
+    assert abs(q["area"] / (0.5 * area) - 1) < 1e-2, (q["area"], 0.5 * area)
+    assert abs(q["face"] / (0.5 * length) - 1) < 1e-2, (q["face"], 0.5 * length)
 
 
 def test_transforms():
