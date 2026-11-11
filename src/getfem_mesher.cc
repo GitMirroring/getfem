@@ -259,6 +259,22 @@ namespace getfem {
   //
 
 
+  // The square of the Frobenius condition number of M (n x n), or -1 if M
+  // is singular for the computer (a flat element: its inversion may fail
+  // with some LU factorizations, and the mesher must not stop there).
+  template <typename MAT> scalar_type
+  safe_Frobenius_condition_number_sqr(const MAT& M) {
+    size_type n = mat_ncols(M);
+    base_matrix B(n,n);
+    gmm::mult(gmm::transposed(M), M, B);
+    scalar_type trB = gmm::mat_trace(B);
+    scalar_type det = bgeot::lu_inverse(&(*(B.begin())), n, false);
+    if (!(gmm::abs(det) > scalar_type(0))) return scalar_type(-1);
+    scalar_type r = trB * gmm::abs(gmm::mat_trace(B));
+    return std::isfinite(r) ? r : scalar_type(-1);
+  }
+
+  // Its gradient; zero for a singular M (no direction to improve it).
   template <typename MAT, typename MAT2> void
   Frobenius_condition_number_sqr_gradient(const MAT& M, MAT2& G) { 
     typedef typename gmm::linalg_traits<MAT>::value_type T;
@@ -268,7 +284,8 @@ namespace getfem {
     gmm::dense_matrix<T> B(n,n), C(n,n);
     gmm::mult(gmm::transposed(M), M, B);
     R trB = gmm::mat_trace(B);
-    bgeot::lu_inverse(&(*(B.begin())), n);
+    R det = bgeot::lu_inverse(&(*(B.begin())), n, false);
+    if (!(gmm::abs(det) > R(0))) { gmm::clear(G); return; }
     R trBinv = gmm::mat_trace(B);
     gmm::mult(B,B,C);
     gmm::mult(gmm::scaled(M, T(-2)*trB), C, G);
@@ -383,9 +400,10 @@ namespace getfem {
           }
         }
         gmm::mult(S,W,SW);
-        if (bgeot::lu_det(&(*(SW.begin())), N) < 1E-16) cost += 1e30;
+        scalar_type qual = (bgeot::lu_det(&(*(SW.begin())), N) < 1E-16)
+          ? scalar_type(-1) : safe_Frobenius_condition_number_sqr(SW);
+        if (qual < 0) cost += 1e30;
         else {
-          scalar_type qual = gmm::Frobenius_condition_number_sqr(SW);
           cost += qual;
           worst_element = std::max(worst_element, qual / scalar_type(N*N));
           best_element = std::min(best_element, qual / scalar_type(N*N));
