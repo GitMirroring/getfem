@@ -915,6 +915,357 @@ namespace getfem {
   { return std::make_shared<mesher_polygon>(vertices); }
 
 
+  // A side of a curved polygon: a segment (straight) or a cubic Bezier
+  // curve of control points A, C1, C2, B, from A to B. Its nearest points
+  // and its crossings with a horizontal half line (in plain doubles: these
+  // functions are called very often by the mesher).
+  struct mesher_curve_piece {
+    base_node A, C1, C2, B;
+    bool straight;
+    scalar_type cx[4], cy[4];   // x(t), y(t) = c[0] + c[1] t + c[2] t^2 + c[3] t^3
+    scalar_type lo[2], hi[2];   // bounding box (of the control points)
+
+    void init() {
+      if (straight) { C1 = A; C2 = B; }
+      scalar_type *c[2] = {cx, cy};
+      for (size_type k = 0; k < 2; ++k) {
+        scalar_type a = A[k], b = straight ? A[k] : C1[k];
+        scalar_type e = straight ? B[k] : C2[k], f = B[k];
+        if (straight) {
+          c[k][0] = a; c[k][1] = f - a; c[k][2] = c[k][3] = 0.;
+        } else {
+          c[k][0] = a; c[k][1] = 3.*(b - a); c[k][2] = 3.*(a - 2.*b + e);
+          c[k][3] = f - a + 3.*(b - e);
+        }
+        lo[k] = std::min(std::min(A[k], B[k]), std::min(C1[k], C2[k]));
+        hi[k] = std::max(std::max(A[k], B[k]), std::max(C1[k], C2[k]));
+      }
+    }
+    static scalar_type val(const scalar_type *c, scalar_type t)
+    { return c[0] + t*(c[1] + t*(c[2] + t*c[3])); }
+    static scalar_type der(const scalar_type *c, scalar_type t)
+    { return c[1] + t*(2.*c[2] + 3.*t*c[3]); }
+    static scalar_type der2(const scalar_type *c, scalar_type t)
+    { return 2.*c[2] + 6.*t*c[3]; }
+
+    base_node point(scalar_type t) const
+    { return base_node(val(cx, t), val(cy, t)); }
+    base_small_vector tangent(scalar_type t) const   // derivative
+    { return base_small_vector(der(cx, t), der(cy, t)); }
+    scalar_type box_distance(const base_node &P) const {
+      scalar_type dx = std::max(0., std::max(lo[0] - P[0], P[0] - hi[0]));
+      scalar_type dy = std::max(0., std::max(lo[1] - P[1], P[1] - hi[1]));
+      return sqrt(dx*dx + dy*dy);
+    }
+    scalar_type dist2(scalar_type px, scalar_type py, scalar_type t) const {
+      scalar_type dx = val(cx, t) - px, dy = val(cy, t) - py;
+      return dx*dx + dy*dy;
+    }
+    // parameter of the nearest point of P (t in [0, 1])
+    scalar_type nearest(const base_node &P) const {
+      scalar_type px = P[0], py = P[1];
+      if (straight) {
+        scalar_type L2 = cx[1]*cx[1] + cy[1]*cy[1];
+        scalar_type t = (L2 > 0.) ? ((px-cx[0])*cx[1] + (py-cy[0])*cy[1]) / L2 : 0.;
+        return std::max(0., std::min(1., t));
+      }
+      const int N = 16;
+      scalar_type tb = 0., db = dist2(px, py, 0.);
+      for (int i = 1; i <= N; ++i) {
+        scalar_type t = scalar_type(i) / scalar_type(N), d = dist2(px, py, t);
+        if (d < db) { db = d; tb = t; }
+      }
+      scalar_type t = tb;
+      for (int it = 0; it < 30; ++it) {        // Newton on (C(t) - P).C'(t) = 0
+        scalar_type rx = val(cx, t) - px, ry = val(cy, t) - py;
+        scalar_type dx = der(cx, t), dy = der(cy, t);
+        scalar_type f = rx*dx + ry*dy;
+        scalar_type df = dx*dx + dy*dy + rx*der2(cx, t) + ry*der2(cy, t);
+        if (df <= 0.) break;
+        scalar_type tn = std::max(0., std::min(1., t - f / df));
+        if (gmm::abs(tn - t) < 1e-15) { t = tn; break; }
+        t = tn;
+      }
+      if (dist2(px, py, t) > db) t = tb;
+      return t;
+    }
+    // number of crossings of the half line {(x, P[1]), x > P[0]}, modulo 2
+    // (only the parity is used), the ends counted on one side only
+    // ((y > P[1]) changes)
+    size_type crossings(const base_node &P) const {
+      scalar_type px = P[0], py = P[1];
+      bool a = A[1] > py, b = B[1] > py;
+      if (hi[0] <= px) return 0;                     // on the left of P
+      if (lo[1] > py || hi[1] <= py || lo[0] > px)   // the parity of the chord
+        return (a != b) ? 1 : 0;
+      if (straight) {
+        if (a == b) return 0;
+        scalar_type t = (py - cy[0]) / cy[1];
+        return (val(cx, t) > px) ? 1 : 0;
+      }
+      // y(t) - py on the intervals where y is monotone (ends: the roots
+      // of y'), a root on each one where the sign changes
+      scalar_type cuts[4] = {0., 1., 1., 1.};
+      size_type nc = 1;
+      scalar_type qa = 3.*cy[3], qb = 2.*cy[2], qc = cy[1];
+      if (gmm::abs(qa) > 1e-14 * (gmm::abs(qb) + gmm::abs(qc))) {
+        scalar_type disc = qb*qb - 4.*qa*qc;
+        if (disc > 0.) {
+          scalar_type r = sqrt(disc);
+          scalar_type r1 = (-qb - r) / (2.*qa), r2 = (-qb + r) / (2.*qa);
+          if (r1 > r2) std::swap(r1, r2);
+          if (r1 > 0. && r1 < 1.) cuts[nc++] = r1;
+          if (r2 > 0. && r2 < 1.) cuts[nc++] = r2;
+        }
+      } else if (gmm::abs(qb) > 0.) {
+        scalar_type r1 = -qc / qb;
+        if (r1 > 0. && r1 < 1.) cuts[nc++] = r1;
+      }
+      cuts[nc] = 1.;
+      size_type count = 0;
+      bool s0 = a;
+      for (size_type i = 0; i < nc; ++i) {
+        scalar_type t0 = cuts[i], t1 = cuts[i+1];
+        bool s1 = (i + 1 == nc) ? b : (val(cy, t1) > py);
+        if (s1 != s0) {
+          for (int it = 0; it < 60 && t1 - t0 > 1e-15; ++it) {
+            scalar_type m = (t0 + t1) / 2.;
+            if ((val(cy, m) > py) == s0) t0 = m; else t1 = m;
+          }
+          if (val(cx, (t0 + t1) / 2.) > px) ++count;
+        }
+        s0 = s1;
+      }
+      return count;
+    }
+  };
+
+  // The signed distance to a chain of sides of a curved polygon that meet
+  // tangentially, extended beyond its ends by the half lines of its
+  // tangents there (negative on the side of the polygon): a constraint of
+  // the mesher. A chain of sides tangent to each other is one constraint:
+  // two constraints meeting tangentially make a bad edge for the mesher
+  // (in 3D, the projections on their intersection converge badly).
+  class mesher_curve_side : public mesher_signed_distance {
+    std::vector<mesher_curve_piece> c;
+    scalar_type orient;   // 1 if the polygon is on the left of the side
+    bool closed;          // the whole boundary (no ends)
+
+    // nearest point Q (orthogonal foot) and unit tangent T there
+    void foot(const base_node &P, base_node &Q, base_small_vector &T) const {
+      scalar_type d = -1.;
+      size_type ib = 0; scalar_type tb = 0.;
+      for (size_type k = 0; k < c.size(); ++k) {
+        if (d >= 0. && c[k].box_distance(P) >= d) continue;
+        scalar_type t = c[k].nearest(P);
+        scalar_type dk = sqrt(c[k].dist2(P[0], P[1], t));
+        if (d < 0. || dk < d) { d = dk; ib = k; tb = t; }
+      }
+      Q = c[ib].point(tb); T = c[ib].tangent(tb);
+      for (int e = 0; e < 2 && !closed; ++e) {  // the half lines at the ends
+        const mesher_curve_piece &ce = e ? c.back() : c.front();
+        base_node E = e ? ce.B : ce.A;
+        base_small_vector U = ce.tangent(e ? 1. : 0.);
+        U /= gmm::vect_norm2(U);
+        scalar_type s = gmm::vect_sp(P - E, U);
+        if ((e == 0 && s < 0.) || (e == 1 && s > 0.)) {
+          base_node F(E); gmm::add(gmm::scaled(U, s), F);
+          scalar_type dF = gmm::vect_dist2(P, F);
+          if (dF < d) { d = dF; Q = F; T = U; }
+        }
+      }
+      T /= gmm::vect_norm2(T);
+    }
+  public:
+    mesher_curve_side(const std::vector<mesher_curve_piece> &c_, scalar_type o,
+                      bool cl = false)
+      : c(c_), orient(o), closed(cl) {}
+    bool bounding_box(base_node &, base_node &) const { return false; }
+    virtual scalar_type operator()(const base_node &P) const {
+      base_node Q; base_small_vector T;
+      foot(P, Q, T);
+      return -orient * (T[0]*(P[1]-Q[1]) - T[1]*(P[0]-Q[0]));
+    }
+    virtual scalar_type operator()(const base_node &P,
+                                   dal::bit_vector &bv) const {
+      scalar_type d = (*this)(P);
+      bv[id] = (gmm::abs(d) < SEPS);
+      return d;
+    }
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      base_node Q; base_small_vector T;
+      foot(P, Q, T);
+      G.resize(2);
+      G[0] = orient * T[1]; G[1] = -orient * T[0];  // the outward normal
+      return -orient * (T[0]*(P[1]-Q[1]) - T[1]*(P[0]-Q[0]));
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      scalar_type eps = 1e-7 * (1. + gmm::vect_norm2(c.front().A)
+                                + gmm::vect_norm2(c.back().B));
+      base_small_vector G1, G2;
+      gmm::resize(H, 2, 2);
+      for (size_type j = 0; j < 2; ++j) {
+        base_node P1(P), P2(P); P1[j] -= eps; P2[j] += eps;
+        grad(P1, G1); grad(P2, G2);
+        for (size_type i = 0; i < 2; ++i) H(i, j) = (G2[i] - G1[i]) / (2.*eps);
+      }
+      scalar_type h = (H(0, 1) + H(1, 0)) / 2.; H(0, 1) = H(1, 0) = h;
+    }
+    virtual void register_constraints(std::vector<const
+                                      mesher_signed_distance*>& list) const
+    { id = list.size(); list.push_back(this); }
+  };
+
+  // A simple polygon in 2D whose sides are segments or cubic Bezier curves
+  // (side i from vertex i to vertex i+1, with the control points C1[i],
+  // C2[i] if it is curved). The signed distance is the euclidean one; each
+  // chain of sides that meet tangentially is a constraint of the mesher
+  // (mesher_curve_side), which keeps the vertices where two of them meet
+  // (the corners).
+  class mesher_curved_polygon : public mesher_signed_distance {
+    std::vector<mesher_curve_piece> pieces;
+    std::vector<std::shared_ptr<mesher_curve_side>> sides;
+    std::vector<size_type> side_of;   // the constraint of each piece
+    base_node bmin_, bmax_;
+    scalar_type scale;
+
+    // unsigned distance, nearest side and its nearest parameter
+    scalar_type nearest(const base_node &P, size_type &i, scalar_type &t) const {
+      scalar_type d = -1.;
+      for (size_type k = 0; k < pieces.size(); ++k) {
+        if (d >= 0. && pieces[k].box_distance(P) >= d) continue;
+        scalar_type tk = pieces[k].nearest(P);
+        scalar_type dk = gmm::vect_dist2(P, pieces[k].point(tk));
+        if (d < 0. || dk < d) { d = dk; i = k; t = tk; }
+      }
+      return d;
+    }
+    bool inside(const base_node &P) const {
+      size_type n = 0;
+      for (const mesher_curve_piece &c : pieces) n += c.crossings(P);
+      return (n % 2) == 1;
+    }
+  public:
+    mesher_curved_polygon(const std::vector<base_node> &V,
+                          const std::vector<base_node> &C1,
+                          const std::vector<base_node> &C2,
+                          const std::vector<bool> &curved) {
+      size_type n = V.size();
+      GMM_ASSERT1(n >= 2 && C1.size() == n && C2.size() == n
+                  && curved.size() == n, "Bad sizes for a curved polygon");
+      bmin_ = bmax_ = V[0];
+      scale = 0.;
+      for (size_type i = 0; i < n; ++i) {
+        GMM_ASSERT1(V[i].size() == 2, "A polygon is defined in 2D");
+        mesher_curve_piece c;
+        c.A = V[i]; c.B = V[(i+1) % n]; c.straight = !curved[i];
+        c.C1 = curved[i] ? C1[i] : c.A; c.C2 = curved[i] ? C2[i] : c.B;
+        c.init();
+        GMM_ASSERT1(gmm::vect_dist2(c.A, c.B) > 0. || curved[i],
+                    "Two consecutive vertices of a polygon coincide");
+        GMM_ASSERT1(gmm::vect_norm2(c.tangent(0.)) > 0.
+                    && gmm::vect_norm2(c.tangent(1.)) > 0.,
+                    "A curved side has no tangent at an end");
+        pieces.push_back(c);
+        for (const base_node *Q : {&c.A, &c.C1, &c.C2})
+          for (size_type k = 0; k < 2; ++k) {
+            bmin_[k] = std::min(bmin_[k], (*Q)[k]);
+            bmax_[k] = std::max(bmax_[k], (*Q)[k]);
+          }
+      }
+      scale = gmm::vect_dist2(bmin_, bmax_);
+      // orientation: twice the area enclosed (Green's formula, sampled)
+      scalar_type area = 0.;
+      for (const mesher_curve_piece &c : pieces) {
+        const size_type N = c.straight ? 1 : 64;
+        for (size_type j = 0; j < N; ++j) {
+          base_node P0 = c.point(scalar_type(j)/scalar_type(N));
+          base_node P1 = c.point(scalar_type(j+1)/scalar_type(N));
+          area += P0[0]*P1[1] - P1[0]*P0[1];
+        }
+      }
+      scalar_type orient = (area > 0.) ? 1. : -1.;
+      // the constraints: the chains of sides that meet tangentially
+      auto tangent_at = [this](size_type i) {     // side i - 1 then i
+        const mesher_curve_piece &a = pieces[(i + pieces.size() - 1) % pieces.size()];
+        const mesher_curve_piece &b = pieces[i];
+        base_small_vector u = a.tangent(1.), v = b.tangent(0.);
+        scalar_type nu = gmm::vect_norm2(u), nv = gmm::vect_norm2(v);
+        return gmm::vect_sp(u, v) > 0.
+          && gmm::abs(u[0]*v[1] - u[1]*v[0]) <= 1e-9 * nu * nv;
+      };
+      size_type first = n;
+      for (size_type i = 0; i < n; ++i)
+        if (!tangent_at(i)) { first = i; break; }
+      if (first == n)                              // a smooth closed curve
+        sides.push_back(std::make_shared<mesher_curve_side>(pieces, orient,
+                                                            true));
+      else {
+        std::vector<mesher_curve_piece> chain;
+        for (size_type k = 0; k < n; ++k) {
+          size_type i = (first + k) % n;
+          if (k > 0 && !tangent_at(i)) {
+            sides.push_back(std::make_shared<mesher_curve_side>(chain, orient));
+            chain.clear();
+          }
+          chain.push_back(pieces[i]);
+        }
+        sides.push_back(std::make_shared<mesher_curve_side>(chain, orient));
+      }
+      side_of.assign(n, 0);
+      for (size_type k = 0, j = 0, i = first % n; k < n; ++k, i = (i + 1) % n) {
+        if (k > 0 && first < n && !tangent_at(i)) ++j;
+        side_of[i] = j;
+      }
+    }
+    bool bounding_box(base_node &bmin, base_node &bmax) const
+    { bmin = bmin_; bmax = bmax_; return true; }
+    virtual scalar_type operator()(const base_node &P) const {
+      size_type i; scalar_type t;
+      scalar_type d = nearest(P, i, t);
+      return inside(P) ? -d : d;
+    }
+    virtual scalar_type operator()(const base_node &P,
+                                   dal::bit_vector &bv) const {
+      scalar_type d = (*this)(P);
+      if (gmm::abs(d) < SEPS)
+        for (const auto &s : sides) (*s)(P, bv);
+      return d;
+    }
+    scalar_type grad(const base_node &P, base_small_vector &G) const {
+      size_type i; scalar_type t;
+      scalar_type d = nearest(P, i, t);
+      bool in = inside(P);
+      if (d > SEPS * scale) {
+        G = P - pieces[i].point(t); G /= d;
+        if (in) G *= scalar_type(-1);
+      } else sides[side_of[i]]->grad(P, G);     // on a side: its normal
+      return in ? -d : d;
+    }
+    void hess(const base_node &P, base_matrix &H) const {
+      scalar_type eps = 1e-7 * (scale > 0. ? scale : 1.);
+      base_small_vector G1, G2;
+      gmm::resize(H, 2, 2);
+      for (size_type j = 0; j < 2; ++j) {
+        base_node P1(P), P2(P); P1[j] -= eps; P2[j] += eps;
+        grad(P1, G1); grad(P2, G2);
+        for (size_type k = 0; k < 2; ++k) H(k, j) = (G2[k] - G1[k]) / (2.*eps);
+      }
+      scalar_type h = (H(0, 1) + H(1, 0)) / 2.; H(0, 1) = H(1, 0) = h;
+    }
+    virtual void register_constraints(std::vector<const
+                                      mesher_signed_distance*>& list) const
+    { for (const auto &s : sides) s->register_constraints(list); }
+  };
+
+  inline pmesher_signed_distance
+  new_mesher_curved_polygon(const std::vector<base_node> &V,
+                            const std::vector<base_node> &C1,
+                            const std::vector<base_node> &C2,
+                            const std::vector<bool> &curved)
+  { return std::make_shared<mesher_curved_polygon>(V, C1, C2, curved); }
+
+
   class mesher_tube : public mesher_signed_distance {
     base_node x0; base_node n; scalar_type R;
   public:

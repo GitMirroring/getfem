@@ -63,3 +63,43 @@ vol, area = measures(m, 'IM_TETRAHEDRON(5)')
 exact = 2*0.86 + 0.3*5.4
 print('extruded U: volume %g (exact 0.258), area %g (exact %g)' % (vol, area, exact))
 assert abs(vol - 0.258) < 1e-8 and abs(area - exact) < 1e-8
+
+# Curved sides: cubic Bezier curves (a column of NaN: a straight side).
+# A unit square whose right side is an S and whose top side bulges.
+def bezier_outline(V, C, n=4000):
+  """Points along the boundary (exact area and length by Green's formula
+  and the sum of the chords, for n large)."""
+  pts = []
+  for j in range(V.shape[1]):
+    A, B = V[:, j], V[:, (j+1) % V.shape[1]]
+    if np.isnan(C[0, j]):
+      pts.append(A[None, :])
+    else:
+      t = np.linspace(0, 1, n, endpoint=False)[:, None]; s = 1 - t
+      pts.append(s**3*A + 3*s*s*t*C[0:2, j] + 3*s*t*t*C[2:4, j] + t**3*B)
+  Q = np.vstack(pts); R = np.roll(Q, -1, axis=0)
+  return (0.5*np.sum(Q[:, 0]*R[:, 1] - R[:, 0]*Q[:, 1]),
+          np.sum(np.linalg.norm(R - Q, axis=1)))
+
+V = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], float).T
+C = np.full((4, 4), np.nan)
+C[:, 1] = [1.3, 0.3, 0.7, 0.7]       # right side: an S
+C[:, 2] = [0.7, 1.4, 0.3, 1.4]       # top side: a bulge
+exact_area, exact_perimeter = bezier_outline(V, C)
+m = gf.Mesh('generate', gf.MesherObject('polygon', V, C), 0.1, 2)
+area, perimeter = measures(m, 'IM_TRIANGLE(6)')
+print('curved square: area %g (exact %g), perimeter %g (exact %g)'
+      % (area, exact_area, perimeter, exact_perimeter))
+assert abs(area - exact_area) < 1e-5 and abs(perimeter - exact_perimeter) < 1e-4
+
+# the same, without curved side: the polygon
+m = gf.Mesh('generate', gf.MesherObject('polygon', V, np.full((4, 4), np.nan)), 0.2, 1)
+area, perimeter = measures(m, 'IM_TRIANGLE(6)')
+assert abs(area - 1) < 1e-8 and abs(perimeter - 4) < 1e-8
+
+# extruded
+m = gf.Mesh('generate', gf.MesherObject('extrusion', gf.MesherObject('polygon', V, C),
+                                        0, 0.5), 0.15, 2)
+vol, area = measures(m, 'IM_TETRAHEDRON(5)')
+print('extruded curved square: volume %g (exact %g)' % (vol, 0.5*exact_area))
+assert abs(vol - 0.5*exact_area) < 1e-3

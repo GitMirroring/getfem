@@ -169,16 +169,39 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      );
 
 
-  /*@INIT MF = ('polygon', @mat vertices)
+  /*@INIT MF = ('polygon', @mat vertices[, @mat controls])
     Represents a simple polygon in 2D (not necessarily convex), the columns
-    of `vertices` (2 x n) being its vertices, in either order.@*/
+    of `vertices` (2 x n) being its vertices, in either order. With
+    `controls` (4 x n), its sides may be curved: the side j, from the
+    vertex j to the vertex j+1 (the last one to the first one), is the
+    cubic Bezier curve of control points the vertex j, (controls[0, j],
+    controls[1, j]), (controls[2, j], controls[3, j]) and the vertex j+1,
+    or a segment if its column of `controls` is NaN.@*/
   sub_command
-    ("polygon", 1, 1, 0, 1,
+    ("polygon", 1, 2, 0, 1,
      darray v = in.pop().to_darray(2, -1);
      std::vector<getfem::base_node> vertices;
      for (size_type j = 0; j < size_type(v.getn()); ++j)
        vertices.push_back(getfem::base_node(v(0, j), v(1, j)));
-     psd = getfem::new_mesher_polygon(vertices);
+     bool any_curved = false;
+     std::vector<getfem::base_node> c1(vertices.size());
+     std::vector<getfem::base_node> c2(vertices.size());
+     std::vector<bool> curved(vertices.size(), false);
+     if (in.remaining()) {
+       darray c = in.pop().to_darray(4, int(vertices.size()));
+       for (size_type j = 0; j < vertices.size(); ++j) {
+         bool nan = false;
+         for (size_type k = 0; k < 4; ++k) nan = nan || std::isnan(c(k, j));
+         curved[j] = !nan;
+         any_curved = any_curved || curved[j];
+         c1[j] = getfem::base_node(nan ? 0. : c(0, j), nan ? 0. : c(1, j));
+         c2[j] = getfem::base_node(nan ? 0. : c(2, j), nan ? 0. : c(3, j));
+       }
+     }
+     if (any_curved)
+       psd = getfem::new_mesher_curved_polygon(vertices, c1, c2, curved);
+     else
+       psd = getfem::new_mesher_polygon(vertices);
      );
 
 
