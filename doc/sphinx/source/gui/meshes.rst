@@ -42,7 +42,12 @@ geometry changes its kind of source, its meshes change their mesher if
 needed, with an equivalent element size.
 
 The **geometric order** 2 gives curved elements, which follow the circles
-and the curved surfaces.
+and the curved surfaces. They are drawn curved, the meshes as the results:
+each face of an element is drawn in 4\ :sup:`n` triangles and each edge in
+2\ :sup:`n` segments, placed (and colored, for a result) by the quadratic
+interpolation, *n* being set by *Curved* in the bar of the view (shown for
+such meshes; 2 by default, 0: straight elements through their corners).
+The selections of a curved mesh are drawn refined as well.
 
 Quadrangles and hexahedra
 -------------------------

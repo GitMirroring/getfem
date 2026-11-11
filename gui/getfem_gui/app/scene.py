@@ -94,14 +94,80 @@ def _camera(plotter, ds, reset: bool) -> None:
     plotter.reset_camera()
 
 
-def _wire(ds: pv.DataSet) -> pv.DataSet:
-    """Edges of the elements (works for linear and quadratic elements)."""
-    return ds.extract_all_edges() if ds.n_cells else ds
+# ------------------------------------------------------------------ curved (quadratic) elements
+
+CURVED = 2              # default subdivision level of the display of quadratic elements
+
+# the edges of the quadratic cells of VTK: (corner, middle node, corner)
+_QUADRATIC_EDGES = {
+    21: [(0, 2, 1)],                                                          # edge
+    22: [(0, 3, 1), (1, 4, 2), (2, 5, 0)],                                    # triangle
+    23: [(0, 4, 1), (1, 5, 2), (2, 6, 3), (3, 7, 0)],                         # quadrangle
+    24: [(0, 4, 1), (1, 5, 2), (2, 6, 0), (0, 7, 3), (1, 8, 3), (2, 9, 3)],   # tetrahedron
+    25: [(0, 8, 1), (1, 9, 2), (2, 10, 3), (3, 11, 0), (4, 12, 5), (5, 13, 6), (6, 14, 7), (7, 15, 4),
+         (0, 16, 4), (1, 17, 5), (2, 18, 6), (3, 19, 7)],                     # hexahedron
+    26: [(0, 6, 1), (1, 7, 2), (2, 8, 0), (3, 9, 4), (4, 10, 5), (5, 11, 3),
+         (0, 12, 3), (1, 13, 4), (2, 14, 5)],                                 # wedge
+}
+_QUADRATIC_EDGES[28] = _QUADRATIC_EDGES[23]          # biquadratic quadrangle
+_QUADRATIC_EDGES[29] = _QUADRATIC_EDGES[25]          # triquadratic hexahedron
+_QUADRATIC_EDGES[32] = _QUADRATIC_EDGES[26]          # biquadratic wedge
 
 
-def _outline(ds: pv.DataSet) -> pv.DataSet:
+def is_curved(ds: pv.DataSet) -> bool:
+    """The dataset has quadratic cells (a mesh of geometric order 2)."""
+    types = getattr(ds, "celltypes", None)
+    return types is not None and len(types) > 0 and bool(np.isin(types, list(_QUADRATIC_EDGES)).any())
+
+
+def surface(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
+    """What is drawn of a dataset: for quadratic cells, their outer surface,
+    each face subdivided `level` times (its points placed by the quadratic
+    interpolation, and the point data interpolated: curved faces, curved
+    color maps); level 0, the faces through their corners."""
+    if not is_curved(ds):
+        return ds
+    return ds.extract_surface(nonlinear_subdivision=max(0, int(level)))
+
+
+def _wire(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
+    """Edges of the elements; for quadratic elements, each edge drawn by
+    2^level segments on its parabola (straight between the corners for
+    level 0, as the faces of surface())."""
+    if not ds.n_cells:
+        return ds
+    if not is_curved(ds):
+        return ds.extract_all_edges()
+    triples = []
+    types = np.asarray(ds.celltypes)
+    for t, edges in _QUADRATIC_EDGES.items():
+        if not np.any(types == t):
+            continue
+        conn = ds.cells_dict.get(t)
+        if conn is None:
+            continue
+        conn = np.asarray(conn)
+        triples += [conn[:, list(e)] for e in edges]
+    if not triples:
+        return ds.extract_all_edges()
+    T = np.vstack(triples)
+    key = np.sort(T[:, [0, 2]], axis=1)
+    _, first = np.unique(key, axis=0, return_index=True)          # each edge once
+    T = T[np.sort(first)]
+    k = 2 ** int(level) if level > 0 else 1          # level 0: from corner to corner, as the faces drawn
+    t = np.linspace(0.0, 1.0, k + 1)
+    w = np.stack([(1 - t) * (1 - 2 * t), 4 * t * (1 - t), t * (2 * t - 1)])   # quadratic Lagrange
+    X = np.asarray(ds.points, float)
+    P = np.einsum("jk,ejd->ekd", w, X[T])                          # edges x samples x 3
+    n = len(T)
+    ids = np.arange(n * (k + 1)).reshape(n, k + 1)
+    lines = np.hstack([np.full((n, 1), k + 1), ids]).ravel()
+    return pv.PolyData(P.reshape(-1, 3), lines=lines)
+
+
+def _outline(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     """Contour of the domain: boundary edges in 2D, feature edges in 3D."""
-    surf = ds.extract_surface(nonlinear_subdivision=0)
+    surf = ds.extract_surface(nonlinear_subdivision=level if is_curved(ds) else 0)
     if is_planar(ds):
         return surf.extract_feature_edges(boundary_edges=True, feature_edges=False,
                                           manifold_edges=False, non_manifold_edges=False)
@@ -119,15 +185,17 @@ def message(plotter, text: str) -> None:
 
 
 def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
-              title: str = "", reset: bool = True, edges: bool = True) -> None:
-    """The mesh, and optionally a selection (faces or elements) highlighted."""
+              title: str = "", reset: bool = True, edges: bool = True, level: int = CURVED) -> None:
+    """The mesh, and optionally a selection (faces or elements) highlighted;
+    level: the subdivisions of quadratic elements (see surface)."""
     clear(plotter)
     planar = is_planar(mesh)
     faded = selection is not None
-    plotter.add_mesh(mesh, color=FADED if faded else SURFACE, opacity=1.0 if planar or not faded else 0.35,
+    plotter.add_mesh(surface(mesh, level), color=FADED if faded else SURFACE,
+                     opacity=1.0 if planar or not faded else 0.35,
                      show_edges=False, lighting=not planar, name="mesh")
     if edges:
-        plotter.add_mesh(_wire(mesh), color=EDGES, opacity=0.35 if faded else 1.0,
+        plotter.add_mesh(_wire(mesh, level), color=EDGES, opacity=0.35 if faded else 1.0,
                          line_width=1, lighting=False, name="edges")
     if selection is not None and selection.n_points:
         dim = selection.get_cell(0).dimension if selection.n_cells else 0
@@ -135,10 +203,10 @@ def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
             plotter.add_mesh(selection, color=HIGHLIGHT, line_width=5, lighting=False,
                              render_lines_as_tubes=False, name="selection")
         else:
-            plotter.add_mesh(selection, color=HIGHLIGHT, show_edges=False, lighting=not planar,
+            plotter.add_mesh(surface(selection, level), color=HIGHLIGHT, show_edges=False, lighting=not planar,
                              name="selection")
             if edges:
-                plotter.add_mesh(_wire(selection), color="#7a2a14", line_width=1,
+                plotter.add_mesh(_wire(selection, level), color="#7a2a14", line_width=1,
                                  lighting=False, name="selection_edges")
     if title:
         plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
@@ -223,18 +291,22 @@ def _arrows(shown: pv.DataSet, ds: pv.DataSet, field: str, count: int = 24) -> p
 def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
                warp: str | None = None, scale: float = 1.0, edges: bool = False,
                title: str = "", reset: bool = True, isolines: int = 0, bands: bool = False,
-               cmap: str | None = None, clim=None, arrows: str | None = None, cut=None) -> None:
+               cmap: str | None = None, clim=None, arrows: str | None = None, cut=None,
+               level: int = CURVED) -> None:
     """A result field, possibly on the shape deformed by the field `warp`.
 
     isolines: number of isolines (black, evenly spaced in the range); bands:
     a banded colormap (one band between isolines, 10 without them); cmap: a
     colormap name (CMAPS); clim: (min, max) of the color range (None: the
     range of the values); arrows: a vector field drawn with arrows; cut: a
-    segment (two points) drawn on the view (see line_values)."""
+    segment (two points) drawn on the view (see line_values); level: the
+    subdivisions of quadratic elements (see surface)."""
     clear(plotter)
     shown, label = _with_values(ds, name, component, warp, scale)
+    curved = is_curved(shown)
+    drawn = surface(shown, level)           # quadratic elements: subdivided, values interpolated
     if warp and warp in ds.point_data:
-        plotter.add_mesh(_outline(ds), color="#7d8690", line_width=1, lighting=False,
+        plotter.add_mesh(_outline(ds, level), color="#7d8690", line_width=1, lighting=False,
                          name="undeformed")
     data = np.asarray(shown.point_data["_shown"])
     auto = (float(np.min(data)), float(np.max(data))) if data.size else (0.0, 1.0)
@@ -242,9 +314,9 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
     if not clim[1] > clim[0]:
         clim = (clim[0] - 0.5 * (abs(clim[0]) or 1.0), clim[0] + 0.5 * (abs(clim[0]) or 1.0))
     planar = is_planar(ds)
-    plotter.add_mesh(shown, scalars="_shown", cmap=cmap or CMAP, clim=clim,
+    plotter.add_mesh(drawn, scalars="_shown", cmap=cmap or CMAP, clim=clim,
                      n_colors=(isolines + 1 if isolines > 0 else 10) if bands else 256,
-                     show_edges=edges, edge_color=EDGES, lighting=not planar,
+                     show_edges=edges and not curved, edge_color=EDGES, lighting=not planar,
                      scalar_bar_args={"title": label, "vertical": True, "position_x": 0.86,
                                       "position_y": 0.1, "height": 0.65, "width": 0.05,
                                       "fmt": "%.3g", "color": "#333333",
@@ -252,9 +324,11 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
                                       else 11 if bands else 5,
                                       "title_font_size": 14, "label_font_size": 12},
                      name="field")
+    if edges and curved:                    # the edges of the elements, not of their subdivisions
+        plotter.add_mesh(_wire(shown, level), color=EDGES, line_width=1, lighting=False, name="edges")
     levels = isoline_levels(*clim, isolines)
     if levels.size:
-        surf = shown.extract_surface(nonlinear_subdivision=0)
+        surf = drawn.extract_surface(nonlinear_subdivision=0)
         lines = surf.contour(isosurfaces=levels, scalars="_shown")
         if lines.n_points:
             plotter.add_mesh(lines, color="#1a1a1a", line_width=1.5, lighting=False, name="isolines")

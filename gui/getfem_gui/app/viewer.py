@@ -35,8 +35,8 @@ import numpy as np
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QToolButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QSpinBox,
+                               QToolButton, QVBoxLayout, QWidget)
 
 
 def prepare_opengl() -> None:
@@ -223,6 +223,20 @@ class Viewer(QWidget):
             b.clicked.connect(slot)
             bar.addWidget(b)
             self._buttons.append(b)
+        # the display of quadratic elements (meshes of geometric order 2): subdivisions
+        self.curved_label = QLabel("Curved:")
+        self.curved_box = QSpinBox()
+        self.curved_box.setObjectName("curved")
+        self.curved_box.setRange(0, 4)
+        self.curved_box.setValue(2)
+        tip = ("Elements of order 2: each face is drawn in 4^n triangles and each edge in 2^n segments, "
+               "placed and colored by the quadratic interpolation (0: straight, through the corners)")
+        self.curved_label.setToolTip(tip)
+        self.curved_box.setToolTip(tip)
+        self.curved_box.valueChanged.connect(lambda _v: self.refresh())
+        for w in (self.curved_label, self.curved_box):
+            w.setVisible(False)
+            bar.insertWidget(bar.count() - 1, w)
         layout.addLayout(bar)
         self._build_draw_bar(layout)
         self._build_result_bar(layout)
@@ -305,7 +319,9 @@ class Viewer(QWidget):
         key = ("mesh", str(mesh_file))
         mesh = scene.read(mesh_file)
         sel = scene.read(selection_file) if selection_file else None
-        scene.show_mesh(self.plotter, mesh, sel, reset=key != self._shown_key, edges=self.edges["mesh"])
+        self._show_curved(scene.is_curved(mesh))
+        scene.show_mesh(self.plotter, mesh, sel, reset=key != self._shown_key, edges=self.edges["mesh"],
+                        level=self.curved_box.value())
         self._shown_key = key
         self.plotter.render()
 
@@ -321,6 +337,7 @@ class Viewer(QWidget):
         shown and drawn on its plane in the 3D view, with the geometry
         around it."""
         self._leave_field()
+        self._show_curved(False)
         self._context = context
         in_3d = self.plane_3d and context is not None
         self.status.setText(status + (" — in 3D: rotate with the mouse, draw on the plane (XY: flat)"
@@ -955,8 +972,9 @@ class Viewer(QWidget):
         from . import scene
         key = ("result", str(result_file))
         ds = scene.read(result_file)
+        self._show_curved(scene.is_curved(ds))
         scene.show_field(self.plotter, ds, name, component, warp, scale, edges=self.edges["field"],
-                         reset=key != self._shown_key, **view)
+                         reset=key != self._shown_key, level=self.curved_box.value(), **view)
         self._shown_key = key
         self.result_bar.setVisible(scene.is_planar(ds))
         self._show_cut(ds, name, component, view.get("cut"))
@@ -1079,6 +1097,11 @@ class Viewer(QWidget):
             scene.set_style(self.plotter, planar=method == "view_xy")
             self.plotter.reset_camera()
             self.plotter.render()
+
+    def _show_curved(self, on: bool) -> None:
+        """The subdivision control, for a display of quadratic elements."""
+        self.curved_label.setVisible(on)
+        self.curved_box.setVisible(on)
 
     def toggle_edges(self):
         kind = "field" if self._last and self._last[0] == "field" else "mesh"
