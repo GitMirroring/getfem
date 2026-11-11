@@ -243,6 +243,32 @@ def test_vertex_table():
             win.close()
 
 
+def test_constraints():
+    """A constrained polygon (a square of side 2, drawn roughly): the
+    points of its spline follow the side, by the similarity of its chord;
+    the vertex dragged, the points written to the model with it."""
+    from getfem_gui import sketch as SK
+    drawn = [[0, 0], [1.9, 0.1], [2.1, 2.0], [0.1, 1.8]]
+    poly = {"type": "polygon", "points": drawn, "splines": [{"side": 2, "points": [[2.4, 1.0]]}],
+            "constraints": [{"type": "horizontal", "side": 1}, {"type": "vertical", "side": 2},
+                            {"type": "horizontal", "side": 3}, {"type": "vertical", "side": 4},
+                            {"type": "length", "side": 1, "value": 2}, {"type": "equal", "side": 1, "other": 2},
+                            {"type": "fixed", "vertex": 1, "at": [0, 0]}]}
+    m = model_with({"type": "union", "of": [poly]})
+    assert M.validate(m) == []
+    r = P.resolved(m)["geometries"][0]["source"]["shape"]["of"][0]
+    assert np.allclose(r["points"], [[0, 0], [2, 0], [2, 2], [0, 2]], atol=1e-8)
+    f = SK.chord_map(drawn[1], drawn[2], [2, 0], [2, 2])
+    assert np.allclose(r["splines"][0]["points"], f([[2.4, 1.0]]), atol=1e-8)
+    path = ROOT + ("of", 0)
+    E.move_handle(m, path, "v2", [2.5, 2.5])          # a vertex of the curved side: still a square, larger
+    r2 = P.resolved(m)["geometries"][0]["source"]["shape"]["of"][0]
+    V = np.asarray(r2["points"], float)
+    g = SK.chord_map(r["points"][1], r["points"][2], V[1], V[2])
+    assert np.allclose(r2["splines"][0]["points"], g(r["splines"][0]["points"]), atol=1e-6)
+    assert np.allclose(E.get_at(m, path)["splines"][0]["points"], r2["splines"][0]["points"], atol=1e-6)
+
+
 def test_drag_preview():
     """A point of a spline dragged in the view: the handle follows the
     mouse, and the outline with its curves (not only the straight

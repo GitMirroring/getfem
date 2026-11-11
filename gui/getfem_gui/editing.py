@@ -3584,9 +3584,8 @@ def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, 
     if errors:
         raise ValueError(errors[-1].split(": ", 1)[-1])
     new = SK.node_at(tree, own)["points"]
-    problem = G.polygon_problem(new)
-    if problem:
-        raise ValueError(f"not a simple polygon ({problem})")
+    _check_polygon(SK.node_at(tree, own))
+    shown = (get_at(P.resolved(model), path) or {}).get("splines") or []    # as seen, before the move
     raw = get_at(model, path)["points"]
     for i, v in enumerate(new):
         for k in range(2):
@@ -3594,6 +3593,17 @@ def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, 
                 continue                          # an expression: the solver keeps it (it does not move)
             if abs(v[k] - float(raw[i][k])) > 1e-12 * max(1.0, abs(v[k])):
                 _set_number(model, path + ("points", i, k), float(f"{v[k]:.10g}"), notes)
+    if shown:                                     # the points of the splines follow their sides
+        moved = {"splines": copy.deepcopy(shown)}
+        SK.follow_splines(moved, V, new)
+        for j, sp in enumerate(moved["splines"]):
+            for p, q in enumerate(sp.get("points") or []):
+                rawq = get_at(model, path + ("splines", j, "points", p))
+                for k in range(2):
+                    if isinstance(rawq, str) or isinstance(rawq[k], str):
+                        continue
+                    if abs(q[k] - float(rawq[k])) > 1e-12 * max(1.0, abs(q[k])):
+                        _set_number(model, path + ("splines", j, "points", p, k), float(f"{q[k]:.10g}"), notes)
     return notes
 
 

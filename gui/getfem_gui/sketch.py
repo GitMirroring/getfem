@@ -300,8 +300,41 @@ def solve_tree(tree: dict, weights: dict | None = None) -> list[str]:
     except SketchError as exc:
         return errors + [f"{_where(sorted(polys)[0])}.constraints: {exc}"]
     for path, P in out.items():
-        node_at(tree, path)["points"] = [[float(x), float(y)] for x, y in P]
+        node = node_at(tree, path)
+        follow_splines(node, polys[path][0], P)
+        node["points"] = [[float(x), float(y)] for x, y in P]
     return errors
+
+
+def chord_map(a0, b0, a1, b1):
+    """The similarity of the plane (rotation, scaling, translation) that
+    takes the segment a0 b0 to a1 b1 (a translation if a0 = b0), as a
+    function of points (n x 2)."""
+    za0, zb0, za1, zb1 = (complex(float(p[0]), float(p[1])) for p in (a0, b0, a1, b1))
+    r = (zb1 - za1) / (zb0 - za0) if abs(zb0 - za0) > 0 else 1.0
+
+    def f(Q):
+        z = za1 + r * (np.asarray(Q, float) @ np.array([1, 1j]) - za0)
+        return np.column_stack([z.real, z.imag])
+    return f
+
+
+def follow_splines(poly: dict, old, new) -> None:
+    """The points of the splines of a polygon whose vertices go from old to
+    new: each moved by the similarity that takes the old chord of its side
+    to the new one (its shape kept relative to its ends)."""
+    n = len(old)
+    for sp in poly.get("splines") or []:
+        k = sp.get("side") if isinstance(sp, dict) else None
+        pts = sp.get("points") if isinstance(sp, dict) else None
+        if not isinstance(k, int) or not 1 <= k <= n or not pts:
+            continue
+        try:
+            Q = np.asarray(pts, float).reshape(-1, 2)
+        except (TypeError, ValueError):
+            continue
+        f = chord_map(old[k - 1], old[k % n], new[k - 1], new[k % n])
+        sp["points"] = f(Q).tolist()
 
 
 def label(c: dict, value_text: str | None = None) -> str:

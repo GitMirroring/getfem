@@ -219,8 +219,11 @@ given as such to |gmsh|, Netgen and the GetFEM mesher (its ``polygon``
 object with curved sides, GetFEM patch "mesher: polygons with curved
 sides"), the points of the splines being vertices of the mesh. The export
 draws them as Bezier curves (SVG) or polylines (DXF). The constraints of a
-polygon (below) only see its vertices: a curved side keeps its shape
-relative to them only through its points, which do not move with them.
+polygon (below) only see its vertices; when they move them, the points of
+a curved side follow: they are moved by the similarity (rotation, scaling,
+translation) that takes the old segment between the ends of the side to
+the new one, so that the curve keeps its shape relative to its ends (also
+when a vertex of a constrained polygon is dragged).
 
 .. _gui-geometries-constraints:
 
