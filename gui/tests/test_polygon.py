@@ -448,9 +448,9 @@ def test_entering_a_polygon_in_the_window():
             # in the profile of a new revolution: shown in the (r, z) plane, vertices clicked
             win.select(("geometries",))
             win._panel_action("add_geometry:revolution")
-            g = win.current_path()
-            prof = g + ("source", "shape", "profile")
-            win.select(prof)
+            prof = win.current_path()                              # its profile selected: the 2D view
+            g = prof[:2]
+            assert prof == g + ("source", "shape", "profile")
             assert not v.draw_bar.isHidden() and "(r, z)" in v.status.text()
             win._panel_action("add_shape:polygon")
             poly = win.current_path()
@@ -465,6 +465,15 @@ def test_entering_a_polygon_in_the_window():
             v.draw_begin([0.8, 0.0])
             v.draw_end([0.9, 0.3])
             assert len(E.get_at(win.model, prof)["of"]) == 2 and win.current_path() == prof
+            assert not v.findChild(QToolButton, "draw:rectangle").isChecked() and v._tool is None
+            # a polygon drawn: the tool released, a click then grabs a handle (not a new polygon)
+            win.select(prof)
+            v.findChild(QToolButton, "draw:polygon").setChecked(True)
+            for p in ([0.1, 0.5], [0.3, 0.5], [0.2, 0.8], [0.1, 0.5]):
+                v.draw_begin(p)
+                v.draw_end(p)
+            assert len(E.get_at(win.model, prof)["of"]) == 3 and v._tool is None
+            assert not v.findChild(QToolButton, "draw:polygon").isChecked()
         finally:
             win.setWindowModified(False)
             win.close()

@@ -14,7 +14,8 @@ of a 2D profile; a curve in 2D or 3D, a surface in 3D, an extruded or
 revolved curve; a CAD or a mesh file. A new box, curve or surface is a simple one of that
 kind, to be edited; a new constructive geometry (2D domain, 3D solid) starts
 from nothing, as does the profile of a new extrusion or revolution (see
-:ref:`gui-geometries-building`). *Add a mesh of this geometry* gives it a
+:ref:`gui-geometries-building`), which is then selected: its 2D view, to
+draw it. *Add a mesh of this geometry* gives it a
 mesh. Its source can still be changed in its form.
 
 A geometry is given by its *source* (see :ref:`gui-ref-sources` for all
@@ -109,7 +110,9 @@ anywhere. The grid is also shown, and set, while a primitive with handles
 is selected.
 
 The shape is added to, subtracted from or intersected with the geometry
-(*Escape* stops drawing). It joins the root boolean of the tree when it is
+(*Escape* stops drawing). Once a shape is drawn, its tool is released: a
+click then grabs a handle (to move a vertex) instead of starting another
+shape; the tool is pressed again for the next one. It joins the root boolean of the tree when it is
 the same operation; otherwise, the root is wrapped in a new boolean. A box
 becomes a ``csg`` geometry on the first drawing: its sides become
 selections of the same name, so that their uses stay valid.

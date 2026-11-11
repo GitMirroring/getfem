@@ -532,7 +532,8 @@ def test_add_a_geometry_from_its_menu():
     assert kinds == [f"add_geometry:{k}" for _, k, _, _ in E.GEOMETRY_KINDS]
     next(a for a in sub.actions() if a.data() == "add_geometry:extrusion").trigger()
     geom = win.model["geometries"][-1]
-    assert geom["source"]["shape"]["type"] == "extrusion" and win.current_path() == ("geometries", 1)
+    assert geom["source"]["shape"]["type"] == "extrusion"
+    assert win.current_path() == ("geometries", 1, "source", "shape", "profile")     # its profile, to draw
     win.select(("geometries",))
     from PySide6.QtWidgets import QPushButton
     b = win.props.findChild(QPushButton, "action:add_geometry")

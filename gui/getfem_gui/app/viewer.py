@@ -981,7 +981,9 @@ class Viewer(QWidget):
             self.draw_buttons["polygon"].setChecked(False)
             self.polygonEntered.emit(pts)
             return
-        self.shapeDrawn.emit({"type": "polygon", "points": pts}, self.draw_op.currentData())
+        op = self.draw_op.currentData()
+        self.draw_buttons["polygon"].setChecked(False)     # done: a click now grabs a handle
+        self.shapeDrawn.emit({"type": "polygon", "points": pts}, op)
 
     def polygon_back(self) -> None:
         if self._tool == "polygon" and self._poly:
@@ -1028,7 +1030,9 @@ class Viewer(QWidget):
         shape = G.drawn_shape(self._tool, self._draw_start, self._snapped(world))
         self.draw_cancel()
         if shape is not None:
-            self.shapeDrawn.emit(shape, self.draw_op.currentData())
+            op = self.draw_op.currentData()
+            self.draw_buttons[self._tool].setChecked(False)   # done: a click now grabs a handle
+            self.shapeDrawn.emit(shape, op)
 
     def draw_cancel(self) -> None:
         self._draw_start = None
