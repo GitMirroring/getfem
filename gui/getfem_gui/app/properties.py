@@ -141,10 +141,12 @@ class PropertiesPanel(QScrollArea):
     def _buttons(self, actions: list[tuple[str, str]]):
         """The actions of the node as buttons; the variants of one action
         ("add_shape:rectangle", "add_shape:ball"...) in the menu of one
-        button, so that the row stays short."""
+        button, so that the row stays short; the row wrapped on several
+        lines when the panel is narrow."""
         if not actions:
             return
-        row = QHBoxLayout()
+        from .flow import FlowLayout
+        row = FlowLayout()                        # wrapped on several lines when the panel is narrow
         row.setContentsMargins(0, 8, 0, 0)
         groups: dict[str, list[tuple[str, str]]] = {}
         for ident, label in actions:
@@ -178,7 +180,6 @@ class PropertiesPanel(QScrollArea):
             else:
                 b.clicked.connect(lambda _=False, i=ident: self.action.emit(i))
             row.addWidget(b)
-        row.addStretch(1)
         w = QWidget()
         w.setLayout(row)
         self.layout_.addWidget(w)

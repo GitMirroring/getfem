@@ -294,6 +294,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `getfem_gui/app/viewer.py`, `scene.py` | 3D view and the PyVista scenes (fields: isolines, arrows, cut lines) |
 | `getfem_gui/app/scene.py` (curved elements) | `surface`, `_wire`: the faces of quadratic cells subdivided (VTK's nonlinear subdivision) and their edges sampled on their parabolas, at the level of the *Curved* control of the view |
 | `getfem_gui/app/qtplotter.py` | the 3D view widget: VTK's Qt render window interactor, made a PyVista plotter |
+| `getfem_gui/app/flow.py` | a flow layout: the action buttons of the panel wrapped on several lines |
 | `getfem_gui/app/plot.py` | small line plot (QPainter) for the values along a cut line |
 | `getfem_gui/app/jobs.py` | meshing and solving through QProcess (output, interruption) |
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |

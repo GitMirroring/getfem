@@ -785,3 +785,30 @@ def test_materials_from_the_library_in_the_window():
     assert "Add from a library" in labels
     assert win.model["materials"][0]["properties"]["k"] == 0.25 and win.errors == []
     close(win)
+
+
+def test_action_buttons_wrapped():
+    """The action buttons of a node on several lines when the panel is
+    narrow, none beyond its right side, not overlapping."""
+    from PySide6.QtWidgets import QPushButton
+    from getfem_gui.app.window import MainWindow
+    a = app()
+    win = MainWindow(EXAMPLES / "l_bracket.json")
+    try:
+        win.resize(1200, 800)
+        win.show()
+        win.select(("geometries", 0, "source", "shape", "of", 0))
+        a.processEvents()
+        bs = sorted((b for b in win.props.findChildren(QPushButton) if b.objectName().startswith("action:")),
+                    key=lambda b: (b.geometry().y(), b.geometry().x()))
+        rows = sorted({b.geometry().y() for b in bs})
+        assert len(bs) >= 4 and len(rows) >= 2
+        width = bs[0].parentWidget().width()
+        assert all(b.geometry().right() < width for b in bs)
+        for b1, b2 in zip(bs, bs[1:]):
+            if b1.geometry().y() == b2.geometry().y():
+                assert b2.geometry().x() > b1.geometry().right()
+    finally:
+        win.setWindowModified(False)
+        win.close()
+
