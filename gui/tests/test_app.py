@@ -204,6 +204,67 @@ def test_command_line_default():
     assert project["project"]["scripts"]["getfem_gui"] == "getfem_gui.cli:main"
 
 
+_QTPLOTTER_CHECK = """
+import pyvista as pv
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication
+from getfem_gui.app.qtplotter import BasePlotter, QtPlotter
+app = QApplication([])
+w = QtPlotter()
+assert isinstance(w, BasePlotter) and w.interactor is w and w.iren is not None
+w.resize(400, 300)
+w.add_mesh(pv.Sphere(), name="sphere")
+w.view_isometric()
+w.render()
+assert "sphere" in w.actors
+cam = w.camera_position
+
+def send(kind, x, buttons):
+    QApplication.sendEvent(w, QMouseEvent(kind, QPointF(x, 150), QPointF(x, 150), Qt.MouseButton.LeftButton,
+                                          buttons, Qt.KeyboardModifier.NoModifier))
+    app.processEvents()
+send(QEvent.Type.MouseButtonPress, 150, Qt.MouseButton.LeftButton)
+for x in range(160, 260, 20):
+    send(QEvent.Type.MouseMove, x, Qt.MouseButton.LeftButton)
+send(QEvent.Type.MouseButtonRelease, 260, Qt.MouseButton.NoButton)
+assert w.camera_position != cam                   # turned by VTK's trackball style
+w.close()
+w.render()                                        # closed: nothing happens
+app.processEvents()
+print("QTPLOTTER OK")
+"""
+
+
+def test_qtplotter_without_pyvistaqt():
+    """The 3D view is VTK's own Qt widget made a PyVista plotter: no
+    pyvistaqt anywhere; the widget is a plotter (meshes, camera) and its
+    mouse events go to VTK's interactor. Run apart, with the Qt offscreen
+    platform and without X display: VTK must then render without window
+    (EGL or OSMesa); otherwise (an X-only VTK) the check is skipped."""
+    import re
+    import subprocess
+    src = Path(__file__).resolve().parents[1] / "getfem_gui"
+    imports = [p.name for p in src.rglob("*.py")
+               if re.search(r"^\s*(from|import) pyvistaqt", p.read_text(encoding="utf-8"), re.M)]
+    assert not imports, imports
+    try:
+        import pyvista  # noqa: F401
+        import PySide6  # noqa: F401
+    except ImportError:
+        return
+    env = {k: v for k, v in os.environ.items() if k not in ("DISPLAY", "WAYLAND_DISPLAY")}
+    env.update(QT_QPA_PLATFORM="offscreen", PYTHONPATH=os.pathsep.join(
+        [str(src.parent)] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]))
+    kind = subprocess.run([sys.executable, "-c", "import vtk; print(vtk.vtkRenderWindow().GetClassName())"],
+                          env=env, capture_output=True, text=True).stdout.strip()
+    if "X" in kind or not kind:                       # vtkXOpenGLRenderWindow: needs a real window
+        return
+    r = subprocess.run([sys.executable, "-c", _QTPLOTTER_CHECK], env=env, capture_output=True, text=True,
+                       timeout=120)
+    assert "QTPLOTTER OK" in r.stdout, r.stderr[-3000:]
+
+
 def test_click_filter():
     """Clicks are seen at the Qt level: press and release without moving."""
     from PySide6.QtCore import QEvent, QPointF, Qt

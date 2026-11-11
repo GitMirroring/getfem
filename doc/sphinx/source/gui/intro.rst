@@ -36,9 +36,11 @@ Requirements
   Some features need recent additions to the |gf| mesher: polygons, ellipses,
   extrusions and revolutions of 2D objects (an error message says so when
   the installed |gf| lacks them);
-* for the window: PySide6, and PyVista with pyvistaqt for the 3D view
-  (``pip install pyside6 pyvista pyvistaqt``). The command line does not
-  need them;
+* for the window: PySide6, and PyVista (with VTK) for the 3D view
+  (``pip install pyside6 pyvista``; on Debian, the packages
+  ``python3-pyside6.*`` and ``python3-pyvista``). The 3D view is the Qt
+  widget of VTK itself (pyvistaqt is not needed). The command line does
+  not need them;
 * optional: |gmsh| (``pip install gmsh``), the default mesher of the
   constructive and CAD geometries, also used to read CAD files and to export
   geometries as STEP, IGES or BREP; Netgen (``pip install netgen-mesher``).
@@ -49,7 +51,7 @@ from there, which gives the command ``getfem_gui``::
 
   pip install -e gui              # from the sources of GetFEM (editable: the examples
                                   # and the library of materials stay where they are)
-  pip install -e "gui[window]"    # with PySide6, PyVista and pyvistaqt
+  pip install -e "gui[window]"    # with PySide6 and PyVista
 
 Starting
 --------

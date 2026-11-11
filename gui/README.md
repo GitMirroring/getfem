@@ -15,9 +15,11 @@ is neither compiled nor installed by `make` / CMake; `pip install -e gui`
 (from the sources of GetFEM; `pyproject.toml`) installs it with the command
 `getfem_gui` (`getfem_gui [model.json]` opens the window). It requires Python 3
 (tested with 3.13), NumPy and the `getfem` module; Gmsh (`pip install gmsh`)
-is optional. The graphical interface needs PySide6, and PyVista with
-pyvistaqt for the 3D view (`pip install pyside6 pyvista pyvistaqt`); the core
-and the command line do not.
+is optional. The graphical interface needs PySide6, and PyVista (with VTK)
+for the 3D view (`pip install pyside6 pyvista`; on Debian, the packages
+python3-pyside6.* and python3-pyvista); the core and the command line do
+not. The 3D view is VTK's own Qt widget (`vtkmodules.qt`), made a PyVista
+plotter in `app/qtplotter.py`: pyvistaqt is not needed.
 
 The user documentation is part of the GetFEM documentation
 (`doc/sphinx/source/gui`, "User documentation of the graphical interface").
@@ -261,8 +263,8 @@ dependency, `app/scene.py` only needs PyVista, and `app/` holds the Qt code.
 `tests/test_app.py` drives the window with the Qt `offscreen` platform; the
 3D view is then replaced by a placeholder, or, with
 `GETFEM_GUI_OFFSCREEN_3D=1` (and an X server such as `xvfb-run`), by an
-off-screen PyVista plotter, so that only the embedding of the pyvistaqt
-widget itself needs a real display.
+off-screen PyVista plotter, so that only the embedding of the Qt widget
+itself (`app/qtplotter.py`) needs a real display.
 
 ## Layout
 
@@ -284,7 +286,8 @@ widget itself needs a real display.
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
-| `getfem_gui/app/viewer.py`, `scene.py` | 3D view (pyvistaqt) and the PyVista scenes (fields: isolines, arrows, cut lines) |
+| `getfem_gui/app/viewer.py`, `scene.py` | 3D view and the PyVista scenes (fields: isolines, arrows, cut lines) |
+| `getfem_gui/app/qtplotter.py` | the 3D view widget: VTK's Qt render window interactor, made a PyVista plotter |
 | `getfem_gui/app/plot.py` | small line plot (QPainter) for the values along a cut line |
 | `getfem_gui/app/jobs.py` | meshing and solving through QProcess (output, interruption) |
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |

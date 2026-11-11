@@ -15,7 +15,7 @@
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
 
-"""The 3D view: a PyVista plotter embedded in Qt (pyvistaqt).
+"""The 3D view: a PyVista plotter embedded in Qt (qtplotter.py, VTK's Qt widget).
 
 Without PyVista (or when GETFEM_GUI_NO_3D is set, e.g. for tests), a plain
 text placeholder is shown instead, and the rest of the window still works.
@@ -42,9 +42,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, Q
 def prepare_opengl() -> None:
     """Process-wide OpenGL settings, to be applied before any window exists.
 
-    Recent pyvistaqt (>= 0.13) renders through a QOpenGLWidget; on Wayland its
-    context must match the default format of the top-level window, otherwise
-    the view stays black. This is the format of VTK's QVTKRenderWindowAdapter:
+    When VTK's Qt widget renders through a QOpenGLWidget
+    (vtkmodules.qt.QVTKRWIBase), on Wayland its context must match the
+    default format of the top-level window, otherwise the view stays black. This is the format of VTK's QVTKRenderWindowAdapter:
     desktop OpenGL 3.2 core (not GLES, whose GLSL rejects VTK's shaders); VTK
     renders into its own framebuffers, hence the minimal buffers.
     """
@@ -85,12 +85,9 @@ def _load_plotter(parent):
         plotter = pv.Plotter(off_screen=True, window_size=(800, 600))
         plotter.set_background("white", top="#dfe6ee")
         return plotter, QLabel("(off-screen 3D view)")
-    # The window is PySide6: pyvistaqt (through qtpy) must use the same binding,
-    # whatever QT_API says in the environment (e.g. pyqt5 set by another tool).
-    os.environ["QT_API"] = "pyside6"
-    from pyvistaqt import QtInteractor  # noqa: PLC0415
     from . import scene  # noqa: F401, PLC0415  (fails early if pyvista is missing)
-    plotter = QtInteractor(parent)
+    from .qtplotter import QtPlotter  # noqa: PLC0415  (VTK's own Qt widget: no pyvistaqt)
+    plotter = QtPlotter(parent)
     plotter.set_background("white", top="#dfe6ee")
     # Multi-sampling renders thin lines (element edges) much better than FXAA,
     # which is only a fallback for drivers without multi-sampled framebuffers.
@@ -260,7 +257,7 @@ class Viewer(QWidget):
 
     def _placeholder(self, text: str) -> None:
         """Without 3D view: the reason stays visible, with the current message."""
-        hint = ("Install pyvista and pyvistaqt (pip install pyvista pyvistaqt); "
+        hint = ("Install pyvista (pip install pyvista; Debian: python3-pyvista); "
                 "the details are in the Messages tab.")
         self.placeholder.setText(f"{self._reason}\n{hint}" + (f"\n\n{text}" if text else ""))
 

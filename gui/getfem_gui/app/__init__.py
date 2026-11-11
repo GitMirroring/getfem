@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
         print(f"error: the graphical interface requires PySide6, which cannot be imported by\n"
               f"    {sys.executable} (Python {sys.version.split()[0]})\n"
               f"    {type(exc).__name__}: {exc}\n"
-              f"Install it for this interpreter: {sys.executable} -m pip install pyside6 pyvista pyvistaqt",
+              f"Install it for this interpreter: {sys.executable} -m pip install pyside6 pyvista",
               file=sys.stderr)
         return 1
     from .viewer import prepare_opengl
