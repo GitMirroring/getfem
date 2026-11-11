@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 import html
+import re
 import json
 import tempfile
 from pathlib import Path
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         self.props.viewChanged.connect(self._result_view_changed)
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
+        self.viewer.handleClicked.connect(self._handle_clicked)
         self.viewer.regionClicked.connect(self._region_clicked)
         self.viewer.faceClicked.connect(self._face_clicked)
         self.viewer.cutDrawn.connect(lambda ab: self._set_cut(ab))
@@ -717,8 +719,9 @@ class MainWindow(QMainWindow):
             k = c.get("vertex", 1)
             sides = {f"side{(k - 2) % n + 1}", f"side{k}"} if n else set()
         highlighted = [p for p in pieces if p.side.shape == src and p.side.side in sides]
-        return title.split(" — ")[0] + f" — constraint: {sketch.label(c)}", shape, pieces, highlighted, \
-            domain, pickable
+        hint = E.constraint_pick_hint(self.model, path)
+        return title.split(" — ")[0] + f" — constraint: {sketch.label(c)}" + (f" ({hint})" if hint else ""), \
+            shape, pieces, highlighted, domain, "edges"
 
     def _preview_of(self, path):
         if path[:1] in (("meshes",), (E.RESULTS,)):
@@ -1020,10 +1023,50 @@ class MainWindow(QMainWindow):
         for n in notes:
             self._log(n)
 
+    def _constraint_pick(self, kind: str, k: int) -> bool:
+        """A side or a vertex of the polygon clicked while one of its
+        constraints is selected: set in it (for a pair of sides, the clicks
+        set the side, then the other side, in turn)."""
+        path = self.current_path()
+        if E.constraint_owner(path) is None:
+            return False
+        nxt = getattr(self, "_pick_next", None)
+        other = nxt is not None and nxt[0] == path and nxt[1] == "other"
+        before = copy.deepcopy(self.model)
+        what = E.pick_for_constraint(self.model, path, kind, k, other)
+        if what is None:
+            self.model = before
+            self.state.setText(f"Not for this constraint: {E.constraint_pick_hint(self.model, path)}")
+            return True
+        self._pick_next = (path, "side" if other else "other")
+        self._undo.append(before)
+        self._redo.clear()
+        self._update_undo()
+        self._changed(select=path)
+        self.state.setText(f"Constraint: {what}")
+        return True
+
+    def _handle_clicked(self, name: str) -> None:
+        """A handle clicked: a vertex (or a side, by its middle or a point of
+        its spline) for the selected constraint."""
+        if re.fullmatch(r"v\d+", name):
+            self._constraint_pick("vertex", int(name[1:]) + 1)
+        elif re.fullmatch(r"m\d+", name):
+            self._constraint_pick("side", int(name[1:]) + 1)
+        elif re.fullmatch(r"s\d+_\d+", name):
+            self._constraint_pick("side", int(name[1:].split("_")[0]) + 1)
+
     def _edge_clicked(self, piece):
         """A click on an edge of the preview: toggles it in the selected
-        selection, or in the support of the selected condition / output."""
+        selection, or in the support of the selected condition / output; a
+        side of the polygon of the selected constraint: set in it."""
         path = self.current_path()
+        poly = E.constraint_owner(path)
+        if poly is not None:
+            root = E.profile_root(poly) or tuple(poly[:4])
+            if piece.side.shape == tuple(poly[len(root) + 1::2]) and re.fullmatch(r"side\d+", piece.side.side):
+                self._constraint_pick("side", int(piece.side.side[4:]))
+            return
         if E.can_pick_edges(self.model, path):
             before = copy.deepcopy(self.model)
             name, created = E.pick_edge_for_item(self.model, path, piece.side.ref)

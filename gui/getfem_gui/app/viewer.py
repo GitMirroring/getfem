@@ -212,6 +212,7 @@ class Viewer(QWidget):
     cutCleared = Signal()
     escaped = Signal()                    # Escape pressed in the view (drawing stopped)
     handleAction = Signal(str)            # an editing action chosen in the menu of a handle
+    handleClicked = Signal(str)           # a handle clicked (pressed and released without moving)
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -728,6 +729,7 @@ class Viewer(QWidget):
         if d[i] > 9 * px:
             return False
         self._grabbed = i
+        self._grabbed_at = (world[0], world[1], px)
         if not self._draw_step:
             self._draw_step = self._grid_fixed or G.grid_step(px * max(self.view_widget.width(), 100))
         self._draw_handles(active=i)
@@ -751,6 +753,10 @@ class Viewer(QWidget):
         point = self._snapped(world)
         self.draw_cancel()
         self._draw_handles()
+        x0, y0, px = getattr(self, "_grabbed_at", (None, None, 0))
+        if x0 is not None and np.hypot(world[0] - x0, world[1] - y0) <= 3 * px:   # not moved: a click
+            self.handleClicked.emit(name)
+            return
         self.handleMoved.emit(name, point)
 
     def set_drawing(self, enabled: bool) -> None:

@@ -240,7 +240,11 @@ between the two sides at a vertex, parallel or perpendicular sides, sides
 of equal length, a vertex fixed at a point, a vertex on a vertex of
 another polygon of the same tree. A new constraint holds as the polygon is
 drawn (its value is measured, rounded; the side is the one that fits
-best); its side, vertex or value are then changed in its form. The values
+best); its side, vertex or value are then changed in its form, or by
+clicks in the view while it is selected: a side (or the handle in its
+middle) for a constraint of a side; for two sides, the first click sets the
+side, the next one the other side, and so on in turn; a vertex (its handle)
+for a constraint of a vertex (a fixed vertex: fixed where it is). The values
 may be parameters: ``"value": "L"`` makes the length follow ``L``. See
 :ref:`gui-ref-constraints` for the keys.
 

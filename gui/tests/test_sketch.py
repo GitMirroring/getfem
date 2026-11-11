@@ -217,6 +217,31 @@ def test_window():
             win._handle_moved("v3", [0.9, 0.7])                   # its size is the parameter a: kept
             assert win.model["parameters"][0]["value"] == 0.5     # a is a parameter: the square keeps its size
             assert np.allclose(resolved_points(win.model)[2], [0.5, 0.5], atol=1e-6)
+            # the sides and vertices of a constraint picked in the view
+            win.select(ROOT + ("constraints", 5))                 # equal sides: side, then the other side
+            assert "click a side, then the other side" in win._preview(win.current_path())[0]
+            side3 = next(p for p in v._pieces if p.side.side == "side3")
+            v.pick_world(side3.points(3)[1] * 0.98 + 0.02 * side3.points(3)[0])   # near its middle
+            c = E.get_at(win.model, ROOT + ("constraints", 5))
+            assert c["side"] == 3 and c["other"] == 2 and win.state.text() == "Constraint: side 3"
+            mid = dict(v._handles)["m3"]                          # the middle handle of a side: the side
+            assert v.handle_press(mid)
+            v.handle_release(mid)
+            c = E.get_at(win.model, ROOT + ("constraints", 5))
+            assert c["side"] == 3 and c["other"] == 4 and win.state.text() == "Constraint: other side 4"
+            win.select(ROOT + ("constraints", 6))                 # the fixed vertex: a vertex clicked
+            p2 = dict(v._handles)["v1"]
+            assert v.handle_press(p2)
+            v.handle_release(p2)
+            c = E.get_at(win.model, ROOT + ("constraints", 6))
+            assert c["vertex"] == 2 and np.allclose(c["at"], p2, atol=1e-5)
+            assert win.state.text() == "Constraint: vertex 2"
+            win.select(ROOT + ("constraints", 0))                 # a vertex for a side constraint: refused
+            p3 = dict(v._handles)["v2"]
+            assert v.handle_press(p3)
+            v.handle_release(p3)
+            assert E.get_at(win.model, ROOT + ("constraints", 0))["side"] == 1
+            assert win.state.text().startswith("Not for this constraint: click its side")
         finally:
             win.setWindowModified(False)
             win.close()

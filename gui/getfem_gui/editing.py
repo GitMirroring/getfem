@@ -3322,6 +3322,39 @@ def _default_constraint(model: dict, path: Path, t: str) -> dict:
     return {"type": t, "vertex": int(best[1]) + 1, "shape": list(best[2]), "other": int(best[3]) + 1}
 
 
+def constraint_pick_hint(model: dict, path: Path) -> str:
+    """What a click in the view sets for the constraint at path."""
+    t = get_at(model, path, {}).get("type")
+    if t in SK.PAIR_TYPES:
+        return "click a side, then the other side"
+    if t in SK.SIDE_TYPES:
+        return "click its side"
+    if t in ("angle", "fixed"):
+        return "click its vertex"
+    if t == "coincident":
+        return "click its vertex (of this polygon)"
+    return ""
+
+
+def pick_for_constraint(model: dict, path: Path, kind: str, k: int, other: bool = False) -> str | None:
+    """A side or a vertex (kind "side" or "vertex", 1-based k) of its
+    polygon clicked for the constraint at path: its side (or, other, its
+    other side) or its vertex set. What was set (None: nothing applies)."""
+    c = get_at(model, path)
+    t = c.get("type")
+    if kind == "side" and (t in SK.SIDE_TYPES or t in SK.PAIR_TYPES):
+        key = "other" if other and t in SK.PAIR_TYPES else "side"
+        c[key] = k
+        return f"{'other side' if key == 'other' else 'side'} {k}"
+    if kind == "vertex" and t in SK.VERTEX_TYPES:
+        V = _resolved_points(model, constraint_owner(path)) if t == "fixed" else None
+        c["vertex"] = k
+        if V is not None and k <= len(V):      # fixed where it is now
+            c["at"] = [float(f"{x:.6g}") for x in V[k - 1]]
+        return f"vertex {k}"
+    return None
+
+
 def add_constraint(model: dict, path: Path, t: str) -> Path:
     shape = get_at(model, path)
     shape.setdefault("constraints", []).append(_default_constraint(model, path, t))
