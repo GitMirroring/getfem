@@ -281,7 +281,7 @@ def test_qtplotter_without_pyvistaqt():
     pyvistaqt anywhere; the widget is a plotter (meshes, camera) and its
     mouse events go to VTK's interactor. Run apart, with the Qt offscreen
     platform and without X display: VTK must then render without window
-    (EGL or OSMesa); otherwise (an X-only VTK) the check is skipped. It
+    (EGL or OSMesa); otherwise (X, macOS, Windows) the check is skipped. It
     renders from the event loop, once for several requests, and not before
     it is shown (that blocks on macOS)."""
     import re
@@ -300,7 +300,7 @@ def test_qtplotter_without_pyvistaqt():
         [str(src.parent)] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]))
     kind = subprocess.run([sys.executable, "-c", "import vtk; print(vtk.vtkRenderWindow().GetClassName())"],
                           env=env, capture_output=True, text=True).stdout.strip()
-    if "X" in kind or not kind:                       # vtkXOpenGLRenderWindow: needs a real window
+    if not any(k in kind for k in ("EGL", "OSMesa")):   # X, Cocoa, Win32: a real window needed
         return
     r = subprocess.run([sys.executable, "-c", _QTPLOTTER_CHECK], env=env, capture_output=True, text=True,
                        timeout=120)

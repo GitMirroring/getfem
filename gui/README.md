@@ -39,6 +39,11 @@ python -m getfem_gui examples/plate_hole_tension.json       # graphical interfac
 python -m pytest tests/        # or: python tests/test_heat.py
 ```
 
+The tests are also run by `make check` in a configured GetFEM tree (with the
+Python interface built there; `make -j8 check` runs them in parallel, `make -C
+gui check` runs only them): each test file is a test, skipped when what it
+needs is missing (pytest, PySide6, PyVista, Gmsh...).
+
 ## Overview
 
 ```

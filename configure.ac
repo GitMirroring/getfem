@@ -1254,6 +1254,7 @@ interface/tests/meshes/Makefile                                         \
 interface/tests/matlab-octave/Makefile                                  \
 interface/tests/matlab-octave/private/Makefile                          \
 interface/tests/python/Makefile                                         \
+gui/Makefile                                                            \
 getfem-config                                                           \
 getfem-config-notinstalled                                              \
 gmm-config)

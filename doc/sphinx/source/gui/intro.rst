@@ -73,7 +73,8 @@ the one of the interface. A start-up window shows the versions of the
 interface and of |gf| (``--no-splash``, or the environment variable
 ``GETFEM_GUI_NO_SPLASH``, removes it).
 
-The tests of the interface are in ``gui/tests`` (``python -m pytest tests``);
+The tests of the interface are in ``gui/tests`` (``python -m pytest tests``,
+also run by ``make check``, or ``make -C gui check`` for them only);
 those of the window run without a screen.
 
 Environment variables

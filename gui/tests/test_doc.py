@@ -144,6 +144,13 @@ def test_examples_quoted_results():
         assert all(v for v in _solve(name).values())
 
 
+def test_make_check_lists_the_tests():
+    """`make check` (gui/Makefile.am) runs every test file of the interface."""
+    here = Path(__file__).resolve().parent
+    listed = re.findall(r"tests/(test_\w+\.py)", (here.parent / "Makefile.am").read_text(encoding="utf-8"))
+    assert sorted(listed) == sorted(p.name for p in here.glob("test_*.py"))
+
+
 def test_sphinx_build():
     """The pages, with stubs for the labels of the rest of the GetFEM
     documentation, build without any warning."""
