@@ -516,10 +516,14 @@ def _face_spec(prim: dict, ref: dict) -> dict:
                      "normal": a, "radius": r}, **place)
     if t == "extrusion" and f in ("bottom", "top"):
         z = sorted(float(v) for v in prim["z"])
-        return dict({"kind": "cap", "z": z[0] if f == "bottom" else z[1], "profile": prim["profile"]}, **place)
+        return dict({"kind": "cap", "z": z[0] if f == "bottom" else z[1],
+                     "profile": G2.polyline_profile(prim["profile"])}, **place)
     side = next(sd for sd in G2.sides(prim["profile"])
                 if (list(sd.shape), sd.side) == (list(ref["profile"]["shape"]), ref["profile"]["side"]))
-    curve = {"kind": side.kind, "a": [float(x) for x in side.a], "b": [float(x) for x in side.b]}
+    if side.kind == "spline":           # a chain of cubic Bezier curves (its control points)
+        curve = {"kind": "bezier", "a": [[float(x) for x in p] for p in side.a], "b": []}
+    else:
+        curve = {"kind": side.kind, "a": [float(x) for x in side.a], "b": [float(x) for x in side.b]}
     if side.kind == "fillet":           # the arc of a fillet: on its circle (the rest is off the boundary)
         curve = {"kind": "arc", "a": curve["a"], "b": [float(side.b[0]), 0.0]}
     if t == "extrusion":
@@ -530,9 +534,47 @@ def _face_spec(prim: dict, ref: dict) -> dict:
 # The functions below are also copied into the meshing scripts (they use
 # numpy and math only).
 
+def bezier_nearest(C, Q):
+    """(distance, unit tangent) of the nearest points of a chain of cubic
+    Bezier curves (control points C, (3 m + 1) x 2) to the 2D points Q."""
+    C = np.asarray(C, float)
+    best = np.full(len(Q), np.inf)
+    tang = np.zeros((len(Q), 2))
+    for j in range((len(C) - 1) // 3):
+        P0, P1, P2, P3 = C[3 * j], C[3 * j + 1], C[3 * j + 2], C[3 * j + 3]
+
+        def at(u):
+            u = u[:, None]
+            s = 1 - u
+            return (s ** 3 * P0 + 3 * s * s * u * P1 + 3 * s * u * u * P2 + u ** 3 * P3,
+                    3 * (s * s * (P1 - P0) + 2 * s * u * (P2 - P1) + u * u * (P3 - P2)),
+                    6 * (s * (P2 - 2 * P1 + P0) + u * (P3 - 2 * P2 + P1)))
+        grid = np.linspace(0.0, 1.0, 33)
+        X = at(grid)[0]
+        u = grid[np.argmin(np.linalg.norm(Q[:, None, :] - X[None], axis=2), axis=1)]
+        d = np.linalg.norm(at(u)[0] - Q, axis=1)
+        for _ in range(12):            # Newton steps that get closer
+            X, D, D2 = at(u)
+            R = X - Q
+            f, df = np.sum(R * D, axis=1), np.sum(D * D, axis=1) + np.sum(R * D2, axis=1)
+            step = np.where(df > 0, -f / np.where(df > 0, df, 1.0), -np.sign(f) / 64)
+            un = np.clip(u + np.clip(step, -1 / 64, 1 / 64), 0.0, 1.0)
+            dn = np.linalg.norm(at(un)[0] - Q, axis=1)
+            better = dn < d
+            u, d = np.where(better, un, u), np.where(better, dn, d)
+        D = at(u)[1]
+        closer = d < best
+        best = np.where(closer, d, best)
+        tang = np.where(closer[:, None], D / np.maximum(np.linalg.norm(D, axis=1), 1e-300)[:, None], tang)
+    return best, tang
+
+
 def curve_distance(curve, Q):
-    """Distance of the 2D points Q (n x 2) to a side (segment, circle or
-    ellipse; for an ellipse, a first order estimate)."""
+    """Distance of the 2D points Q (n x 2) to a side (segment, circle,
+    ellipse or chain of cubic Bezier curves; for an ellipse, a first order
+    estimate)."""
+    if curve["kind"] == "bezier":
+        return bezier_nearest(curve["a"], Q)[0]
     a, b = np.asarray(curve["a"], float), curve["b"]
     if curve["kind"] == "segment":
         d = np.asarray(b, float) - a
@@ -551,6 +593,9 @@ def curve_distance(curve, Q):
 
 def curve_normal(curve, Q):
     """Unit normal of a side at the 2D points Q (near it)."""
+    if curve["kind"] == "bezier":
+        T = bezier_nearest(curve["a"], Q)[1]
+        return np.column_stack([-T[:, 1], T[:, 0]])
     a, b = np.asarray(curve["a"], float), curve["b"]
     if curve["kind"] == "segment":
         d = np.asarray(b, float) - a
@@ -659,4 +704,4 @@ def on_face(spec, Q, N, tol):
     return False
 
 
-FACE_FUNCTIONS = (curve_distance, curve_normal, profile_level, on_face)
+FACE_FUNCTIONS = (bezier_nearest, curve_distance, curve_normal, profile_level, on_face)

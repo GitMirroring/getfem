@@ -158,7 +158,8 @@ def write_stl(out: Path, P: np.ndarray, T: np.ndarray) -> None:
 
 def _outline(shape: dict) -> list:
     """The boundary pieces of a 2D shape: ("segment", a, b), ("arc", center,
-    radius, angle0, angle1) or ("ellipse", center, r1, r2, angle, t0, t1)."""
+    radius, angle0, angle1), ("ellipse", center, r1, r2, angle, t0, t1) or
+    ("bezier", control points ((3 m + 1) x 2), a chain of cubic curves)."""
     out = []
     for p in G2.pieces(shape):
         s = p.side
@@ -167,6 +168,8 @@ def _outline(shape: dict) -> list:
             out.append(("segment", a, b))
         elif s.kind == "arc":
             out.append(("arc", np.asarray(s.a, float), s.b[0], 2 * math.pi * p.t0, 2 * math.pi * p.t1))
+        elif s.kind == "spline":
+            out.append(("bezier", G2.bezier_part(np.asarray(s.a, float), p.t0, p.t1)))
         elif s.kind == "fillet":            # counterclockwise, from the smaller angle
             r, th0, sw = s.b
             a, b = sorted((th0 + sw * p.t0, th0 + sw * p.t1))
@@ -190,6 +193,13 @@ def svg(shape: dict) -> str:
         if piece[0] == "segment":
             _, a, b = piece
             paths.append(f"M {fx(a[0]):.9g} {fy(a[1]):.9g} L {fx(b[0]):.9g} {fy(b[1]):.9g}")
+            continue
+        if piece[0] == "bezier":
+            C = piece[1]
+            d = f"M {fx(C[0][0]):.9g} {fy(C[0][1]):.9g}"
+            for j in range((len(C) - 1) // 3):
+                d += " C " + " ".join(f"{fx(x):.9g} {fy(y):.9g}" for x, y in C[3 * j + 1:3 * j + 4])
+            paths.append(d)
             continue
         if piece[0] == "arc":
             _, c, r, a0, a1 = piece
@@ -219,7 +229,7 @@ def svg(shape: dict) -> str:
 
 def dxf(shape: dict) -> str:
     """DXF (R12) drawing of the outline of a 2D shape: LINE and ARC entities,
-    the pieces of ellipses as polylines."""
+    the pieces of ellipses and the splines as polylines."""
     out = ["0", "SECTION", "2", "ENTITIES"]
 
     def entity(kind, **codes):
@@ -238,6 +248,13 @@ def dxf(shape: dict) -> str:
         elif piece[0] == "arc":
             _, c, r, _, _ = piece
             entity("CIRCLE", c10=float(c[0]), c20=float(c[1]), c30=0.0, c40=float(r))
+        elif piece[0] == "bezier":
+            C = np.asarray(piece[1], float)
+            m = (len(C) - 1) // 3
+            out.extend(["0", "POLYLINE", "8", "0", "66", "1", "10", "0", "20", "0", "30", "0"])
+            for x, y in G2.bezier_points(C, np.linspace(0, 1, 32 * m + 1)):
+                out.extend(["0", "VERTEX", "8", "0", "10", f"{x:.12g}", "20", f"{y:.12g}", "30", "0"])
+            out.extend(["0", "SEQEND", "8", "0"])
         else:
             _, c, r1, r2, th, a0, a1 = piece
             n = max(16, int(math.ceil(96 * (a1 - a0) / (2 * math.pi))))

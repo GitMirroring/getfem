@@ -134,7 +134,9 @@ expression (``"L/2"``) is locked, and the status bar says so.
 A right click on a handle of a polygon proposes what applies to it: on a
 vertex, to remove it, to round it (a fillet, see :ref:`gui-geometries-fillets`)
 or to make it sharp again; on the middle of a side, to insert a vertex
-there; on the middle of an arc, to remove the fillet.
+there or to make the side curved (see :ref:`gui-geometries-splines`); on a
+point of a curved side, to insert another one, to remove it or to make the
+side straight; on the middle of an arc, to remove the fillet.
 
 Any shape of a boolean can be removed (right click in the tree); a boolean
 left with a single shape is replaced by it.
@@ -171,6 +173,51 @@ polygon cut or filled by disks and half planes (a reflex corner is filled
 by a polygon going about h into the shape, the disk then taken away), the ends of the arcs being
 given as vertices of the mesh (so that each face of the mesh lies on a side
 or on an arc). See ``examples/l_bracket.json``.
+
+.. _gui-geometries-splines:
+
+Curved sides (splines)
+^^^^^^^^^^^^^^^^^^^^^^
+
+A side of a polygon can be curved: a cubic spline from its first vertex to
+the next one, through points given in order. The vertices where the
+boundary must be smooth (tangent) are listed in ``"smooth"``:
+
+.. code-block:: text
+
+  {"type": "polygon", "points": [...],
+   "splines": [{"side": 2, "points": [[1.2, 0.35], [0.9, "y1"]]}],
+   "smooth": [3]}
+
+The spline goes through its points with a continuous curvature
+(parametrized by the lengths of its chords). At a smooth vertex, its end
+takes the direction of the straight side on the other side of the vertex
+(two splines meeting there: the direction from the point before the vertex
+to the point after it); otherwise the end is free (no curvature there).
+The points may be parameters, as the vertices.
+
+In the table of the vertices, the points of the spline of a side follow
+its first vertex (rows ``2.1``, ``2.2``... for the side 2), and the third
+column of the vertices at the ends of a curved side tells whether the
+boundary is smooth there (a fillet cannot round them). *Curved* makes the
+side after the selected vertex a spline, through a point a little off its
+middle, or straight again; *Insert* and *Remove* act on the selected point
+(a vertex inserted in a curved side is a point of its spline). In the view,
+the points of the splines are handles; a right click on one inserts
+another point after it, removes it or makes the side straight, a right
+click on the middle of a straight side makes it curved, on a vertex at an
+end of a curve makes it smooth or a corner. Removing a vertex next to a
+curved side makes its two sides one curve, through it.
+
+A curved side keeps its name (``side2``): it is selected as the other
+sides and gives a face of the extrusion or the revolution. The shape is
+exact for all the meshers: each spline is a chain of cubic Bezier curves,
+given as such to |gmsh|, Netgen and the GetFEM mesher (its ``polygon``
+object with curved sides, GetFEM patch "mesher: polygons with curved
+sides"), the points of the splines being vertices of the mesh. The export
+draws them as Bezier curves (SVG) or polylines (DXF). The constraints of a
+polygon (below) only see its vertices: a curved side keeps its shape
+relative to them only through its points, which do not move with them.
 
 .. _gui-geometries-constraints:
 

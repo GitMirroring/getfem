@@ -327,7 +327,8 @@ def test_middle_and_right_clicks():
             win.select(poly)
             menu = [label for label, _ in v.context_items([0.07, 0.04])]
             assert menu == ["Round vertex 2 (fillet)"]           # three vertices: none removed
-            assert E.handle_actions(win.model, poly, "m0") == [("Insert a vertex in side 1", "insert_vertex:0")]
+            assert E.handle_actions(win.model, poly, "m0") == [("Insert a vertex in side 1", "insert_vertex:0"),
+                                                                ("Make side 1 curved (a spline)", "spline:side:1")]
             dict(v.context_items([0.07, 0.04]))["Round vertex 2 (fillet)"]()
             fl = E.get_at(win.model, poly)["fillets"]
             assert len(fl) == 1 and fl[0]["vertex"] == 2 and 0 < fl[0]["radius"] < 0.01 and win.errors == []

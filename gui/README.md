@@ -313,6 +313,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
+| `tests/test_splines.py` | curved sides of polygons: geometry, format, meshers, 3D profiles, export, editing, table |
 | `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution) |
 
 ## Geometry, selections, meshes
@@ -472,6 +473,23 @@ and three half planes (convex corner) or united with a quadrilateral less
 a disk (reflex corner) — compositions on which its projection converges —
 and the ends of the arcs as fixed vertices (lines of vertices along the
 extruded or revolved arcs in 3D).
+
+## Curved sides of polygons
+
+A polygon may have `"splines"`: `[{"side": k, "points": [[x, y], ...]}]`, its
+side k a C2 cubic spline through these points (chord-length parameter), and
+`"smooth"`: `[k, ...]`, the vertices where the boundary is tangent (the end
+of a spline there takes the direction of the side on the other side; free
+ends have no curvature). `geometry2d.spline_controls` gives each spline as
+a chain of cubic Bezier curves: sides of kind `"spline"` (exact distance by
+Newton iterations, `curved_polygon_sdf`), and what the meshers get: Gmsh
+`addBezier`, Netgen `BezierCurve`, the GetFEM mesher its `polygon` object
+with curved sides (GetFEM patch "mesher: polygons with curved sides"), the
+points of the splines (and the smooth vertices) as fixed vertices. In the
+meshing scripts, the selections of these sides use `bezier_nearest`
+(geometry3d.py). The editing (the rows of the points in the vertex table,
+the handles `s<side>_<point>`, the renumbering with the vertices) is in
+`editing.py`.
 
 ## Constraints of polygons
 

@@ -1337,25 +1337,128 @@ def set_fillet(model: dict, path: Path, k: int, radius) -> None:
 def handle_actions(model: dict, path: Path, handle: str) -> list[tuple[str, str]]:
     """The editing actions of a handle of the primitive at path, for the
     menu of a right click on it: [(label, action)]. A vertex of a polygon:
-    remove it, round it or make it sharp again; the middle of a side: a
-    vertex there; the middle of an arc: remove the fillet."""
+    remove it, round it or make it sharp again (smooth or a corner at an end
+    of a spline); the middle of a side: a vertex there, or the side curved;
+    a point of a spline: another one, remove it, the side straight; the
+    middle of an arc: remove the fillet."""
     shape = get_at(model, path, {}) or {}
-    if shape.get("type") != "polygon" or not handle[1:].isdigit():
+    if shape.get("type") != "polygon":
+        return []
+    if handle[:1] == "s" and re.fullmatch(r"s\d+_\d+", handle):    # a point of a spline
+        i, p = (int(x) for x in handle[1:].split("_"))
+        return [(f"Insert a point after this one", f"spline:insert:{i + 1}:{p}"),
+                (f"Remove this point", f"spline:remove:{i + 1}:{p}"),
+                (f"Make side {i + 1} straight", f"spline:straight:{i + 1}")]
+    if not handle[1:].isdigit():
         return []
     i = int(handle[1:])
     n = len(shape.get("points") or [])
     if handle[0] == "v":
         out = [(f"Remove vertex {i + 1}", f"remove_vertex:{i}")] if n > 3 else []
-        if fillet_cells(model, path)[i] is None:
+        if near_spline(model, path, i + 1):
+            out.append((f"Make vertex {i + 1} a corner", f"smooth:{i + 1}") if i + 1 in (shape.get("smooth") or [])
+                       else (f"Make vertex {i + 1} smooth (tangent)", f"smooth:{i + 1}"))
+        elif fillet_cells(model, path)[i] is None:
             out.append((f"Round vertex {i + 1} (fillet)", f"fillet:vertex:{i + 1}"))
         else:
             out.append((f"Remove the fillet of vertex {i + 1}", f"fillet:sharp:{i + 1}"))
         return out
     if handle[0] == "m":
-        return [(f"Insert a vertex in side {i + 1}", f"insert_vertex:{i}")]
+        return [(f"Insert a vertex in side {i + 1}", f"insert_vertex:{i}"),
+                (f"Make side {i + 1} curved (a spline)", f"spline:side:{i + 1}")]
     if handle[0] == "f":
         return [(f"Remove the fillet of vertex {i}", f"fillet:sharp:{i}")]
     return []
+
+
+def spline_sides(model: dict, path: Path) -> dict:
+    """{side (1-based): index in "splines"} of the polygon at path."""
+    shape = get_at(model, path, {}) or {}
+    return {c["side"]: j for j, c in enumerate(shape.get("splines") or [])
+            if isinstance(c, dict) and isinstance(c.get("side"), int)}
+
+
+def near_spline(model: dict, path: Path, k: int) -> bool:
+    """Whether the vertex k (1-based) of the polygon at path is an end of a
+    spline (its third cell: smooth or not, instead of a fillet)."""
+    n = len((get_at(model, path, {}) or {}).get("points") or [])
+    sides = spline_sides(model, path)
+    return n > 0 and (k in sides or (k - 2) % n + 1 in sides)
+
+
+def polygon_rows(model: dict, path: Path) -> list[tuple]:
+    """The rows of the vertex table of the polygon at path: the vertices,
+    each followed by the points of the spline of the side after it:
+    ("vertex", i, row of vertex_rows) or ("spline", k, p, row) (side k,
+    1-based, its point p, 0-based)."""
+    rows = vertex_rows(model, path + ("points",))
+    sides = spline_sides(model, path)
+    out = []
+    for i, r in enumerate(rows):
+        out.append(("vertex", i, r))
+        j = sides.get(i + 1)
+        if j is not None:
+            out += [("spline", i + 1, p, q) for p, q in
+                    enumerate(vertex_rows(model, path + ("splines", j, "points")))]
+    return out
+
+
+def set_smooth(model: dict, path: Path, k: int, on: bool) -> None:
+    """The boundary of the polygon at path smooth at its vertex k (1-based)
+    or not."""
+    shape = get_at(model, path)
+    sm = sorted({x for x in shape.get("smooth") or [] if x != k} | ({k} if on else set()))
+    if sm:
+        shape["smooth"] = sm
+    else:
+        shape.pop("smooth", None)
+
+
+def _spline_point(model: dict, path: Path, k: int, after: int):
+    """A new point of the spline of the side k (1-based) of the polygon at
+    path, after its point `after` (-1: after the vertex k): on the curve,
+    in the middle of that part of it."""
+    from . import geometry2d as G
+    r = get_at(P.resolved(model), path)
+    C = G.spline_controls(r).get(k - 1)
+    if C is None:
+        raise ValueError(f"side {k} is not a spline")
+    m = (len(C) - 1) // 3
+    x, y = G.bezier_points(C, [(after + 1.5) / m])[0]
+    return [float(f"{x:.6g}"), float(f"{y:.6g}")]
+
+
+def make_spline(model: dict, path: Path, k: int) -> None:
+    """The side k (1-based) of the polygon at path made a spline: through a
+    point a little off the middle of the side, outward."""
+    from . import geometry2d as G
+    shape = get_at(model, path)
+    V = np.asarray(get_at(P.resolved(model), path)["points"], float)
+    n = len(V)
+    a, b = V[k - 1], V[k % n]
+    d = b - a
+    out = np.array([d[1], -d[0]]) * (1.0 if G.polygon_area(V) > 0 else -1.0)   # outward for the polygon
+    q = (a + b) / 2 + 0.15 * out
+    set_fillet(model, path, k, None)                       # (no fillet at the ends of a spline)
+    set_fillet(model, path, k % n + 1, None)
+    sp = [c for c in shape.get("splines") or [] if not (isinstance(c, dict) and c.get("side") == k)]
+    sp.append({"side": k, "points": [[float(f"{x:.6g}") for x in q]]})
+    shape["splines"] = sorted(sp, key=lambda c: c.get("side", 0) if isinstance(c, dict) else 0)
+
+
+def make_straight(model: dict, path: Path, k: int) -> None:
+    """The side k (1-based) of the polygon at path straight again; its ends
+    no longer smooth unless another spline is there."""
+    shape = get_at(model, path)
+    sp = [c for c in shape.get("splines") or [] if not (isinstance(c, dict) and c.get("side") == k)]
+    if sp:
+        shape["splines"] = sp
+    else:
+        shape.pop("splines", None)
+    n = len(shape.get("points") or [])
+    for v in (k, k % n + 1):
+        if not near_spline(model, path, v):
+            set_smooth(model, path, v, False)
 
 
 def vertex_rows(model: dict, path: Path) -> list[tuple]:
@@ -2010,6 +2113,8 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
                 out.append(("fillet:all", "Fillets: round all the corners"))
                 if shape.get("fillets"):
                     out.append(("fillet:remove", "Fillets: remove them"))
+                if shape.get("splines"):
+                    out.append(("spline:remove_all", "Curved sides: make them all straight"))
             if shape.get("type") in M.SHAPES_TRANSFORM:
                 out.append(("unwrap", f"Remove the {shape['type']} only"))
             if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
@@ -2168,8 +2273,23 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         if verb == "remove_vertex":
             if len(pts) <= 3:
                 raise ValueError("a polygon keeps at least three vertices")
+            n, v = len(pts), i + 1          # the vertex v (1-based): its sides v - 1 and v merged
+            sides = spline_sides(model, path)
+            before, after = (v - 2) % n + 1, v
+            merged = None
+            if before in sides or after in sides:   # one curved side, through the vertex
+                sp = get_at(model, path + ("splines",))
+                merged = [q for q in (sp[sides[before]]["points"] if before in sides else [])] + [pts[i]] + \
+                    [q for q in (sp[sides[after]]["points"] if after in sides else [])]
             del pts[i]
-            _vertex_removed(model, path, i, len(pts) + 1)
+            _vertex_removed(model, path, i, n)
+            if merged is not None:
+                shape = get_at(model, path)
+                k = v - 1 if v > 1 else n - 1
+                shape["splines"] = sorted((shape.get("splines") or []) + [{"side": k, "points": merged}],
+                                          key=lambda c: c.get("side", 0))
+        elif i + 1 in spline_sides(model, path):    # a curved side: a point of its spline, after the vertex
+            return do_action(model, path, f"spline:insert:{i + 1}:-1")
         else:                              # a new vertex in the middle of the side i
             r = get_at(P.resolved(model), path + ("points",))
             a, b = r[i], r[(i + 1) % len(r)]
@@ -2210,6 +2330,33 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return path
     if action.startswith("fillet:sharp:"):
         set_fillet(model, path, int(action.rsplit(":", 1)[1]), None)
+        return path
+    if action == "spline:remove_all":
+        shape = get_at(model, path)
+        shape.pop("splines", None)
+        shape.pop("smooth", None)
+        return path
+    if action.startswith("spline:side:"):        # the side k made a spline
+        make_spline(model, path, int(action.rsplit(":", 1)[1]))
+        return path
+    if action.startswith("spline:straight:"):
+        make_straight(model, path, int(action.rsplit(":", 1)[1]))
+        return path
+    if action.startswith(("spline:insert:", "spline:remove:")):     # a point of the spline of side k
+        verb, k, p = action.split(":")[1:]
+        k, p = int(k), int(p)
+        j = spline_sides(model, path).get(k)
+        if j is None:
+            raise ValueError(f"side {k} is not a spline")
+        pts = get_at(model, path + ("splines", j, "points"))
+        if verb == "remove":
+            del pts[p]
+        else:
+            pts.insert(p + 1, _spline_point(model, path, k, p))
+        return path
+    if action.startswith("smooth:"):              # the vertex k smooth, or a corner again
+        k = int(action.rsplit(":", 1)[1])
+        set_smooth(model, path, k, k not in (get_at(model, path).get("smooth") or []))
         return path
     if action == "fillet:remove":
         get_at(model, path).pop("fillets", None)
@@ -3233,6 +3380,23 @@ def _remap_constraints(model: dict, path: Path, side, vertex) -> None:
             kept.append(new)
     if "constraints" in poly:
         poly["constraints"] = kept
+    if poly.get("splines"):                    # the splines follow their sides (gone with them)
+        sp = []
+        for c in poly["splines"]:
+            k = side(c["side"]) if isinstance(c, dict) and isinstance(c.get("side"), int) else None
+            if k is not None:
+                sp.append(dict(c, side=k))
+        if sp:
+            poly["splines"] = sorted(sp, key=lambda c: c["side"])
+        else:
+            poly.pop("splines")
+    if poly.get("smooth"):                     # the smooth vertices follow their vertices
+        sm = sorted(k for k in (vertex(k) if isinstance(k, int) else None for k in poly["smooth"])
+                    if k is not None)
+        if sm:
+            poly["smooth"] = sm
+        else:
+            poly.pop("smooth")
     if poly.get("fillets"):                    # the fillets follow their vertices
         fl = []
         for f in poly["fillets"]:
@@ -3354,13 +3518,15 @@ def _local_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
             return []
         V = [[float(x), float(y)] for x, y in s["points"]]
         n = len(V)
-        mids = [[(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2] for i in range(n)]
-        center = [sum(v[0] for v in V) / n, sum(v[1] for v in V) / n]
         from . import geometry2d as G
+        curved = G.spline_points(s)                         # the points of the splines (side i, 0-based)
+        mids = [(f"m{i}", [(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2])
+                for i in range(n) if i not in curved]
+        through = [(f"s{i}_{p}", q.tolist()) for i in sorted(curved) for p, q in enumerate(curved[i])]
+        center = [sum(v[0] for v in V) / n, sum(v[1] for v in V) / n]
         rounded = G._fillets_of(s)                          # the middles of the arcs: their radii
         arcs = [(f"f{f.vertex}", f.points(3)[1].tolist()) for f in rounded[1]] if rounded else []
-        return [(f"v{i}", v) for i, v in enumerate(V)] + [(f"m{i}", m) for i, m in enumerate(mids)] \
-            + arcs + [("center", center)]
+        return [(f"v{i}", v) for i, v in enumerate(V)] + mids + through + arcs + [("center", center)]
     if s["type"] == "rectangle":
         (x0, y0), (x1, y1) = s["min"], s["max"]
         return [("min", [x0, y0]), ("xmax_ymin", [x1, y0]), ("max", [x1, y1]), ("xmin_ymax", [x0, y1]),
@@ -3431,6 +3597,14 @@ def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, 
     return notes
 
 
+def _check_polygon(prim: dict) -> None:
+    """A polygon moved by a handle: still simple (its curved sides too)."""
+    from . import geometry2d as G
+    problem = G.spline_problem(prim) if prim.get("splines") else G.polygon_problem(prim["points"])
+    if problem:
+        raise ValueError(f"not a simple polygon ({problem})")
+
+
 def _set_number(model: dict, key: Path, value: float, notes: list[str]) -> None:
     """Set a numerical value: a number is replaced; a bare parameter name sets
     that parameter (when it is a number itself); an expression is locked."""
@@ -3494,6 +3668,16 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
             return notes
         if shape["type"] == "polygon" and handle[:1] == "f" and handle[1:].isdigit():
             return _move_fillet(model, path, int(handle[1:]), x, y, r, notes)
+        if shape["type"] == "polygon" and re.fullmatch(r"s\d+_\d+", handle):     # a point of a spline
+            i, p = (int(v) for v in handle[1:].split("_"))
+            j = spline_sides(model, path)[i + 1]
+            trial = copy.deepcopy(r)
+            trial["splines"][j]["points"][p] = [x, y]
+            _check_polygon(trial)
+            for k, v in enumerate((x, y)):
+                if abs(v - r["splines"][j]["points"][p][k]) > 1e-15 * max(1.0, abs(v)):
+                    _set_number(model, path + ("splines", j, "points", p, k), v, notes)
+            return notes
         if shape["type"] == "polygon":
             V = [list(map(float, v)) for v in r["points"]]
             if shape.get("constraints") and not handle.startswith("m"):
@@ -3505,6 +3689,11 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
                     for k in range(2):
                         if abs(v[k] - old[k]) > 1e-15 * max(1.0, abs(old[k])):
                             _set_number(model, path + ("points", i, k), v[k], notes)
+                for j, c in enumerate(r.get("splines") or []):       # the points of the splines with them
+                    for p, q in enumerate(c.get("points") or []):
+                        for k, d in enumerate((x - cx, y - cy)):
+                            if abs(d) > 1e-15 * max(1.0, abs(q[k])):
+                                _set_number(model, path + ("splines", j, "points", p, k), q[k] + d, notes)
                 return notes
             if handle.startswith("m"):
                 i = int(handle[1:])
@@ -3518,10 +3707,7 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
                 return notes
             i = int(handle[1:])
             V[i] = [x, y]
-            from . import geometry2d as G
-            problem = G.polygon_problem(V)
-            if problem:
-                raise ValueError(f"not a simple polygon ({problem})")
+            _check_polygon(dict(r, points=V))
             for k, v in enumerate((x, y)):
                 if abs(v - r["points"][i][k]) > 1e-15 * max(1.0, abs(v)):
                     _set_number(model, path + ("points", i, k), v, notes)

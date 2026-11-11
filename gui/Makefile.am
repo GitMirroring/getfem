@@ -44,6 +44,7 @@ GUI_TESTS =                                     \
     tests/test_polygon.py                       \
     tests/test_scene.py                         \
     tests/test_sketch.py                        \
+    tests/test_splines.py                       \
     tests/test_transforms.py                    \
     tests/test_work_planes.py
 

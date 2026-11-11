@@ -79,6 +79,30 @@ def _points(shape):
     return [_floats(p) for p in shape["points"]]
 
 
+def _gf_polygon(shape) -> str:
+    """The GetFEM mesher object of a polygon without its fillets: its sides
+    straight, or, with splines, the chains of cubic Bezier curves of these
+    sides (the points of the splines are then vertices too, and the
+    control points of each curve are given: None for a straight side)."""
+    pts = _points(shape)
+    controls = G.spline_controls(shape)
+    if not controls:
+        return f"gf.MesherObject('polygon', np.array({pts}).T)"
+    V, C = [], []
+    for i, p in enumerate(pts):
+        V.append(p)
+        if i not in controls:
+            C.append([None] * 4)
+            continue
+        B = controls[i].tolist()
+        for j in range((len(B) - 1) // 3):
+            if j:
+                V.append(B[3 * j])
+            C.append(B[3 * j + 1] + B[3 * j + 2])
+    return (f"gf.MesherObject('polygon', np.array({V}).T, "
+            f"np.array({C}, dtype=float).T)   # curved sides: cubic Bezier curves")
+
+
 # ------------------------------------------------------------------ construction
 
 def _build_structured(model, geom, mesh, w):
@@ -101,7 +125,7 @@ def _gf_shape(shape, w) -> str:
     elif t == "polygon" and G.fillet_radii(shape, len(shape["points"])):
         _gf_rounded_polygon(shape, v, w)
     elif t == "polygon":
-        w(f"{v} = gf.MesherObject('polygon', np.array({_points(shape)}).T)")
+        w(f"{v} = {_gf_polygon(shape)}")
     elif t == "ellipse":
         r1, r2 = _floats(shape["radii"])
         w(f"{v} = gf.MesherObject('ellipse', {_floats(shape['center'])}, {r1!r}, {r2!r}, "
@@ -135,14 +159,15 @@ def _gf_shape(shape, w) -> str:
 
 def _fillet_lines_3d(shape, h: float) -> np.ndarray:
     """Points every h or so along the lines where the arcs of the fillets of
-    the profiles of extrusions and revolutions meet the sides (3 x n), on
-    the boundary of the solid: fixed vertices for the GetFEM mesher, so that
-    each face of the mesh is on a side or on an arc."""
+    the profiles of extrusions and revolutions meet the sides, and along the
+    points and ends of their splines (3 x n), on the boundary of the solid:
+    fixed vertices for the GetFEM mesher, so that each face of the mesh is
+    on a side, an arc or a curve."""
     pts = []
     for _, prim in G3.primitives(shape):
         if prim.get("type") not in ("extrusion", "revolution"):
             continue
-        J = G.fillet_ends(prim["profile"])
+        J = G.tangent_points(prim["profile"])
         if not len(J):
             continue
         if prim["type"] == "extrusion":
@@ -206,9 +231,9 @@ def _gf_rounded_polygon(shape, v, w):
     pts = _points(shape)
     _, found, _ = G.fillets(pts, G.fillet_radii(shape, len(pts)))
     V = np.asarray(pts, float)
-    base = {"type": "polygon", "points": pts}
+    base = {k: shape[k] for k in ("type", "points", "splines", "smooth") if k in shape}
     w(f"# polygon with rounded vertices {[f.vertex for f in found]}")
-    w(f"{v} = gf.MesherObject('polygon', np.array({pts}).T)")
+    w(f"{v} = {_gf_polygon(base)}")
     for f in found:
         c, t1, t2 = (np.asarray(x, float) for x in (f.center, f.t1, f.t2))
         vx = V[f.vertex - 1]
@@ -246,8 +271,8 @@ def _build_getfem(model, geom, mesh, w):
     top = _gf_shape(shape, w)
     h, K = float(mesh['h']), int(mesh.get('order', 1))
     V = G.interface_points(shape, h) if src["type"] == "csg" and src.get("dim") == 2 else np.zeros((2, 0))
-    if src["type"] == "csg" and src.get("dim") == 2:     # the ends of the fillets: vertices, so that
-        J = G.fillet_ends(shape)                          # each face is on a side or on an arc
+    if src["type"] == "csg" and src.get("dim") == 2:     # the ends of the fillets and splines: vertices,
+        J = G.tangent_points(shape)                       # so that each face is on a side or on a curve
         if len(J):
             V = np.hstack([V, np.array([p for p in J if all(np.linalg.norm(p - q) > 1e-9 * h for q in V.T)],
                                        float).T.reshape(2, -1)])
@@ -259,7 +284,7 @@ def _build_getfem(model, geom, mesh, w):
         w("m.optimize_structure()   # the points numbered without holes (some removed by the mesher)")
         return
     w("# Fixed vertices along the interfaces between regions (sides of shapes")
-    w("# inside the domain), and at the ends of the fillets: the elements follow")
+    w("# inside the domain), and at the ends of the fillets and splines: the elements follow")
     w("# them, each one is in one region, each boundary face on one side")
     rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in V)
     w(f"interface_vertices = np.array([{rows}])")
@@ -294,6 +319,27 @@ def _occ_shape(shape, dim, w) -> str:
         w(f"{v} = [(2, {occ}.addDisk({cx!r}, {cy!r}, 0.0, {r1!r}, {r2!r}))]")
         if th:
             w(f"{occ}.rotate({v}, {cx!r}, {cy!r}, 0.0, 0.0, 0.0, 1.0, {th!r})")
+    elif t == "polygon" and G.spline_points(shape):
+        w("# polygon with curved sides: lines, arcs of circle and cubic Bezier curves")
+        w(f"_parts = {G.outline_parts(shape)!r}")
+        w("_q = {}")
+        w("def _pt(p):")
+        w("    key = (round(p[0], 12), round(p[1], 12))")
+        w("    if key not in _q:")
+        w(f"        _q[key] = {occ}.addPoint(p[0], p[1], 0.0)")
+        w("    return _q[key]")
+        w("_l = []")
+        w("for _part in _parts:")
+        w("    if _part[0] == 'line':")
+        w(f"        _l.append({occ}.addLine(_pt(_part[1]), _pt(_part[2])))")
+        w("    elif _part[0] == 'arc':")
+        w(f"        _l.append({occ}.addCircleArc(_pt(_part[1]), {occ}.addPoint(_part[3][0], _part[3][1], 0.0), "
+          "_pt(_part[2])))")
+        w("    else:")
+        w("        _c = _part[1]")
+        w(f"        _l.append({occ}.addBezier([_pt(_c[0]), {occ}.addPoint(_c[1][0], _c[1][1], 0.0), "
+          f"{occ}.addPoint(_c[2][0], _c[2][1], 0.0), _pt(_c[3])]))")
+        w(f"{v} = [(2, {occ}.addPlaneSurface([{occ}.addCurveLoop(_l)]))]")
     elif t == "polygon" and G.fillet_radii(shape, len(shape["points"])):
         outline, found, _ = G.fillets(_points(shape), G.fillet_radii(shape, len(shape["points"])))
         centers = {tuple(f.t1): list(f.center) for f in found}
@@ -435,6 +481,26 @@ def _ng_shape(shape, dim, w) -> str:
             w(f"{v} = WorkPlane().Circle({c[0]!r}, {c[1]!r}, {r!r}).Face()")
         else:
             w(f"{v} = Sphere(Pnt({c[0]!r}, {c[1]!r}, {c[2]!r}), {r!r})")
+    elif t == "polygon" and G.spline_points(shape):
+        w("# polygon with curved sides: segments, arcs of circle and cubic Bezier curves")
+        edges = []
+        for part in G.outline_parts(shape):
+            if part[0] == "line":
+                (ax, ay), (bx, by) = part[1], part[2]
+                edges.append(f"Segment(Pnt({ax!r}, {ay!r}, 0), Pnt({bx!r}, {by!r}, 0))")
+            elif part[0] == "arc":
+                a, b, c = (np.asarray(x, float) for x in part[1:])
+                mid = (a + b) / 2 - c
+                mid = c + np.linalg.norm(a - c) * mid / (np.linalg.norm(mid) or 1.0)
+                edges.append(f"ArcOfCircle(Pnt({a[0]!r}, {a[1]!r}, 0), Pnt({mid[0]!r}, {mid[1]!r}, 0), "
+                             f"Pnt({b[0]!r}, {b[1]!r}, 0))")
+            else:
+                edges.append("BezierCurve([" + ", ".join(f"Pnt({x!r}, {y!r}, 0)" for x, y in part[1]) + "])")
+        w("_e = [")
+        for e in edges:
+            w(f"    {e},")
+        w("]")
+        w(f"{v} = Face(Wire(_e))")
     elif t == "polygon":
         pts = _points(shape)
         radii = G.fillet_radii(shape, len(pts))
@@ -679,7 +745,9 @@ def _selection_code(name, sel, w, shape=None):
             if p["type"] == "rectangle":
                 w(f"    ('rectangle', {_floats(p['min'])}, {_floats(p['max'])}),")
             elif p["type"] == "polygon":
-                w(f"    ('polygon', {G.rounded_outline(p) if p.get('fillets') else _points(p)}, None),")
+                outline = G.boundary_polyline(p).tolist() if p.get("splines") else \
+                    G.rounded_outline(p) if p.get("fillets") else _points(p)
+                w(f"    ('polygon', {outline}, None),")
             elif p["type"] == "ellipse":
                 w(f"    ('ellipse', {_floats(p['center'])}, ({_floats(p['radii'])}, "
                   f"{math.radians(float(p.get('angle', 0.0)))!r})),")
@@ -743,7 +811,7 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
 
     w("")
     w("def on_piece(Q, piece, tol):")
-    w("    \"\"\"Whether all the points Q (n x 2) lie on a segment or on an arc.\"\"\"")
+    w("    \"\"\"Whether all the points Q (n x 2) lie on a segment, an arc or a curve.\"\"\"")
     w("    if 'segment' in piece:")
     w("        a, b = (np.asarray(x, float) for x in piece['segment'])")
     w("        d = b - a")
@@ -751,6 +819,8 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
     w("        s = (Q - a) @ d / L**2")
     w("        h = np.abs((Q - a) @ np.array([-d[1], d[0]])) / L")
     w("        return bool(np.all(h < tol) and np.all(s > -tol / L) and np.all(s < 1 + tol / L))")
+    w("    if 'bezier' in piece:")
+    w("        return bool(np.all(bezier_nearest(piece['bezier'], Q)[0] < tol))")
     w("    if 'ellipse' in piece:")
     w("        e = piece['ellipse']")
     w("        (r1, r2), th = e['radii'], e['angle']")

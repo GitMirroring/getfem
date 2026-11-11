@@ -385,26 +385,36 @@ class PropertiesPanel(QScrollArea):
 
     def _vertex_table(self, model, f: E.Field, errors) -> QWidget:
         """The vertices of a polygon: x, y (values or expressions) and the
-        radius of the fillet that rounds the vertex (empty: sharp); a vertex
-        is inserted in the middle of the side after the selected one, or removed."""
-        rows = E.vertex_rows(model, f.key)
-        radii = E.fillet_cells(model, f.key[:-1])
+        radius of the fillet that rounds the vertex (empty: sharp), or, at
+        an end of a curved side, whether the boundary is smooth there; each
+        vertex is followed by the points of the spline of the side after it
+        (rows k.1, k.2...). A vertex is inserted in the middle of the side
+        after the selected one (a point, if the side is curved), or removed;
+        the side after the selected vertex is made curved or straight."""
+        poly = f.key[:-1]
+        rows = E.polygon_rows(model, poly)
+        radii = E.fillet_cells(model, poly)
+        smooth = set(E.get_at(model, poly, {}).get("smooth") or [])
+        sides = E.spline_sides(model, poly)
         table = QTableWidget(len(rows), 3)
         table.setObjectName("vertices_table")
         prof = E.profile_root(f.key)
         around = prof is not None and E.get_at(model, prof[:-1], {}).get("type") == "revolution"
         table.setHorizontalHeaderLabels(["r", "z", "fillet"] if around else ["x", "y", "fillet"])
         table.horizontalHeaderItem(2).setToolTip("Radius of the arc that rounds the vertex (empty: a sharp "
-                                                 "corner); a number or an expression")
-        table.setVerticalHeaderLabels([str(i + 1) for i in range(len(rows))])
+                                                 "corner); a number or an expression. At an end of a curved "
+                                                 "side: smooth (the boundary tangent there) or not")
+        table.setVerticalHeaderLabels([str(e[1] + 1) if e[0] == "vertex" else f"{e[1]}.{e[2] + 1}" for e in rows])
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        for i, r in enumerate(rows):
+        for row, e in enumerate(rows):
+            r = e[-1]
+            key = f.key + (e[1],) if e[0] == "vertex" else poly + ("splines", sides[e[1]], "points", e[2])
             for j in range(2):
                 item = QTableWidgetItem(E.format_value(r[j]))
                 item.setFont(_mono())
-                msgs = E.errors_at(errors, f.key + (i, j)) or E.errors_at(errors, f.key + (i,))
-                if j == 1 and isinstance(r[0], str):            # the vertex is a vector parameter
+                msgs = E.errors_at(errors, key + (j,)) or E.errors_at(errors, key)
+                if j == 1 and isinstance(r[0], str):            # the point is a vector parameter
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     item.setText("")
                 if msgs:
@@ -414,41 +424,74 @@ class PropertiesPanel(QScrollArea):
                     tip = f"= {E.format_number(float(r[j + 2]))}" if j == 1 or not isinstance(r[0], str) or \
                         r[3] is None else f"= [{E.format_number(float(r[2]))}, {E.format_number(float(r[3]))}]"
                     item.setToolTip(tip)
-                table.setItem(i, j, item)
-            item = QTableWidgetItem("" if radii[i] is None else E.format_value(radii[i]))
-            item.setFont(_mono())
-            fkey = f.key[:-1] + ("fillets",)
-            msgs = [m for m in E.errors_at(errors, fkey) if f"vertex {i + 1}" in m] + \
-                [m for j2, fl in enumerate(E.get_at(model, fkey, []) or []) if isinstance(fl, dict)
-                 and fl.get("vertex") == i + 1 for m in E.errors_at(errors, fkey + (j2,))]
-            if msgs:
-                item.setBackground(Qt.GlobalColor.yellow)
-                item.setToolTip("\n".join(msgs))
-            table.setItem(i, 2, item)
-        if E.errors_at(errors, f.key):
-            table.setToolTip("\n".join(E.errors_at(errors, f.key)))
+                if e[0] == "spline":
+                    item.setForeground(Qt.GlobalColor.darkBlue)
+                table.setItem(row, j, item)
+            if e[0] == "spline":                  # a point of a spline: no third cell
+                item = QTableWidgetItem("")
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                table.setItem(row, 2, item)
+                continue
+            i = e[1]
+            if E.near_spline(model, poly, i + 1):     # the end of a curved side: smooth or not
+                item = QTableWidgetItem("smooth")
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                              | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if i + 1 in smooth else Qt.CheckState.Unchecked)
+                item.setToolTip("The boundary tangent at this vertex (the curved side follows the side "
+                                "on the other side of the vertex)")
+            else:
+                item = QTableWidgetItem("" if radii[i] is None else E.format_value(radii[i]))
+                item.setFont(_mono())
+                fkey = poly + ("fillets",)
+                msgs = [m for m in E.errors_at(errors, fkey) if f"vertex {i + 1}" in m] + \
+                    [m for j2, fl in enumerate(E.get_at(model, fkey, []) or []) if isinstance(fl, dict)
+                     and fl.get("vertex") == i + 1 for m in E.errors_at(errors, fkey + (j2,))]
+                if msgs:
+                    item.setBackground(Qt.GlobalColor.yellow)
+                    item.setToolTip("\n".join(msgs))
+            table.setItem(row, 2, item)
+        msgs = E.errors_at(errors, f.key) + E.errors_at(errors, poly + ("splines",)) + \
+            E.errors_at(errors, poly + ("smooth",))
+        if msgs:
+            table.setToolTip("\n".join(msgs))
             table.setStyleSheet(ERROR_STYLE)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)   # the three columns seen
 
         def edited(item):
-            i, j = item.row(), item.column()
-            if i >= len(rows):
+            row, j = item.row(), item.column()
+            if row >= len(rows):
                 return
+            e = rows[row]
             text = item.text().strip()
-            if j == 2:                     # the fillet of the vertex
+            if j == 2 and e[0] == "vertex" and E.near_spline(model, poly, e[1] + 1):
+                on = item.checkState() == Qt.CheckState.Checked
+                if on != (e[1] + 1 in smooth):
+                    self._last_cell = (f.key, row, j)
+                    self.action.emit(f"smooth:{e[1] + 1}")
+                return
+            if j == 2 and e[0] == "vertex":         # the fillet of the vertex
+                i = e[1]
                 value = E.parse_value(text) if text else None
                 if value == radii[i]:
                     return
-                self._last_cell = (f.key, i, j)
-                self._commit(E.Field(f.key[:-1] + ("fillets", i), f"fillet of vertex {i + 1}", "value",
+                self._last_cell = (f.key, row, j)
+                self._commit(E.Field(poly + ("fillets", i), f"fillet of vertex {i + 1}", "value",
                                      op="vertex_fillet"), value)
                 return
-            value = E.parse_value(text)
-            if value == rows[i][j]:
+            if j == 2:
                 return
-            self._last_cell = (f.key, i, j)
-            self._commit(E.Field(f.key + (i, j), f"vertex {i + 1}", "value", size=2, op="point_component"),
-                         value)
+            value = E.parse_value(text)
+            if value == e[-1][j]:
+                return
+            self._last_cell = (f.key, row, j)
+            if e[0] == "vertex":
+                self._commit(E.Field(f.key + (e[1], j), f"vertex {e[1] + 1}", "value", size=2,
+                                     op="point_component"), value)
+            else:
+                self._commit(E.Field(poly + ("splines", sides[e[1]], "points", e[2], j),
+                                     f"point {e[2] + 1} of side {e[1]}", "value", size=2, op="point_component"),
+                             value)
         table.itemChanged.connect(edited)
         last = getattr(self, "_last_cell", None)
         if last and last[0] == f.key and last[1] < len(rows):
@@ -460,20 +503,41 @@ class PropertiesPanel(QScrollArea):
         add.setText("Add")
         add.setToolTip("Add a vertex after the last one")
         add.setObjectName("table:add_vertex")
+
         def add_vertex():
             self._last_cell = (f.key, len(rows), 0)
             self.action.emit("add_vertex")
         add.clicked.connect(add_vertex)
         bar.addWidget(add)
-        for ident, text, tip in (("insert_vertex", "Insert", "Insert a vertex in the middle of the side "
-                                                            "after the selected vertex"),
-                                 ("remove_vertex", "Remove", "Remove the selected vertex")):
+
+        def row_action(verb):
+            row = table.currentRow()
+            if not 0 <= row < len(rows):
+                return
+            e = rows[row]
+            if e[0] == "spline":                  # a point of a spline
+                action = {"insert_vertex": f"spline:insert:{e[1]}:{e[2]}",
+                          "remove_vertex": f"spline:remove:{e[1]}:{e[2]}",
+                          "curve": f"spline:straight:{e[1]}"}[verb]
+                target = row + 1 if verb == "insert_vertex" else row
+            else:
+                k = e[1] + 1
+                action = {"insert_vertex": f"insert_vertex:{e[1]}", "remove_vertex": f"remove_vertex:{e[1]}",
+                          "curve": f"spline:straight:{k}" if k in sides else f"spline:side:{k}"}[verb]
+                target = row + 1 if verb == "insert_vertex" else row
+            self._last_cell = (f.key, target, 0)
+            self.action.emit(action)
+        for ident, text, tip in (("insert_vertex", "Insert", "Insert a vertex in the middle of the side after "
+                                                            "the selected vertex (a point, if that side is "
+                                                            "curved, or after the selected point)"),
+                                 ("remove_vertex", "Remove", "Remove the selected vertex or point"),
+                                 ("curve", "Curved", "Make the side after the selected vertex curved (a spline "
+                                                     "through points), or straight again")):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(tip)
             b.setObjectName(f"table:{ident}")
-            b.clicked.connect(lambda _=False, v=ident: table.currentRow() >= 0
-                              and self._row_action(f.key, v, table.currentRow()))
+            b.clicked.connect(lambda _=False, v=ident: row_action(v))
             bar.addWidget(b)
         bar.addStretch(1)
         holder = QWidget()

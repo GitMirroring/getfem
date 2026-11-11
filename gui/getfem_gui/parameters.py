@@ -401,6 +401,13 @@ def _resolve_shape(shape, where, vals, errors):
     for j, f in enumerate(shape.get("fillets") or []):
         if isinstance(f, dict):
             _resolve(f, ("radius",), f"{where}.fillets[{j}]", vals, errors, scalars=("radius",))
+    for j, sp in enumerate(shape.get("splines") or []):       # the points of the curved sides
+        if isinstance(sp, dict) and isinstance(sp.get("points"), list):
+            for i, v in enumerate(sp["points"]):
+                if isinstance(v, (list, str)):
+                    holder = {"v": v}
+                    _resolve(holder, ("v",), f"{where}.splines[{j}].points[{i}]", vals, errors)
+                    sp["points"][i] = holder["v"]
     if isinstance(shape.get("points"), list):
         for j, v in enumerate(shape["points"]):
             if isinstance(v, (list, str)):

@@ -76,7 +76,10 @@ Geometry sources
                     | {"type": "ball", "center": [...], "radius": r}
                     | {"type": "polygon", "points": [[x, y], ...]}   (2D, simple, any orientation;
                        optional "constraints": [...], see sketch.py; optional
-                       "fillets": [{"vertex": k, "radius": r}, ...], its vertices rounded)
+                       "fillets": [{"vertex": k, "radius": r}, ...], its vertices rounded;
+                       optional "splines": [{"side": k, "points": [[x, y], ...]}, ...], its
+                       side k a cubic spline through these points, and "smooth": [k, ...],
+                       the boundary tangent at these vertices)
                     | {"type": "ellipse", "center": [x, y], "radii": [r1, r2], "angle": a}
                       (2D; the semi-axis r1 at a degrees from the x axis)
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
@@ -803,12 +806,13 @@ def _check_shape(shape, dim, where, errors):
         elif all(_check_vec(v, 2, f"{where}.points[{i}]", errors) for i, v in enumerate(pts)):
             from . import geometry2d as G
             problem = G.polygon_problem(pts)
-            if problem:
+            if problem and not (shape.get("splines") and "cross" in problem):   # (the curved sides: below)
                 errors.append(f"{where}.points: not a simple polygon ({problem})")
         cons = shape.get("constraints", [])
         if not isinstance(cons, list) or any(not isinstance(c, dict) for c in cons):
             errors.append(f"{where}.constraints: a list of constraints expected")
         _check_fillets(shape, where, errors)
+        _check_splines(shape, where, errors)
     elif t == "cylinder":
         if dim != 3:
             errors.append(f"{where}: cylinder only exists in 3D")
@@ -879,6 +883,47 @@ def _check_axis_fillets(profile, where, errors):
                 at = where + "".join(f".of[{i}]" for i in path)
                 errors.append(f"{at}.fillets: vertex {k} is on the axis of the revolution: its fillet would "
                               "be tangent to the axis (a cusp of the solid on the axis); remove it")
+
+
+def _check_splines(shape, where, errors):
+    """The curved sides of a polygon: "splines": [{"side": k, "points":
+    [[x, y], ...]}, ...] and the smooth vertices, "smooth": [k, ...]."""
+    sp, sm = shape.get("splines", []), shape.get("smooth", [])
+    if not sp and not sm:
+        return
+    n = len(shape.get("points") or [])
+    before = len(errors)
+    if not isinstance(sp, list):
+        errors.append(f"{where}.splines: a list of splines expected")
+        sp = []
+    seen = set()
+    for j, s in enumerate(sp):
+        w = f"{where}.splines[{j}]"
+        if not isinstance(s, dict):
+            errors.append(f"{w}: {{\"side\": k, \"points\": [[x, y], ...]}} expected")
+            continue
+        k, pts = s.get("side"), s.get("points", [])
+        if isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= max(n, 1):
+            errors.append(f"{w}.side: a side number from 1 to {n} expected")
+        elif k in seen:
+            errors.append(f"{w}.side: side {k} is already a spline")
+        seen.add(k)
+        if not isinstance(pts, list):
+            errors.append(f"{w}.points: a list of points expected")
+        else:
+            for i, v in enumerate(pts):
+                _check_vec(v, 2, f"{w}.points[{i}]", errors)
+    if not isinstance(sm, list) or any(isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= max(n, 1)
+                                       for k in sm):
+        errors.append(f"{where}.smooth: a list of vertex numbers from 1 to {n} expected")
+    if n >= 3 and len(errors) == before and not any(e.startswith(f"{where}.points") for e in errors):
+        from . import geometry2d as G
+        try:
+            problem = G.spline_problem(shape)
+        except (TypeError, ValueError, np.linalg.LinAlgError):
+            problem = "the splines cannot be made"
+        if problem:
+            errors.append(f"{where}.splines: {problem}")
 
 
 def _check_fillets(shape, where, errors):

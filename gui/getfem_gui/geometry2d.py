@@ -116,6 +116,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "polygon":
         if incomplete(shape):
             return np.full(len(P), np.inf)
+        if spline_points(shape):
+            return curved_polygon_sdf(shape, P)
         rounded = _fillets_of(shape)
         if rounded is not None:
             return rounded_polygon_sdf(rounded[0], rounded[1], P)
@@ -150,6 +152,8 @@ def bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         rounded = _fillets_of(shape)
         if rounded is not None:
             V = np.vstack([rounded[0]] + [f.points(65) for f in rounded[1]])
+        if spline_points(shape):
+            V = np.vstack([V, boundary_polyline(shape, per_span=64)])
         return V.min(axis=0), V.max(axis=0)
     if t == "ellipse":
         c = np.asarray(shape["center"], float)
@@ -389,6 +393,30 @@ def fillet_ends(shape: dict) -> np.ndarray:
     return np.unique(np.round(np.asarray(out, float), 14), axis=0) if out else np.zeros((0, 2))
 
 
+def tangent_points(shape: dict) -> np.ndarray:
+    """The points of the boundary of a 2D shape where two of its curves meet
+    tangentially (n x 2): the ends of the fillets, the points of the splines
+    and their ends at smooth vertices (the GetFEM mesher, given them as
+    vertices, meshes well there and each face of the mesh is on one curve;
+    not the corners, which it finds itself)."""
+    out = [fillet_ends(shape)]
+    try:
+        for _, prim in primitives(shape):
+            if prim.get("type") != "polygon" or not spline_points(prim):
+                continue
+            V = np.asarray(prim["points"], float)
+            n = len(V)
+            through = spline_points(prim)
+            out += list(through.values())
+            out += [V[k][None] for k in smooth_vertices(prim) if k in through or (k - 1) % n in through]
+        P = np.vstack([p.reshape(-1, 2) for p in out])
+        if len(P) and len(out) > 1:          # those on the boundary of the shape
+            P = P[np.abs(sdf(shape, P)) <= 1e-9 * size(shape)]
+    except (ValueError, KeyError, TypeError, IndexError):
+        P = fillet_ends(shape)
+    return np.unique(np.round(P, 14), axis=0) if len(P) else np.zeros((0, 2))
+
+
 def fillet_problem(prim: dict) -> str | None:
     pts = prim.get("points") or []
     radii = fillet_radii(prim, len(pts))
@@ -439,6 +467,331 @@ def rounded_polygon_sdf(outline: np.ndarray, found: list, P: np.ndarray) -> np.n
     return np.where(inside, -dist, dist)
 
 
+# ------------------------------------------------------------------ splines: curved sides of polygons
+#
+# "splines": [{"side": k, "points": [[x, y], ...]}] makes the side k (from
+# vertex k to vertex k + 1, 1-based) a cubic spline through these points
+# (C2, parametrized by the length of its chords); "smooth": [k, ...] makes
+# the boundary tangent at the vertex k: the end of a spline there takes the
+# direction of the straight side on the other side of the vertex (or, two
+# splines meeting there, the direction from the point before the vertex to
+# the point after it); otherwise the end is free (natural: no curvature).
+# Each spline is a chain of cubic Bezier curves (one per interval between
+# its points): their control points are what the meshers are given.
+
+def spline_points(prim: dict) -> dict:
+    """{side (0-based): its points (m x 2)} of the (resolved) splines of a
+    polygon; the entries that are not valid are left out (errors of the
+    validation)."""
+    n = len(prim.get("points") or [])
+    out = {}
+    for s in prim.get("splines") or []:
+        if not isinstance(s, dict):
+            continue
+        k, pts = s.get("side"), s.get("points")
+        if isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= n or k - 1 in out \
+                or not isinstance(pts, list):
+            continue
+        try:
+            P = np.asarray(pts, float).reshape(-1, 2)
+        except (TypeError, ValueError):
+            continue
+        if np.all(np.isfinite(P)):
+            out[k - 1] = P
+    return out
+
+
+def smooth_vertices(prim: dict) -> set:
+    """The vertices (0-based) where the boundary of a polygon is smooth."""
+    n = len(prim.get("points") or [])
+    return {k - 1 for k in prim.get("smooth") or [] if isinstance(k, int) and not isinstance(k, bool)
+            and 1 <= k <= n}
+
+
+def _natural_or_clamped(Q: np.ndarray, T0, T1) -> np.ndarray:
+    """The derivatives at the points Q (n x 2, n >= 2) of the C2 cubic
+    spline through them, parametrized by the length of its chords; T0, T1:
+    the unit tangents at the ends, or None (no curvature there)."""
+    n = len(Q)
+    h = np.linalg.norm(np.diff(Q, axis=0), axis=1)
+    h = np.maximum(h, 1e-300)
+    A = np.zeros((n, n))
+    R = np.zeros((n, 2))
+    for j in range(1, n - 1):
+        A[j, j - 1], A[j, j], A[j, j + 1] = h[j], 2 * (h[j - 1] + h[j]), h[j - 1]
+        R[j] = 3 * (h[j] * (Q[j] - Q[j - 1]) / h[j - 1] + h[j - 1] * (Q[j + 1] - Q[j]) / h[j])
+    if T0 is None:
+        A[0, 0], A[0, 1], R[0] = 2.0, 1.0, 3 * (Q[1] - Q[0]) / h[0]
+    else:
+        A[0, 0], R[0] = 1.0, T0
+    if T1 is None:
+        A[-1, -2], A[-1, -1], R[-1] = 1.0, 2.0, 3 * (Q[-1] - Q[-2]) / h[-1]
+    else:
+        A[-1, -1], R[-1] = 1.0, T1
+    return np.linalg.solve(A, R)
+
+
+def spline_controls(prim: dict) -> dict:
+    """{side (0-based): the control points ((3 m + 1) x 2) of the chain of
+    cubic Bezier curves of its spline} for the splines of a polygon."""
+    V = np.asarray(prim.get("points") or [], float).reshape(-1, 2)
+    n = len(V)
+    through = spline_points(prim)
+    if not through or n < 2:
+        return {}
+    smooth = smooth_vertices(prim)
+
+    def chain(i):           # the points of the side i, its ends included
+        return np.vstack([V[i], through.get(i, np.zeros((0, 2))), V[(i + 1) % n]])
+
+    def unit(d):
+        L = float(np.linalg.norm(d))
+        return d / L if L > 0 else None
+
+    def tangent(k):         # the direction of the boundary at the smooth vertex k, along it
+        before, after = chain((k - 1) % n), chain(k)
+        return unit(after[1] - before[-2])
+
+    out = {}
+    for i, inner in through.items():
+        Q = chain(i)
+        T0 = tangent(i) if i in smooth else None
+        T1 = tangent((i + 1) % n) if (i + 1) % n in smooth else None
+        D = _natural_or_clamped(Q, T0, T1)
+        C = [Q[0]]
+        for j in range(len(Q) - 1):
+            hj = float(np.linalg.norm(Q[j + 1] - Q[j]))
+            C += [Q[j] + hj * D[j] / 3, Q[j + 1] - hj * D[j + 1] / 3, Q[j + 1]]
+        out[i] = np.asarray(C, float)
+    return out
+
+
+def bezier_points(C: np.ndarray, t) -> np.ndarray:
+    """Points of a chain of cubic Bezier curves (control points C, (3 m + 1)
+    x 2) at t in [0, 1] (the curve j for t in [j / m, (j + 1) / m])."""
+    t = np.atleast_1d(np.asarray(t, float))
+    m = (len(C) - 1) // 3
+    j = np.clip(np.floor(t * m).astype(int), 0, m - 1)
+    u = (t * m - j)[:, None]
+    s = 1 - u
+    P0, P1, P2, P3 = C[3 * j], C[3 * j + 1], C[3 * j + 2], C[3 * j + 3]
+    return s ** 3 * P0 + 3 * s * s * u * P1 + 3 * s * u * u * P2 + u ** 3 * P3
+
+
+def bezier_tangents(C: np.ndarray, t) -> np.ndarray:
+    """Derivatives (with respect to t) of a chain of cubic Bezier curves."""
+    t = np.atleast_1d(np.asarray(t, float))
+    m = (len(C) - 1) // 3
+    j = np.clip(np.floor(t * m).astype(int), 0, m - 1)
+    u = (t * m - j)[:, None]
+    s = 1 - u
+    P0, P1, P2, P3 = C[3 * j], C[3 * j + 1], C[3 * j + 2], C[3 * j + 3]
+    return 3 * m * (s * s * (P1 - P0) + 2 * s * u * (P2 - P1) + u * u * (P3 - P2))
+
+
+def bezier_part(C: np.ndarray, t0: float, t1: float) -> np.ndarray:
+    """The control points of the part t0 <= t <= t1 of a chain of cubic
+    Bezier curves (each curve cut by de Casteljau's algorithm)."""
+    m = (len(C) - 1) // 3
+    out = []
+    for j in range(m):
+        a, b = max(t0, j / m), min(t1, (j + 1) / m)
+        if b <= a + 1e-15:
+            continue
+        P = C[3 * j:3 * j + 4]
+        ua, ub = a * m - j, b * m - j
+
+        def split(P, u):     # the part [u, 1] of a cubic curve
+            p01, p12, p23 = P[0] + u * (P[1] - P[0]), P[1] + u * (P[2] - P[1]), P[2] + u * (P[3] - P[2])
+            p012, p123 = p01 + u * (p12 - p01), p12 + u * (p23 - p12)
+            q = p012 + u * (p123 - p012)
+            return np.array([q, p123, p23, P[3]])
+        if ua > 0:
+            P = split(P, ua)
+            ub = (ub - ua) / (1 - ua)
+        if ub < 1:                       # the part [0, ub]: the reversed curve cut at 1 - ub
+            P = split(P[::-1], 1 - ub)[::-1]
+        out += ([P[0]] if not out else []) + [P[1], P[2], P[3]]
+    return np.asarray(out, float)
+
+
+def boundary_polyline(prim: dict, per_span: int = 24, per_arc: int = 16) -> np.ndarray:
+    """The boundary of a polygon with its fillets and splines as a closed
+    polyline (n x 2, the last point not repeated): the inside tests and the
+    distances of the curved polygons (an approximation, close for these
+    counts)."""
+    V = np.asarray(prim["points"], float)
+    n = len(V)
+    controls = spline_controls(prim)
+    rounded = _fillets_of(prim)
+    by = {f.vertex - 1: f for f in rounded[1]} if rounded is not None else {}
+    out = []
+    for i in range(n):
+        f = by.get(i)
+        out += f.points(per_arc + 1).tolist() if f is not None else [V[i].tolist()]
+        if i in controls:                 # the side i, after the vertex i
+            C = controls[i]
+            m = (len(C) - 1) // 3
+            out += bezier_points(C, np.linspace(0, 1, m * per_span + 1)[1:-1]).tolist()
+    return np.asarray(out, float)
+
+
+def _side_tangents(side, t) -> np.ndarray:
+    """Derivatives along a side of a polygon (segment, fillet or spline), in
+    the direction of the boundary."""
+    t = np.atleast_1d(np.asarray(t, float))
+    if side.kind == "segment":
+        return np.tile(np.subtract(side.b, side.a), (len(t), 1))
+    if side.kind == "spline":
+        return bezier_tangents(np.asarray(side.a, float), t)
+    r, th0, sw = side.b
+    th = th0 + sw * t
+    return r * sw * np.column_stack([-np.sin(th), np.cos(th)])
+
+
+def _side_seconds(side, t) -> np.ndarray:
+    """Second derivatives along a side of a polygon."""
+    t = np.atleast_1d(np.asarray(t, float))
+    if side.kind == "segment":
+        return np.zeros((len(t), 2))
+    if side.kind == "spline":
+        C = np.asarray(side.a, float)
+        m = (len(C) - 1) // 3
+        j = np.clip(np.floor(t * m).astype(int), 0, m - 1)
+        u = (t * m - j)[:, None]
+        P0, P1, P2, P3 = C[3 * j], C[3 * j + 1], C[3 * j + 2], C[3 * j + 3]
+        return 6 * m * m * ((1 - u) * (P2 - 2 * P1 + P0) + u * (P3 - 2 * P2 + P1))
+    r, th0, sw = side.b
+    th = th0 + sw * t
+    return -r * sw * sw * np.column_stack([np.cos(th), np.sin(th)])
+
+
+def _side_nearest(side, P: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(distance, parameter) of the nearest points of a side of a polygon."""
+    if side.kind == "segment":
+        a, d = np.asarray(side.a, float), np.subtract(side.b, side.a)
+        t = np.clip((P - a) @ d / max(float(d @ d), 1e-300), 0.0, 1.0)
+    else:
+        m = 16 * ((len(side.a) - 1) // 3 if side.kind == "spline" else 1)
+        ts = np.linspace(0.0, 1.0, m + 1)
+        S = side.points(ts)
+        t = ts[np.argmin(np.linalg.norm(P[:, None, :] - S[None], axis=2), axis=1)]
+        dist = np.linalg.norm(side.points(t) - P, axis=1)
+        h = 0.5 / m                     # a Newton step stays near its sample
+        for _ in range(8):              # Newton on (C(t) - P).C'(t) = 0, the steps that get closer
+            R, D, D2 = side.points(t) - P, _side_tangents(side, t), _side_seconds(side, t)
+            f = np.einsum("ij,ij->i", R, D)
+            df = np.einsum("ij,ij->i", D, D) + np.einsum("ij,ij->i", R, D2)
+            step = np.where(df > 0, -f / np.where(df > 0, df, 1.0), -np.sign(f) * h)
+            tn = np.clip(t + np.clip(step, -h, h), 0.0, 1.0)
+            dn = np.linalg.norm(side.points(tn) - P, axis=1)
+            better = dn < dist
+            t, dist = np.where(better, tn, t), np.where(better, dn, dist)
+    return np.linalg.norm(side.points(t) - P, axis=1), t
+
+
+def _crossings_inside(V: np.ndarray, P: np.ndarray) -> np.ndarray:
+    """Inside the polygon of vertices V, by the parity of the crossings of
+    a half line (no distances)."""
+    A, B = V, np.roll(V, -1, axis=0)
+    y, x = P[:, 1:2], P[:, 0:1]
+    ya, yb = A[None, :, 1], B[None, :, 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        xc = A[None, :, 0] + (y - ya) * (B[None, :, 0] - A[None, :, 0]) / (yb - ya)
+    return np.sum(((ya > y) != (yb > y)) & (x < xc), axis=1) % 2 == 1
+
+
+def curved_polygon_sdf(prim: dict, P: np.ndarray, chunk: int = 4096) -> np.ndarray:
+    """Signed euclidean distance to a polygon with splines (and fillets):
+    the distance to the nearest side; inside by the normal there, or, the
+    nearest point being a vertex, by the crossings with a polyline."""
+    P = np.asarray(P, float)
+    if len(P) > chunk:
+        return np.concatenate([curved_polygon_sdf(prim, P[i:i + chunk], chunk) for i in range(0, len(P), chunk)])
+    poly = boundary_polyline(prim, per_span=16, per_arc=16)
+    ccw = polygon_area(poly) > 0
+    best = np.full(len(P), np.inf)
+    normal_in = np.full(len(P), np.nan)
+    for side in sides(prim):
+        d, t = _side_nearest(side, P)
+        closer = d < best
+        best = np.where(closer, d, best)
+        T = _side_tangents(side, t)
+        left = np.einsum("ij,ij->i", P - side.points(t), np.column_stack([-T[:, 1], T[:, 0]]))
+        s = np.where((t > 1e-9) & (t < 1 - 1e-9), np.sign(left if ccw else -left), np.nan)
+        normal_in = np.where(closer, s, normal_in)
+    undecided = np.isnan(normal_in) | (normal_in == 0)
+    inside = normal_in > 0
+    if undecided.any():
+        inside[undecided] = _crossings_inside(poly, P[undecided])
+    return np.where(inside, -best, best)
+
+
+def polyline_profile(shape: dict) -> dict:
+    """The 2D tree with its polygons with fillets or splines replaced by
+    polygons close to them (boundary_polyline): for the tests of the meshing
+    scripts that only know straight polygons."""
+    if not isinstance(shape, dict):
+        return shape
+    t = shape.get("type")
+    if t == "polygon" and (shape.get("fillets") or shape.get("splines")) and not incomplete(shape):
+        try:
+            return {"type": "polygon", "points": boundary_polyline(shape, per_span=64, per_arc=64).tolist()}
+        except (TypeError, ValueError, KeyError, np.linalg.LinAlgError):
+            return shape
+    if "of" in shape:
+        return dict(shape, of=[polyline_profile(s) for s in shape["of"]])
+    return shape
+
+
+def outline_parts(prim: dict) -> list:
+    """The boundary of a polygon with fillets or splines, in order, as
+    parts for the CAD meshers: ("line", a, b), ("arc", a, b, center) (the
+    smaller arc from a to b) and ("bezier", [p0, p1, p2, p3]) (a cubic
+    Bezier curve), each starting where the one before ends."""
+    V = [[float(x) for x in v] for v in prim["points"]]
+    n = len(V)
+    controls = spline_controls(prim)
+    rounded = _fillets_of(prim)
+    by = {f.vertex - 1: f for f in rounded[1]} if rounded is not None else {}
+    out = []
+    for i in range(n):
+        f = by.get(i)
+        if f is not None:
+            out.append(("arc", list(f.t1), list(f.t2), list(f.center)))
+        if i in controls:
+            C = controls[i].tolist()
+            out += [("bezier", C[3 * j:3 * j + 4]) for j in range((len(C) - 1) // 3)]
+            continue
+        a = list(f.t2) if f is not None else V[i]
+        g = by.get((i + 1) % n)
+        b = list(g.t1) if g is not None else V[(i + 1) % n]
+        out.append(("line", a, b))
+    return out
+
+
+def spline_problem(prim: dict) -> str | None:
+    """Why the splines of a polygon cannot be made (None if they can): a
+    fillet at an end of a spline, a smooth vertex between two straight
+    sides, a boundary that crosses itself."""
+    V = prim.get("points") or []
+    n = len(V)
+    through = spline_points(prim)
+    for k in sorted(fillet_radii(prim, n)):
+        if (k - 1) in through or (k - 2) % n in through:
+            return f"vertex {k}: a fillet at an end of a spline (make the vertex smooth instead)"
+    for k in sorted(smooth_vertices(prim)):
+        if k not in through and (k - 1) % n not in through:
+            return f"vertex {k + 1}: smooth between two straight sides (no spline there)"
+    if through:
+        P = boundary_polyline(prim, per_span=12)
+        problem = polygon_problem(P)
+        if problem:
+            return "the curved sides cross the boundary" if "cross" in problem or "coincide" in problem \
+                else problem
+    return None
+
+
 def size(shape: dict) -> float:
     try:
         lo, hi = bounds(shape)
@@ -459,10 +812,11 @@ class Side:
     """A side of a primitive, parametrized by t in [0, 1]."""
     shape: tuple            # path of the primitive
     side: str               # xmin, xmax, ymin, ymax (rectangle) or circle (disk)
-    kind: str               # "segment", "arc", "ellipse" (closed curves: t = 0 and 1 meet) or "fillet"
+    kind: str               # "segment", "arc", "ellipse" (closed curves: t = 0 and 1 meet), "fillet" or "spline"
     a: tuple                # segment: first point; arc, ellipse, fillet: center
     b: tuple                # segment: second point; arc: (radius, 0); ellipse: (r1, r2, angle in radians);
-    #                         fillet (an arc from angle theta0, by sweep, in radians): (radius, theta0, sweep)
+    #                         fillet (an arc from angle theta0, by sweep, in radians): (radius, theta0, sweep);
+    #                         spline: a = the control points of its chain of cubic Bezier curves, b = ()
 
     @property
     def ref(self) -> dict:
@@ -470,7 +824,7 @@ class Side:
 
     @property
     def closed(self) -> bool:
-        return self.kind not in ("segment", "fillet")
+        return self.kind not in ("segment", "fillet", "spline")
 
     def length(self, t0: float = 0.0, t1: float = 1.0) -> float:
         if self.kind == "segment":
@@ -487,6 +841,8 @@ class Side:
         if self.kind == "segment":
             a, b = np.asarray(self.a), np.asarray(self.b)
             return a + t[:, None] * (b - a)
+        if self.kind == "spline":
+            return bezier_points(np.asarray(self.a, float), t)
         if self.kind == "ellipse":
             (r1, r2, th), c = self.b, np.asarray(self.a)
             u, v = r1 * np.cos(2 * math.pi * t), r2 * np.sin(2 * math.pi * t)
@@ -501,6 +857,10 @@ class Side:
             d = np.asarray(self.b) - np.asarray(self.a)
             n = np.array([-d[1], d[0]]) / (np.linalg.norm(d) or 1.0)
             return np.tile(n, (len(t), 1))
+        if self.kind == "spline":
+            D = bezier_tangents(np.asarray(self.a, float), t)
+            N = np.column_stack([-D[:, 1], D[:, 0]])
+            return N / np.maximum(np.linalg.norm(N, axis=1), 1e-300)[:, None]
         if self.kind == "ellipse":
             r1, r2, th = self.b
             nu, nv = np.cos(2 * math.pi * t) / r1, np.sin(2 * math.pi * t) / r2
@@ -543,11 +903,16 @@ def sides(shape: dict) -> list[Side]:
             V = [tuple(float(x) for x in v) for v in p["points"]]
             names = side_names(p)
             rounded = _fillets_of(p)
+            controls = spline_controls(p)
             if rounded is None:
-                out += [Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
+                out += [Side(path, names[i], "spline", tuple(map(tuple, controls[i].tolist())), ()) if i in controls
+                        else Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
                 continue
             n, by = len(V), {f.vertex: f for f in rounded[1]}
             for i in range(n):                 # the sides, between the tangent points of the fillets
+                if i in controls:
+                    out.append(Side(path, names[i], "spline", tuple(map(tuple, controls[i].tolist())), ()))
+                    continue
                 a = by[i + 1].t2 if i + 1 in by else V[i]
                 b = by[(i + 1) % n + 1].t1 if (i + 1) % n + 1 in by else V[(i + 1) % n]
                 out.append(Side(path, names[i], "segment", tuple(a), tuple(b)))
@@ -567,6 +932,8 @@ class Piece:
     def points(self, n: int = 64) -> np.ndarray:
         if self.side.kind == "fillet":
             m = max(2, int(n * abs(self.side.b[2]) / (2 * math.pi) * (self.t1 - self.t0)) + 4)
+        elif self.side.kind == "spline":
+            m = max(2, int(n * (len(self.side.a) - 1) // 3 * (self.t1 - self.t0)) + 2)
         else:
             m = max(2, int(n * (self.t1 - self.t0)) + 2) if self.side.closed else 2
         return self.side.points(np.linspace(self.t0, self.t1, m))
@@ -580,6 +947,8 @@ class Piece:
             r1, r2, th = self.side.b
             return {"ellipse": {"center": [float(c) for c in self.side.a], "radii": [float(r1), float(r2)],
                                 "angle": float(th), "from": float(self.t0), "to": float(self.t1)}}
+        if self.side.kind == "spline":
+            return {"bezier": bezier_part(np.asarray(self.side.a, float), self.t0, self.t1).tolist()}
         if self.side.kind == "fillet":
             r, th0, sw = self.side.b
             a, b = th0 + sw * self.t0, th0 + sw * self.t1

@@ -106,6 +106,9 @@ def _bake_2d(prim: dict, A: np.ndarray, b: np.ndarray) -> dict:
         out["angle"] = float(prim.get("angle", 0.0)) + turn
     elif t == "polygon":
         out["points"] = [move(p) for p in prim["points"]]
+        if prim.get("splines"):                 # the points of its curved sides
+            out["splines"] = [dict(sp, points=[move(p) for p in sp.get("points") or []])
+                              if isinstance(sp, dict) else sp for sp in prim["splines"]]
     elif t == "rectangle":
         if np.allclose(A, np.eye(2)):
             out["min"], out["max"] = move(prim["min"]), move(prim["max"])
