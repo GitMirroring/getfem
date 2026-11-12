@@ -225,11 +225,15 @@ def behind_lines(actor):
     place (the edges of the elements, the isolines): without it, the depth
     test lets the faces hide parts of the edges, which appear and
     disappear as the view turns. An offset of the depth of the polygons in
-    the depth buffer (OpenGL polygon offset): no cost at drawing."""
+    the depth buffer (OpenGL polygon offset): no cost at drawing. Mostly a
+    constant offset (units; the lines get their own, -4 units): the part
+    proportional to the slope of the face (factor) is kept small, since it
+    grows without bound on the faces seen edge on, near the silhouettes,
+    where it let the edges of the faces behind show through."""
     mapper = actor.GetMapper() if actor is not None else None
     if mapper is not None:
         mapper.SetResolveCoincidentTopologyToPolygonOffset()
-        mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(2.0, 4.0)
+        mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(0.5, 2.0)
     return actor
 
 
