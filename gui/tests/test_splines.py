@@ -305,6 +305,29 @@ def test_drag_preview():
             win.close()
 
 
+def test_distance_fast_and_exact():
+    """The distance to a curved polygon (found from the nearest chord, then
+    by Newton's method on its side) equals the distance to the nearest of
+    all its sides, near and far, zero on its sides; and it is fast (the
+    view asks it for a grid of 58000 points at each change)."""
+    import time
+    sh = resolved(SQUARE)
+    rng = np.random.default_rng(3)
+    on = np.vstack([s.points(rng.random(200)) for s in G.sides(sh)])          # on the boundary
+    P = np.vstack([rng.uniform(-0.6, 1.9, (3000, 2)), on + 1e-4 * rng.normal(size=on.shape), on])
+    d = G.sdf(sh, P)
+    brute = np.min([G._side_nearest(s, P)[0] for s in G.sides(sh)], axis=0)
+    assert np.max(np.abs(np.abs(d) - brute)) < 1e-9
+    assert np.max(np.abs(d[-len(on):])) < 1e-9
+    fine = G.boundary_polyline(sh, per_span=400, per_arc=400)
+    far = brute > 1e-3
+    assert np.all((d[far] < 0) == G._crossings_inside(fine, P[far]))     # the sign
+    grid = np.stack(np.meshgrid(np.linspace(-0.6, 1.9, 240), np.linspace(-0.6, 1.9, 240)), -1).reshape(-1, 2)
+    G.sdf(sh, grid[:10])
+    t = time.time()
+    G.sdf(sh, grid)
+    assert time.time() - t < 1.5
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

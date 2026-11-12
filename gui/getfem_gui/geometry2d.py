@@ -666,33 +666,53 @@ def _side_seconds(side, t) -> np.ndarray:
     return -r * sw * sw * np.column_stack([np.cos(th), np.sin(th)])
 
 
-def _side_nearest(side, P: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(distance, parameter) of the nearest points of a side of a polygon."""
+def _side_samples(side) -> tuple[np.ndarray, np.ndarray]:
+    """Parameters and points sampling a curved side (16 per curve)."""
+    m = 16 * ((len(side.a) - 1) // 3 if side.kind == "spline" else 1)
+    ts = np.linspace(0.0, 1.0, m + 1)
+    return ts, side.points(ts)
+
+
+def _side_nearest(side, P: np.ndarray, samples=None, start=None) -> tuple[np.ndarray, np.ndarray]:
+    """(distance, parameter) of the nearest points of a side of a polygon
+    (start: the parameters to begin from, near the nearest points)."""
     if side.kind == "segment":
         a, d = np.asarray(side.a, float), np.subtract(side.b, side.a)
         t = np.clip((P - a) @ d / max(float(d @ d), 1e-300), 0.0, 1.0)
+        return np.linalg.norm(a + t[:, None] * d - P, axis=1), t
+    ts, S = samples if samples is not None else _side_samples(side)
+    if start is None:
+        t = ts[np.argmin(np.einsum("pkj,pkj->pk", P[:, None, :] - S[None], P[:, None, :] - S[None]), axis=1)]
     else:
-        m = 16 * ((len(side.a) - 1) // 3 if side.kind == "spline" else 1)
-        ts = np.linspace(0.0, 1.0, m + 1)
-        S = side.points(ts)
-        t = ts[np.argmin(np.linalg.norm(P[:, None, :] - S[None], axis=2), axis=1)]
-        dist = np.linalg.norm(side.points(t) - P, axis=1)
-        h = 0.5 / m                     # a Newton step stays near its sample
-        for _ in range(8):              # Newton on (C(t) - P).C'(t) = 0, the steps that get closer
-            R, D, D2 = side.points(t) - P, _side_tangents(side, t), _side_seconds(side, t)
-            f = np.einsum("ij,ij->i", R, D)
-            df = np.einsum("ij,ij->i", D, D) + np.einsum("ij,ij->i", R, D2)
-            step = np.where(df > 0, -f / np.where(df > 0, df, 1.0), -np.sign(f) * h)
-            tn = np.clip(t + np.clip(step, -h, h), 0.0, 1.0)
-            dn = np.linalg.norm(side.points(tn) - P, axis=1)
-            better = dn < dist
-            t, dist = np.where(better, tn, t), np.where(better, dn, dist)
+        t = np.asarray(start, float).copy()
+    dist = np.linalg.norm(side.points(t) - P, axis=1)
+    h = 0.5 / (len(ts) - 1)             # a Newton step stays near its sample
+    todo = np.arange(len(P))
+    for _ in range(8):                  # Newton on (C(t) - P).C'(t) = 0, the steps that get closer
+        tt, Q = t[todo], P[todo]
+        R, D, D2 = side.points(tt) - Q, _side_tangents(side, tt), _side_seconds(side, tt)
+        f = np.einsum("ij,ij->i", R, D)
+        df = np.einsum("ij,ij->i", D, D) + np.einsum("ij,ij->i", R, D2)
+        step = np.clip(np.where(df > 0, -f / np.where(df > 0, df, 1.0), -np.sign(f) * h), -h, h)
+        tn = np.clip(tt + step, 0.0, 1.0)
+        dn = np.linalg.norm(side.points(tn) - Q, axis=1)
+        better = dn < dist[todo]
+        t[todo[better]], dist[todo[better]] = tn[better], dn[better]
+        todo = todo[better & (np.abs(step) > 1e-13)]   # the converged ones stop
+        if not len(todo):
+            break
     return np.linalg.norm(side.points(t) - P, axis=1), t
 
 
 def _crossings_inside(V: np.ndarray, P: np.ndarray) -> np.ndarray:
     """Inside the polygon of vertices V, by the parity of the crossings of
-    a half line (no distances)."""
+    a half line (no distances; matplotlib's Path when there, in C++)."""
+    try:
+        from matplotlib.path import Path
+    except ImportError:
+        Path = None
+    if Path is not None and len(P) > 64:
+        return Path(np.asarray(V, float)).contains_points(np.asarray(P, float))
     A, B = V, np.roll(V, -1, axis=0)
     y, x = P[:, 1:2], P[:, 0:1]
     ya, yb = A[None, :, 1], B[None, :, 1]
@@ -701,29 +721,109 @@ def _crossings_inside(V: np.ndarray, P: np.ndarray) -> np.ndarray:
     return np.sum(((ya > y) != (yb > y)) & (x < xc), axis=1) % 2 == 1
 
 
-def curved_polygon_sdf(prim: dict, P: np.ndarray, chunk: int = 4096) -> np.ndarray:
+_CURVED_CACHE: dict = {}
+
+
+def _curved_parts(prim: dict):
+    """The sides of a curved polygon, a fine polyline of its boundary and
+    its orientation, kept for the last few polygons (the same polygon is
+    asked many times for one view: fill, pieces, interfaces)."""
+    import json
+    try:
+        key = json.dumps(prim, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        key = None
+    hit = _CURVED_CACHE.get(key) if key is not None else None
+    if hit is not None:
+        return hit
+    all_sides = sides(prim)
+    samples = [_side_samples(side) if side.kind != "segment" else None for side in all_sides]
+    A, B, which, ta, tb = [], [], [], [], []      # the chords of the samples, by side
+    for i, (side, smp) in enumerate(zip(all_sides, samples)):
+        ts, S = smp if smp is not None else (np.array([0.0, 1.0]), np.array([side.a, side.b], float))
+        A.append(S[:-1]), B.append(S[1:]), which.append(np.full(len(ts) - 1, i)), ta.append(ts[:-1]), tb.append(ts[1:])
+    soup = tuple(np.concatenate(x) for x in (A, B, which, ta, tb))
+    poly = boundary_polyline(prim, per_span=16, per_arc=16)    # (the crossings)
+    out = (all_sides, samples, soup, poly, polygon_area(poly) > 0)
+    if key is not None:
+        if len(_CURVED_CACHE) > 16:
+            _CURVED_CACHE.clear()
+        _CURVED_CACHE[key] = out
+    return out
+
+
+def _segments_nearest(A: np.ndarray, B: np.ndarray, P: np.ndarray):
+    """(distance, index, position along it) of the nearest of the segments
+    A-B for each point P."""
+    D = B - A
+    L2 = np.maximum(np.einsum("ij,ij->i", D, D), 1e-300)
+    R = P[:, None, :] - A[None]
+    u = np.clip(np.einsum("pkj,kj->pk", R, D) / L2[None], 0.0, 1.0)
+    R -= u[..., None] * D[None]
+    d2 = np.einsum("pkj,pkj->pk", R, R)
+    j = np.argmin(d2, axis=1)
+    rows = np.arange(len(P))
+    return np.sqrt(d2[rows, j]), j, u[rows, j]
+
+
+def _soup_nearest(A: np.ndarray, B: np.ndarray, P: np.ndarray, group: int = 16):
+    """_segments_nearest for many segments: in groups of a few consecutive
+    ones, each group tried only for the points that its bounding box may
+    hold nearer than the nearest group start."""
+    if len(A) <= 2 * group:
+        return _segments_nearest(A, B, P)
+    starts = list(range(0, len(A), group))
+    lo = np.array([np.minimum(A[i:i + group].min(axis=0), B[i:i + group].min(axis=0)) for i in starts])
+    hi = np.array([np.maximum(A[i:i + group].max(axis=0), B[i:i + group].max(axis=0)) for i in starts])
+    W = A[::group]
+    ub = np.sqrt(np.min(((P[:, None, :] - W[None]) ** 2).sum(axis=2), axis=1)) * (1 + 1e-12)
+    dist, idx, pos = np.full(len(P), np.inf), np.zeros(len(P), int), np.zeros(len(P))
+    for g, i in enumerate(starts):
+        gap = np.maximum(np.maximum(lo[g] - P, P - hi[g]), 0.0)
+        k = np.flatnonzero(np.einsum("ij,ij->i", gap, gap) <= ub * ub)
+        if len(k):
+            d, j, u = _segments_nearest(A[i:i + group], B[i:i + group], P[k])
+            better = d < dist[k]
+            kb = k[better]
+            dist[kb], idx[kb], pos[kb] = d[better], i + j[better], u[better]
+    return dist, idx, pos
+
+
+def curved_polygon_sdf(prim: dict, P: np.ndarray, chunk: int = 2048) -> np.ndarray:
     """Signed euclidean distance to a polygon with splines (and fillets):
-    the distance to the nearest side; inside by the normal there, or, the
-    nearest point being a vertex, by the crossings with a polyline."""
+    the nearest chord of samples of the sides gives the nearest side and a
+    start on it, Newton's method the nearest point (all the sides for the
+    points whose nearest point is an end of a side); inside by the normal
+    there, or, at a vertex, by the crossings with a polyline."""
     P = np.asarray(P, float)
     if len(P) > chunk:
         return np.concatenate([curved_polygon_sdf(prim, P[i:i + chunk], chunk) for i in range(0, len(P), chunk)])
-    poly = boundary_polyline(prim, per_span=16, per_arc=16)
-    ccw = polygon_area(poly) > 0
-    best = np.full(len(P), np.inf)
-    normal_in = np.full(len(P), np.nan)
-    for side in sides(prim):
-        d, t = _side_nearest(side, P)
-        closer = d < best
-        best = np.where(closer, d, best)
-        T = _side_tangents(side, t)
-        left = np.einsum("ij,ij->i", P - side.points(t), np.column_stack([-T[:, 1], T[:, 0]]))
-        s = np.where((t > 1e-9) & (t < 1 - 1e-9), np.sign(left if ccw else -left), np.nan)
-        normal_in = np.where(closer, s, normal_in)
-    undecided = np.isnan(normal_in) | (normal_in == 0)
-    inside = normal_in > 0
-    if undecided.any():
-        inside[undecided] = _crossings_inside(poly, P[undecided])
+    all_sides, samples, (A, B, which, ta, tb), poly, ccw = _curved_parts(prim)
+    _, j, u = _soup_nearest(A, B, P)               # the nearest chord: its side, a start on it
+    side_of, start = which[j].copy(), ta[j] + u * (tb[j] - ta[j])
+    best, tpar = np.zeros(len(P)), np.zeros(len(P))
+    for i, side in enumerate(all_sides):
+        k = np.flatnonzero(side_of == i)
+        if len(k):
+            best[k], tpar[k] = _side_nearest(side, P[k], samples[i], start[k])
+    # at an end of its side, the nearest point may be on the next side: all the sides then
+    ends = np.flatnonzero((tpar <= 1e-12) | (tpar >= 1 - 1e-12))
+    if len(ends):
+        for i, side in enumerate(all_sides):
+            d, t = _side_nearest(side, P[ends], samples[i])
+            closer = d < best[ends]
+            best[ends[closer]], tpar[ends[closer]], side_of[ends[closer]] = d[closer], t[closer], i
+    inside = _crossings_inside(poly, P)
+    sgn = np.full(len(P), np.nan)                  # inside by the normal at the nearest point
+    for i, side in enumerate(all_sides):
+        k = np.flatnonzero(side_of == i)
+        if len(k):
+            t = tpar[k]
+            T = _side_tangents(side, t)
+            left = np.einsum("ij,ij->i", P[k] - side.points(t), np.column_stack([-T[:, 1], T[:, 0]]))
+            sgn[k] = np.where((t > 1e-9) & (t < 1 - 1e-9), np.sign(left if ccw else -left), np.nan)
+    decided = ~(np.isnan(sgn) | (sgn == 0))
+    inside[decided] = sgn[decided] > 0
     return np.where(inside, -best, best)
 
 
@@ -984,18 +1084,13 @@ def _runs(side: Side, test, samples: int) -> list[Piece]:
     if on.all():
         return [Piece(side, 0.0, 1.0)]
     changes = np.flatnonzero(on[1:] != on[:-1])
-
-    def refine(i):              # transition between samples i and i + 1
-        lo, hi = t[i], t[i + 1]
-        state = on[i]
-        for _ in range(40):
-            mid = 0.5 * (lo + hi)
-            if test(np.array([mid]))[0] == state:
-                lo = mid
-            else:
-                hi = mid
-        return 0.5 * (lo + hi)
-    ends = [refine(i) for i in changes]
+    # the transitions between the samples i and i + 1, all bisected together
+    lo, hi, state = t[changes].copy(), t[changes + 1].copy(), on[changes]
+    for _ in range(40):
+        mid = 0.5 * (lo + hi)
+        same = test(mid) == state
+        lo, hi = np.where(same, mid, lo), np.where(same, hi, mid)
+    ends = (0.5 * (lo + hi)).tolist()
     starts = ends[0::2] if not on[0] else [0.0] + ends[1::2]
     stops = ends[1::2] if not on[0] else ends[0::2]
     if on[-1]:
@@ -1015,12 +1110,21 @@ def pieces(shape: dict, samples: int = 720, level=None) -> list[Piece]:
     overestimates a piece by about sqrt(2 eps), hence a small eps.
     level: another function negative inside (e.g. region_level) whose
     boundary is wanted instead (it must be made of sides of the primitives)."""
+    if level is None and _single(shape):          # all its sides, whole
+        return [Piece(side, 0.0, 1.0) for side in sides(shape)]
     eps = 1e-9 * size(shape)
     level = level or (lambda P: sdf(shape, P))
     out = []
     for side in sides(shape):
         out += _runs(side, lambda t, side=side: _separates(level, side, t, eps), samples)
     return out
+
+
+def _single(shape: dict) -> bool:
+    """A single primitive (no boolean operation, no copies)."""
+    prims = list(primitives(shape))
+    return len(prims) == 1 and prims[0][1].get("type") not in BOOLEANS and (
+        shape.get("type") not in BOOLEANS and not T.has_transforms(shape))
 
 
 def key_points(shape: dict) -> np.ndarray:
@@ -1051,6 +1155,8 @@ def key_points(shape: dict) -> np.ndarray:
 def interfaces(shape: dict, samples: int = 720) -> list[Piece]:
     """The parts of the sides of the primitives that lie inside the domain:
     the interfaces between its regions (e.g. the circle of an inclusion)."""
+    if _single(shape):                            # no interfaces in a single primitive
+        return []
     eps = 1e-9 * size(shape)
     out = []
     for side in sides(shape):
