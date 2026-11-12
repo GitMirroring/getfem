@@ -25,6 +25,7 @@ import copy
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -128,8 +129,12 @@ def test_view_control():
             v = win.viewer
             win.select(("meshes", 0))
             win.build_mesh()
-            while win.jobs.running:
+            t0 = time.time()
+            while win.jobs.running and time.time() - t0 < 120:
                 app.processEvents()
+                time.sleep(0.01)            # (not millions of calls: a PySide6 of Python 3.10 lost
+                                            # a reference to None at each, then aborted)
+            assert not win.jobs.running, win.log.toPlainText()
             win.select(("meshes", 0))
             assert not v.curved_box.isHidden() and v.curved_box.value() == 2
             n2 = v.plotter.actors["edges"].GetMapper().GetInput().GetNumberOfPoints()
