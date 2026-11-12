@@ -81,6 +81,27 @@ def test_quadratic_display():
     corners = np.asarray(scene.surface(ds, 0).points, float)
     W = np.asarray(scene._wire(ds, 0).points, float)
     assert np.max(np.min(np.linalg.norm(W[:, None] - corners[None], axis=2), axis=1)) < 1e-6
+    # a mesh of solid elements: the edges of its boundary only (the inner ones would show
+    # through the faces near the surface); a tetrahedron cut in four at an inner point
+    import pyvista as pv
+    X = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.25, 0.25, 0.25]], float)
+    C = np.array([[0, 1, 2, 4], [0, 2, 3, 4], [0, 3, 1, 4], [1, 3, 2, 4]])
+    lin = pv.UnstructuredGrid({pv.CellType.TETRA: C}, X)
+    assert lin.extract_all_edges().n_cells == 10 and scene._wire(lin, 0).n_cells == 6
+    pairs = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)]          # the edges of a quadratic tetrahedron
+    mids, Q = {}, list(X)
+    conn = []
+    for c in C:
+        row = list(c)
+        for i, j in pairs:
+            key = tuple(sorted((c[i], c[j])))
+            if key not in mids:
+                mids[key] = len(Q)
+                Q.append((X[c[i]] + X[c[j]]) / 2)
+            row.append(mids[key])
+        conn.append(row)
+    quad = pv.UnstructuredGrid({pv.CellType.QUADRATIC_TETRA: np.array(conn)}, np.array(Q))
+    assert scene.is_curved(quad) and scene._wire(quad, 2).n_cells == 6
     # the selection of a curved mesh: refined (4 segments for each face), on the circle
     assert rim.n_cells > 30 and np.max(np.abs(np.linalg.norm(rim.points[:, :2], axis=1) - 1)) < 1e-2
     # a linear mesh: unchanged

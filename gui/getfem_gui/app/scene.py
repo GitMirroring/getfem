@@ -130,14 +130,47 @@ def surface(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     return ds.extract_surface(nonlinear_subdivision=max(0, int(level)))
 
 
+_VOLUME_TYPES = {10, 11, 12, 13, 14, 24, 25, 26, 27, 29, 32, 33}   # VTK cells of dimension 3
+
+
+def _boundary_pairs(ds: pv.DataSet):
+    """For a mesh of solid elements: the edges of its boundary faces, as
+    lines between the corners, and their pairs of corners (indices of the
+    points of ds); (None, None) for a mesh without solid elements (or with
+    quadratic solid elements other than tetrahedra: all their edges)."""
+    types = set(np.unique(np.asarray(getattr(ds, "celltypes", []))).tolist())
+    if not types & _VOLUME_TYPES:
+        return None, None
+    if types <= {10, 24}:                         # tetrahedra (GetFEM, Gmsh, Netgen): their faces seen once
+        cells = ds.cells_dict
+        T = np.vstack([np.asarray(cells[t])[:, :4] for t in (10, 24) if t in cells])
+        F = np.sort(np.vstack([T[:, list(f)] for f in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))]), axis=1)
+        F, count = np.unique(F, axis=0, return_counts=True)
+        F = F[count == 1]
+        pairs = np.unique(np.sort(np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [0, 2]]]), axis=1), axis=0)
+    elif types & {24, 25, 26, 27, 29, 32, 33}:   # other quadratic solids: all the edges
+        return None, None
+    else:                                        # linear solids: the surface of VTK
+        surf = ds.extract_surface(pass_pointid=True)
+        edges = surf.extract_all_edges()         # (the point data follows: the indices in ds)
+        ids = np.asarray(edges.point_data["vtkOriginalPointIds"])
+        lines = np.asarray(edges.lines).reshape(-1, 3)[:, 1:]
+        pairs = np.unique(np.sort(ids[lines], axis=1), axis=0) if len(lines) else np.zeros((0, 2), int)
+    lines = np.hstack([np.full((len(pairs), 1), 2), pairs]).ravel()
+    return pv.PolyData(np.asarray(ds.points, float), lines=lines), pairs
+
+
 def _wire(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
-    """Edges of the elements; for quadratic elements, each edge drawn by
+    """Edges of the elements, only those of the boundary for solid
+    elements (the inner ones, just behind the faces, would show through
+    them near the surface); for quadratic elements, each edge drawn by
     2^level segments on its parabola (straight between the corners for
     level 0, as the faces of surface())."""
     if not ds.n_cells:
         return ds
+    surface_edges, boundary = _boundary_pairs(ds)
     if not is_curved(ds):
-        return ds.extract_all_edges()
+        return surface_edges if surface_edges is not None else ds.extract_all_edges()
     triples = []
     types = np.asarray(ds.celltypes)
     for t, edges in _QUADRATIC_EDGES.items():
@@ -154,6 +187,9 @@ def _wire(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     key = np.sort(T[:, [0, 2]], axis=1)
     _, first = np.unique(key, axis=0, return_index=True)          # each edge once
     T = T[np.sort(first)]
+    if boundary is not None:                                      # solid elements: the boundary edges
+        on = set(map(tuple, boundary.tolist()))
+        T = T[np.array([(min(a, b), max(a, b)) in on for a, b in T[:, [0, 2]].tolist()], bool)]
     k = 2 ** int(level) if level > 0 else 1          # level 0: from corner to corner, as the faces drawn
     t = np.linspace(0.0, 1.0, k + 1)
     w = np.stack([(1 - t) * (1 - 2 * t), 4 * t * (1 - t), t * (2 * t - 1)])   # quadratic Lagrange
