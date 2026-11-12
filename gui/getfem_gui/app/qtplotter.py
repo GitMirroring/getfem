@@ -42,6 +42,7 @@ See https://discourse.vtk.org/t/16225 and pyvistaqt issue 793 (pyvistaqt
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pyvista
@@ -125,6 +126,11 @@ class QtPlotter(QVTKRenderWindowInteractor, BasePlotter):
             return                               # drawn by a paint event meanwhile
         self._changed = False
         BasePlotter.render(self)
+        if os.environ.get("GETFEM_GUI_GL_INFO") and not getattr(self, "_gl_reported", False):
+            self._gl_reported = True              # what the driver gave (depth bits: the hidden edges)
+            w = self.ren_win
+            print(f"3D view: depth buffer {w.GetDepthBufferSize()} bits, {w.GetMultiSamples()} samples\n"
+                  + (w.ReportCapabilities() or "")[:1500], file=sys.stderr)
 
     def paintEvent(self, ev):  # noqa: N802 (Qt)
         if getattr(self, "_closed", False) or self._painting:

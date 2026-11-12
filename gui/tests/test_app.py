@@ -837,3 +837,15 @@ def test_platform_under_wayland():
         assert choose_platform(env, probe=lambda: True) is None and env == before
     env = dict(wl)
     assert choose_platform(env, probe=lambda: False) is None and "QT_QPA_PLATFORM" not in env
+
+
+def test_opengl_format():
+    """The default OpenGL format of the windows: a depth buffer of 24 bits
+    (the 3D view renders in its native window; with 8 bits, the edges of
+    the elements hidden or showing through the faces)."""
+    from PySide6.QtGui import QSurfaceFormat
+    from getfem_gui.app.viewer import prepare_opengl
+    prepare_opengl()
+    fmt = QSurfaceFormat.defaultFormat()
+    assert fmt.depthBufferSize() >= 24 and fmt.majorVersion() == 3
+

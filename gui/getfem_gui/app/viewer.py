@@ -44,9 +44,13 @@ def prepare_opengl() -> None:
 
     When VTK's Qt widget renders through a QOpenGLWidget
     (vtkmodules.qt.QVTKRWIBase), on Wayland its context must match the
-    default format of the top-level window, otherwise the view stays black. This is the format of VTK's QVTKRenderWindowAdapter:
-    desktop OpenGL 3.2 core (not GLES, whose GLSL rejects VTK's shaders); VTK
-    renders into its own framebuffers, hence the minimal buffers.
+    default format of the top-level window, otherwise the view stays black.
+    This is the format of VTK's QVTKRenderWindowAdapter: desktop OpenGL 3.2
+    core (not GLES, whose GLSL rejects VTK's shaders). The 3D view (app/
+    qtplotter.py) renders in the native window of its widget, whose visual
+    follows this default format: a depth buffer of 24 bits (with 8 bits,
+    the faces and the edges of the elements at nearly the same depth could
+    not be told apart: edges hidden or showing through the faces).
     """
     from PySide6.QtCore import QCoreApplication
     from PySide6.QtGui import QSurfaceFormat
@@ -56,8 +60,9 @@ def prepare_opengl() -> None:
     fmt.setVersion(3, 2)
     fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
     for size in (fmt.setRedBufferSize, fmt.setGreenBufferSize, fmt.setBlueBufferSize,
-                 fmt.setAlphaBufferSize, fmt.setDepthBufferSize):
+                 fmt.setAlphaBufferSize):
         size(8)
+    fmt.setDepthBufferSize(24)
     fmt.setStencilBufferSize(0)
     fmt.setSamples(0)
     QSurfaceFormat.setDefaultFormat(fmt)

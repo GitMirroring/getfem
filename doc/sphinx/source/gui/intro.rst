@@ -95,6 +95,9 @@ Environment variables
    under Wayland it would open apart (the frame of the interface empty).
    Qt's X11 platform needs ``libxcb-cursor0`` (Ubuntu: ``sudo apt install
    libxcb-cursor0``). ``QT_QPA_PLATFORM``, if set, is used as is.
+``GETFEM_GUI_GL_INFO``
+   prints what the OpenGL driver gives to the 3D view (depth buffer,
+   samples, capabilities), at its first rendering (display problems).
 ``GETFEM_GUI_NO_3D``
    replaces the 3D view by a placeholder (tests).
 ``GETFEM_GUI_OFFSCREEN_3D``
