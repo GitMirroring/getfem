@@ -41,8 +41,14 @@ Exporting the view
 ^^^^^^^^^^^^^^^^^^
 
 **File → Export the view...** (or the **Export** button of the view) writes
-what the view shows (a field, a mesh, a geometry) as vector graphics, PDF,
-SVG, EPS or PostScript, for documents: the polygons and lines drawn by VTK,
-through its GL2PS module (in the VTK of PyPI and of most distributions); or
-as an image, PNG, JPEG or TIFF, at twice the size of the view. Without the
-GL2PS module, a PDF holds the image of the view.
+what the view shows (a field, a mesh, a geometry), the format chosen in the
+file dialog:
+
+- *vector* (PDF, SVG, EPS, PostScript), for documents: the polygons and lines
+  drawn by VTK, through its GL2PS module when this VTK has it; otherwise a 2D
+  view is drawn again by matplotlib (the field with smooth colors, the edges,
+  the isolines, the color bar and the title). A 3D view without GL2PS is
+  offered as an image instead;
+- *image* (PNG, JPEG, TIFF, or a PDF, SVG or EPS holding the image): the
+  pixel density is asked (300 dpi by default, a pixel of the view counting
+  for 1/96 inch), the page of a PDF having the size of the view.

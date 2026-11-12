@@ -1257,39 +1257,48 @@ class Viewer(QWidget):
             return False
         return True
 
-    def export_view(self, path: str | Path, scale: int = 2) -> str:
-        """The view written to a file: PDF, SVG, EPS or PostScript as vector
-        graphics (the polygons and lines of VTK, through GL2PS), PNG, JPEG
-        or TIFF as an image (scale times the size of the view). Without the
-        GL2PS module of VTK, a PDF is the image of the view in a page.
-        What was written ("vector", "image" or "image in PDF")."""
+    def _bar_label(self) -> str:
+        bars = getattr(self.plotter, "scalar_bars", None) or {}
+        return next(iter(bars.keys()), "") if hasattr(bars, "keys") else ""
+
+    def export_view(self, path: str | Path, mode: str = "vector", dpi: int = 300) -> str:
+        """The view written to a file. mode "vector": PDF, SVG, EPS or
+        PostScript as vector graphics, through the GL2PS module of VTK when
+        it is there, else drawn again by matplotlib for a 2D view (a 3D view
+        without GL2PS: ValueError). mode "image" (and PNG, JPEG, TIFF): the
+        image of the view at dpi pixels per inch (a view pixel taken as 1/96
+        inch), in a page for PDF, SVG or EPS. What was written ("vector",
+        "vector (matplotlib)" or "image")."""
         if self.plotter is None:
             raise ValueError("no 3D view")
         path = Path(path)
         ext = path.suffix.lower()
-        if ext in self.VECTOR_FORMATS and self.vector_export_available():
-            self.plotter.save_graphic(str(path), title=self.status.text() or "GetFEM", raster=False, painter=True)
-            return "vector"
+        if ext not in self.VECTOR_FORMATS and ext not in self.IMAGE_FORMATS:
+            raise ValueError(f"{ext or path.name}: not a known format")
+        title = self.status.text()
+        if mode == "vector" and ext in self.VECTOR_FORMATS:
+            if self.vector_export_available():
+                self.plotter.save_graphic(str(path), title=title or "GetFEM", raster=False, painter=True)
+                return "vector"
+            from .vector2d import export_planar
+            export_planar(self.plotter, path, title=title, label=self._bar_label())
+            return "vector (matplotlib)"
+        dpi = max(24, min(int(dpi), 2400))
+        scale = max(1, round(dpi / 96))
         if ext in self.IMAGE_FORMATS:
             self.plotter.screenshot(str(path), scale=scale)
             return "image"
-        if ext != ".pdf":
-            raise ValueError(f"{self.VECTOR_FORMATS.get(ext, ext)}: a vector export, which needs the GL2PS "
-                             "module of VTK (not in this VTK); PDF or PNG instead")
-        from PySide6.QtCore import QMarginsF, QSizeF
-        from PySide6.QtGui import QImage, QPageLayout, QPageSize, QPainter, QPdfWriter
         img = self.plotter.screenshot(None, return_img=True, scale=scale)
         h, w = img.shape[:2]
-        data = np.ascontiguousarray(img[:, :, :3])
-        qimg = QImage(data.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-        pdf = QPdfWriter(str(path))
-        pdf.setResolution(150 * scale)
-        pdf.setPageSize(QPageSize(QSizeF(w / (1.5 * scale), h / (1.5 * scale)), QPageSize.Unit.Point))
-        pdf.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Point)
-        painter = QPainter(pdf)
-        painter.drawImage(painter.viewport(), qimg)
-        painter.end()
-        return "image in PDF"
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+        fig = Figure(figsize=(w / scale / 96, h / scale / 96))      # the size of the view on screen
+        FigureCanvasAgg(fig)
+        ax = fig.add_axes((0, 0, 1, 1))
+        ax.imshow(img, interpolation="none")
+        ax.set_axis_off()
+        fig.savefig(str(path), dpi=dpi)
+        return "image"
 
     def close_plotter(self):
         if self.plotter is not None:

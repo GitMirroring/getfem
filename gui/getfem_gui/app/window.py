@@ -1742,32 +1742,54 @@ class MainWindow(QMainWindow):
         self.state.setText(f"Mesh {name!r} written to {path}")
         return True
 
-    def export_view(self, path=None) -> bool:
-        """Write the view as vector graphics (PDF, SVG, EPS) or as an image."""
+    def export_view(self, path=None, mode: str | None = None, dpi: int | None = None) -> bool:
+        """Write the view as vector graphics (PDF, SVG, EPS) or as an image
+        (PNG, JPEG, TIFF, or PDF with the image), at a density asked."""
         v = self.viewer
         if v.plotter is None:
             QMessageBox.information(self, APP_NAME, "No 3D view to export.")
             return False
         if path is None:
-            formats = dict(v.VECTOR_FORMATS)
-            filters = [f"{name} (vector) (*{ext})" for ext, name in formats.items()] + \
+            filters = [f"{name} (vector) (*{ext})" for ext, name in v.VECTOR_FORMATS.items()] + \
+                [f"{name} (image) (*{ext})" for ext, name in v.VECTOR_FORMATS.items() if ext != ".ps"] + \
                 [f"{name} (*{ext})" for ext, name in v.IMAGE_FORMATS.items()]
             stem = re.sub(r"[^\w.-]+", "_", v.status.text().split(" — ")[0])[:60].strip("_") or "view"
             start = str((self.path.parent if self.path else Path.cwd()) / f"{stem}.pdf")
-            path, chosen = QFileDialog.getSaveFileName(self, "Export the view", start, ";;".join(filters))
+            path, chosen = QFileDialog.getSaveFileName(self, "Export the view", start, ";;".join(filters),
+                                                       getattr(self, "_export_filter", filters[0]))
             if not path:
                 return False
+            self._export_filter = chosen
             if not Path(path).suffix:
                 path += re.search(r"\*(\.\w+)", chosen).group(1) if chosen else ".pdf"
+            if mode is None:
+                mode = "vector" if "(vector)" in (chosen or "") else "image"
+        ext = Path(path).suffix.lower()
+        if mode is None:
+            mode = "vector" if ext in v.VECTOR_FORMATS else "image"
+        if mode == "image" and dpi is None:
+            dpi, ok = QInputDialog.getInt(self, "Export the view", "Pixel density (dots per inch):",
+                                          getattr(self, "_export_dpi", 300), 24, 2400, 50)
+            if not ok:
+                return False
+            self._export_dpi = dpi
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            what = v.export_view(path)
+            what = v.export_view(path, mode=mode, dpi=dpi or 300)
         except (ValueError, OSError, RuntimeError) as exc:
+            QApplication.restoreOverrideCursor()
+            if mode == "vector" and "GL2PS" in str(exc) and ext != ".ps":
+                if QMessageBox.question(self, APP_NAME, f"Cannot export the view as vector graphics: {exc}."
+                                        f"\n\nExport it as an image in the {ext[1:].upper()} instead?"
+                                        ) == QMessageBox.StandardButton.Yes:
+                    return self.export_view(path, mode="image", dpi=dpi)
+                return False
             QMessageBox.critical(self, APP_NAME, f"Cannot export the view:\n{exc}")
             return False
         finally:
-            QApplication.restoreOverrideCursor()
-        note = " (an image: the vector export needs the GL2PS module of VTK)" if what == "image in PDF" else ""
+            if QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
+        note = f" (an image at {dpi} dpi)" if what == "image" else ""
         self._log(f"View written to {path}{note}")
         self.state.setText(f"View written to {path}{note}")
         return True

@@ -851,8 +851,10 @@ def test_opengl_format():
 
 
 def test_export_view():
-    """The view exported: an image (PNG), a PDF (vector through the GL2PS
-    module of VTK, or the image in a page without it), SVG only as vector."""
+    """The view exported: an image (PNG, or in a PDF page of the size of the
+    view, at the density asked), vector graphics through the GL2PS module of
+    VTK, or else drawn by matplotlib for a 2D view (a 3D view: refused)."""
+    import re as _re
     import tempfile
     from getfem_gui.app.window import MainWindow
     app()
@@ -865,20 +867,60 @@ def test_export_view():
         win.select(("geometries", 0))
         with tempfile.TemporaryDirectory() as tmp:
             png, pdf = Path(tmp) / "view.png", Path(tmp) / "view.pdf"
-            assert win.export_view(png) and png.read_bytes()[:4] == b"\x89PNG"
-            assert win.export_view(pdf) and pdf.read_bytes()[:4] == b"%PDF"
-            if not v.vector_export_available():
-                try:
-                    v.export_view(Path(tmp) / "view.svg")
-                    raise AssertionError("an SVG without GL2PS")
-                except ValueError as exc:
-                    assert "GL2PS" in str(exc)
+            assert win.export_view(png, dpi=192) and png.read_bytes()[:4] == b"\x89PNG"
+            w, h = v.plotter.window_size
+            from PySide6.QtGui import QImage
+            assert QImage(str(png)).width() == 2 * w                   # 192 dpi: twice the view
+            assert win.export_view(pdf, mode="image", dpi=150) and pdf.read_bytes()[:4] == b"%PDF"
+            box = [float(x) for x in _re.search(rb"/MediaBox\s*\[([^\]]*)\]", pdf.read_bytes()).group(1).split()]
+            assert abs(box[2] - box[0] - 0.75 * w) < 2 and abs(box[3] - box[1] - 0.75 * h) < 2  # 1 px = 1/96 in
+            assert b"/Subtype /Image" in pdf.read_bytes()
+            if not v.vector_export_available():                    # the 2D view drawn by matplotlib
+                svg = Path(tmp) / "view.svg"
+                assert v.export_view(svg) == "vector (matplotlib)" and b"<image" not in svg.read_bytes()
+                assert b"<path" in svg.read_bytes()
+                assert v.export_view(pdf) == "vector (matplotlib)" and b"/Subtype /Image" not in pdf.read_bytes()
             calls = []                                  # the vector path: save_graphic of PyVista
+            avail = v.vector_export_available
             v.vector_export_available = lambda: True
             v.plotter.save_graphic = lambda path, **kw: calls.append((path, kw))
             assert v.export_view(Path(tmp) / "view.svg") == "vector"
             assert calls[0][0].endswith("view.svg") and calls[0][1]["raster"] is False
+            v.vector_export_available = avail
     finally:
         os.environ["GETFEM_GUI_NO_3D"] = "1"
         win.setWindowModified(False)
         win.close()
+
+
+def test_planar_vector_export():
+    """vector2d: the faces with a colormap, the lines, of a 2D plotter as
+    matplotlib paths; a 3D one refused."""
+    import tempfile
+    import pyvista as pv
+    from getfem_gui.app import vector2d
+    pl = pv.Plotter(off_screen=True)
+    try:
+        sq = pv.Plane(i_resolution=4, j_resolution=4)
+        sq["_shown"] = sq.points[:, 0]
+        pl.add_mesh(sq, scalars="_shown", cmap="viridis", clim=(-0.5, 0.5), name="field")
+        pl.add_mesh(sq.extract_all_edges(), color="black", name="edges")
+        pl.add_mesh(pv.Plane(center=(3, 0, 0)), color="red", name="mesh")
+        parts = vector2d.planar_parts(pl)
+        kinds = {p[-1]: p for p in parts}
+        assert kinds["field"][0] == "faces" and kinds["field"][3] is not None
+        assert kinds["field"][5] == (-0.5, 0.5) and kinds["mesh"][3] is None
+        assert kinds["edges"][0] == "lines" and len(kinds["edges"][1]) == 40
+        assert parts[-1][0] == "lines"                       # the lines over the faces
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "v.pdf"
+            vector2d.export_planar(pl, out, title="T", label="u")
+            assert out.read_bytes()[:4] == b"%PDF"
+            pl.add_mesh(pv.Cube(), name="cube")
+            try:
+                vector2d.planar_parts(pl)
+                raise AssertionError("a 3D view")
+            except ValueError as exc:
+                assert "GL2PS" in str(exc)
+    finally:
+        pl.close()
