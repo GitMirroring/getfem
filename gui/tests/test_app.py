@@ -812,3 +812,20 @@ def test_action_buttons_wrapped():
         win.setWindowModified(False)
         win.close()
 
+
+def test_platform_under_wayland():
+    """Under Wayland, Qt's X11 platform (XWayland) when it works: the 3D
+    view (VTK's widget, an X window) inside the window; Qt's choice
+    otherwise, or when the user chose."""
+    from getfem_gui.app import choose_platform
+    if not sys.platform.startswith("linux"):
+        return
+    wl = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
+    env = dict(wl)
+    assert choose_platform(env, probe=lambda: True) == "xcb" and env["QT_QPA_PLATFORM"] == "xcb"
+    for env in ({"DISPLAY": ":0"}, {"WAYLAND_DISPLAY": "wayland-0"}, dict(wl, QT_QPA_PLATFORM="wayland"),
+                dict(wl, GETFEM_GUI_WAYLAND="1")):
+        before = dict(env)
+        assert choose_platform(env, probe=lambda: True) is None and env == before
+    env = dict(wl)
+    assert choose_platform(env, probe=lambda: False) is None and "QT_QPA_PLATFORM" not in env

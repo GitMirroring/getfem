@@ -26,6 +26,41 @@ import os
 import sys
 
 
+def _xcb_works(timeout: float = 10.0) -> bool:
+    """Whether Qt can open its X11 (xcb) platform here (its plugin may need
+    system libraries, libxcb-cursor0 for Qt >= 6.5): a short subprocess."""
+    import subprocess
+    code = "from PySide6.QtWidgets import QApplication; QApplication(['probe'])"
+    env = dict(os.environ, QT_QPA_PLATFORM="xcb")
+    try:
+        return subprocess.run([sys.executable, "-c", code], env=env, timeout=timeout,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def choose_platform(env=None, probe=_xcb_works) -> str | None:
+    """The Qt platform for the window: on Linux under Wayland, X11 (xcb,
+    through XWayland) when it works. The 3D view is VTK's Qt widget, which
+    renders in a window of the X server: under the wayland platform of Qt,
+    VTK opens it apart and the frame of the interface stays empty.
+    QT_QPA_PLATFORM chosen by the user, or GETFEM_GUI_WAYLAND set, keep
+    Qt's choice. Sets QT_QPA_PLATFORM; returns the platform chosen (None:
+    Qt's)."""
+    env = os.environ if env is None else env
+    if not sys.platform.startswith("linux") or env.get("QT_QPA_PLATFORM") or env.get("GETFEM_GUI_WAYLAND"):
+        return None
+    if not env.get("WAYLAND_DISPLAY") or not env.get("DISPLAY"):     # not Wayland, or no XWayland
+        return None
+    if not probe():
+        print("warning: under Wayland, the 3D view needs Qt's X11 platform (xcb), which cannot be "
+              "opened (on Ubuntu: sudo apt install libxcb-cursor0); it may open in a separate window",
+              file=sys.stderr)
+        return None
+    env["QT_QPA_PLATFORM"] = "xcb"
+    return "xcb"
+
+
 def main(argv: list[str] | None = None, python: str | None = None, splash: bool = True) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -42,6 +77,8 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
         return 1
     from .viewer import prepare_opengl
 
+    if QApplication.instance() is None:
+        choose_platform()               # Wayland: X11 (XWayland), for the 3D view inside the window
     prepare_opengl()
     app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setApplicationName("GetFEM GUI")

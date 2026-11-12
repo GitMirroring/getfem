@@ -88,6 +88,13 @@ Environment variables
    ``~/.config/getfem_gui/materials.json``).
 ``GETFEM_GUI_NO_SPLASH``
    no start-up window (as ``--no-splash``).
+``GETFEM_GUI_WAYLAND``
+   under Wayland (Linux), keeps Qt's Wayland platform. By default the
+   interface uses Qt's X11 platform there (through XWayland), when it
+   works: the 3D view is VTK's widget, which renders in an X window, and
+   under Wayland it would open apart (the frame of the interface empty).
+   Qt's X11 platform needs ``libxcb-cursor0`` (Ubuntu: ``sudo apt install
+   libxcb-cursor0``). ``QT_QPA_PLATFORM``, if set, is used as is.
 ``GETFEM_GUI_NO_3D``
    replaces the 3D view by a placeholder (tests).
 ``GETFEM_GUI_OFFSCREEN_3D``
