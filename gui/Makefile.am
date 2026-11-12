@@ -21,7 +21,7 @@
 # parallel. A test file whose tests all need what is missing (pytest, PySide6,
 # PyVista, Gmsh...) is reported as skipped.
 
-EXTRA_DIST = README.md pyproject.toml getfem_gui examples doc tests/check.py
+EXTRA_DIST = README.md CLAUDE.md pyproject.toml getfem_gui examples doc tests/check.py
 
 GUI_TESTS =                                     \
     tests/test_app.py                           \
