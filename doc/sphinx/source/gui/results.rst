@@ -45,11 +45,12 @@ what the view shows (a field, a mesh, a geometry). A dialog asks first for
 the format, for vector graphics or an image, and for the pixel density of an
 image (with the size in pixels it gives), then for the file:
 
-- *vector* (PDF, SVG, EPS, PostScript), for documents: the polygons and lines
-  drawn by VTK, through its GL2PS module when this VTK has it; otherwise a 2D
-  view is drawn again by matplotlib (the field with smooth colors, the edges,
-  the isolines, the color bar and the title). A 3D view without GL2PS is
-  exported as an image (the dialog says why);
+- *vector* (PDF, SVG, EPS, PostScript), for documents: the view drawn again
+  by matplotlib. A 2D view in its plane (the field with smooth colors, the
+  edges, the isolines, the color bar and the title); a 3D view as seen by
+  its camera, the faces shaded and sorted from the farthest (painter's
+  algorithm), the faces turned away and the hidden edges left out, on a
+  white background, with the color bar and the title;
 - *image* (PNG, JPEG, TIFF, or a PDF, SVG or EPS holding the image), at the
   pixel density chosen (300 dpi by default, a pixel of the view counting for
   1/96 inch), the page of a PDF having the size of the view.

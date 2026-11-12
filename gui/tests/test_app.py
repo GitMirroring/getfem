@@ -852,8 +852,8 @@ def test_opengl_format():
 
 def test_export_view():
     """The view exported: an image (PNG, or in a PDF page of the size of the
-    view, at the density asked), vector graphics through the GL2PS module of
-    VTK, or else drawn by matplotlib for a 2D view (a 3D view: refused)."""
+    view, at the density asked), or vector graphics drawn by matplotlib;
+    the dialog of the choices."""
     import re as _re
     import tempfile
     from getfem_gui.app.window import MainWindow
@@ -875,11 +875,10 @@ def test_export_view():
             box = [float(x) for x in _re.search(rb"/MediaBox\s*\[([^\]]*)\]", pdf.read_bytes()).group(1).split()]
             assert abs(box[2] - box[0] - 0.75 * w) < 2 and abs(box[3] - box[1] - 0.75 * h) < 2  # 1 px = 1/96 in
             assert b"/Subtype /Image" in pdf.read_bytes()
-            if not v.vector_export_available():                    # the 2D view drawn by matplotlib
-                svg = Path(tmp) / "view.svg"
-                assert v.export_view(svg) == "vector (matplotlib)" and b"<image" not in svg.read_bytes()
-                assert b"<path" in svg.read_bytes()
-                assert v.export_view(pdf) == "vector (matplotlib)" and b"/Subtype /Image" not in pdf.read_bytes()
+            svg = Path(tmp) / "view.svg"                           # the 2D view drawn by matplotlib
+            assert v.export_view(svg) == "vector" and b"<image" not in svg.read_bytes()
+            assert b"<path" in svg.read_bytes()
+            assert v.export_view(pdf) == "vector" and b"/Subtype /Image" not in pdf.read_bytes()
             # the dialog: the format, vector or image, the density (the size it gives), then the file
             from PySide6.QtWidgets import QFileDialog
             from getfem_gui.app.export_dialog import ExportDialog
@@ -903,18 +902,11 @@ def test_export_view():
                 dlg.format.setCurrentIndex(dlg.format.findData(".svg"))
                 dlg.vector.setChecked(True)
                 assert dlg.mode() == "vector" and not dlg.density.isEnabled()
-                dlg = ExportDialog(None, (w, h), "a 3D view needs the GL2PS module of VTK", ".pdf", "vector")
-                assert dlg.mode() == "image" and "GL2PS" in dlg.note.text()     # no vector for a 3D view
+                dlg = ExportDialog(None, (w, h), "no view", ".pdf", "vector")
+                assert dlg.mode() == "image" and "no view" in dlg.note.text()   # no vector: said why
             finally:
                 QFileDialog.getSaveFileName = saved
-            assert seen["problem"] == ("" if v.vector_export_available() else v.vector_problem())
-            calls = []                                  # the vector path: save_graphic of PyVista
-            avail = v.vector_export_available
-            v.vector_export_available = lambda: True
-            v.plotter.save_graphic = lambda path, **kw: calls.append((path, kw))
-            assert v.export_view(Path(tmp) / "view.svg") == "vector"
-            assert calls[0][0].endswith("view.svg") and calls[0][1]["raster"] is False
-            v.vector_export_available = avail
+            assert seen["problem"] == ""
     finally:
         os.environ["GETFEM_GUI_NO_3D"] = "1"
         win.setWindowModified(False)
@@ -959,6 +951,41 @@ def test_planar_vector_export():
                 vector2d.planar_parts(pl)
                 raise AssertionError("a 3D view")
             except ValueError as exc:
-                assert "GL2PS" in str(exc)
+                assert "2D" in str(exc)
+    finally:
+        pl.close()
+
+
+def test_3d_vector_export():
+    """vector2d.export_3d: a ball of tetrahedra with its edges, seen by the
+    camera: the faces turned away and their edges left out, the items from
+    the farthest, the lines just after their face; vector graphics only."""
+    import tempfile
+    import numpy as np
+    import pyvista as pv
+    from getfem_gui.app import scene, vector2d
+    rng = np.random.default_rng(1)
+    P = rng.normal(size=(200, 3))
+    P /= np.linalg.norm(P, axis=1)[:, None]
+    ball = pv.PolyData(np.vstack([P, 0.5 * P[:60]])).delaunay_3d()
+    pl = pv.Plotter(off_screen=True, window_size=(400, 300))
+    try:
+        scene.show_mesh(pl, ball)
+        pl.camera.position, pl.camera.focal_point, pl.camera.up = (0, 0, 6), (0, 0, 0), (0, 1, 0)
+        items = vector2d.view_items(pl)
+        faces = items["face"][:, 3] > 0                      # (the lines: no face color)
+        surf = ball.extract_surface()
+        assert 0.25 * surf.n_cells < faces.sum() < 0.6 * surf.n_cells        # the side seen (from z = 6)
+        nlines = (~faces).sum()
+        assert 0.25 * scene._wire(ball).n_lines < nlines < 0.75 * scene._wire(ball).n_lines
+        assert items["polys"].shape[1:] == (3, 2) and items["size"] == (400, 300)
+        X = items["polys"].reshape(-1, 2)
+        assert X.min() > -1 and X[:, 0].max() < 401 and X[:, 1].max() < 301          # on the page
+        with tempfile.TemporaryDirectory() as tmp:
+            for ext in (".pdf", ".svg"):
+                out = Path(tmp) / f"v{ext}"
+                vector2d.export_3d(pl, out, title="Mesh", label="")
+                data = out.read_bytes()
+                assert len(data) > 10000 and b"/Subtype /Image" not in data and b"<image" not in data
     finally:
         pl.close()

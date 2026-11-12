@@ -1246,30 +1246,9 @@ class Viewer(QWidget):
     VECTOR_FORMATS = {".pdf": "PDF", ".svg": "SVG", ".eps": "EPS", ".ps": "PostScript"}
     IMAGE_FORMATS = {".png": "PNG image", ".jpg": "JPEG image", ".tif": "TIFF image"}
 
-    @staticmethod
-    def vector_export_available() -> bool:
-        """Whether VTK has its GL2PS module (the vector export of the view)."""
-        try:
-            import vtkmodules.vtkRenderingGL2PSOpenGL2  # noqa: F401 (the capture of the primitives)
-            from vtkmodules.vtkIOExportGL2PS import vtkGL2PSExporter
-            vtkGL2PSExporter()
-        except ImportError:
-            return False
-        return True
-
     def vector_problem(self) -> str:
-        """Why the view cannot be exported as vector graphics ("" if it can):
-        a 3D view needs the GL2PS module of VTK."""
-        if self.plotter is None:
-            return "no view"
-        if self.vector_export_available():
-            return ""
-        from .vector2d import planar_parts
-        try:
-            planar_parts(self.plotter)
-        except ValueError as exc:
-            return str(exc).replace("a 3D view: its vector export needs", "a 3D view needs")
-        return ""
+        """Why the view cannot be exported as vector graphics ("" if it can)."""
+        return "no view" if self.plotter is None else ""
 
     def _bar_label(self) -> str:
         bars = getattr(self.plotter, "scalar_bars", None) or {}
@@ -1277,12 +1256,13 @@ class Viewer(QWidget):
 
     def export_view(self, path: str | Path, mode: str = "vector", dpi: int = 300) -> str:
         """The view written to a file. mode "vector": PDF, SVG, EPS or
-        PostScript as vector graphics, through the GL2PS module of VTK when
-        it is there, else drawn again by matplotlib for a 2D view (a 3D view
-        without GL2PS: ValueError). mode "image" (and PNG, JPEG, TIFF): the
-        image of the view at dpi pixels per inch (a view pixel taken as 1/96
-        inch), in a page for PDF, SVG or EPS. What was written ("vector",
-        "vector (matplotlib)" or "image")."""
+        PostScript as vector graphics, the view drawn again by matplotlib
+        (vector2d: a 2D view with smooth colors, a 3D view by the painter's
+        algorithm; the GL2PS module of VTK, when VTK has it, gives an image
+        of the 3D props with OpenGL 3). mode "image" (and PNG, JPEG, TIFF):
+        the image of the view at dpi pixels per inch (a view pixel taken as
+        1/96 inch), in a page for PDF, SVG or EPS. What was written
+        ("vector" or "image")."""
         if self.plotter is None:
             raise ValueError("no 3D view")
         path = Path(path)
@@ -1291,12 +1271,14 @@ class Viewer(QWidget):
             raise ValueError(f"{ext or path.name}: not a known format")
         title = self.status.text()
         if mode == "vector" and ext in self.VECTOR_FORMATS:
-            if self.vector_export_available():
-                self.plotter.save_graphic(str(path), title=title or "GetFEM", raster=False, painter=True)
-                return "vector"
-            from .vector2d import export_planar
-            export_planar(self.plotter, path, title=title, label=self._bar_label())
-            return "vector (matplotlib)"
+            from .vector2d import export_3d, export_planar, planar_parts
+            try:
+                planar_parts(self.plotter)
+                planar = True
+            except ValueError:
+                planar = False
+            (export_planar if planar else export_3d)(self.plotter, path, title=title, label=self._bar_label())
+            return "vector"
         dpi = max(24, min(int(dpi), 2400))
         scale = max(1, round(dpi / 96))
         if ext in self.IMAGE_FORMATS:
