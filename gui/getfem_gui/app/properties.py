@@ -865,6 +865,12 @@ class PropertiesPanel(QScrollArea):
         bands.setChecked(bool(settings.get("bands")))
         bands.toggled.connect(lambda on: self.viewChanged.emit({"bands": on}))
         form.addRow("", bands)
+        edges = QCheckBox("mesh edges")
+        edges.setObjectName("edges")
+        edges.setToolTip("The edges of the elements over the field (also the Edges button of the view)")
+        edges.setChecked(bool(settings.get("edges")))
+        edges.toggled.connect(lambda on: self.viewChanged.emit({"edges": on}))
+        form.addRow("", edges)
         if vectors:
             arrows = QComboBox()
             arrows.setObjectName("arrows")

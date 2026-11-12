@@ -170,7 +170,8 @@ file of the exported fields; later: extrema, global outputs and `history`
 (one value per iteration, time step or parameter value). Graphics of a model store the display settings of a result field:
 `{"name": "T bands", "field": "T", "bands": true, "isolines": 12, "cmap":
 "coolwarm", "range": [20, null], "arrows": "heat_flux", "cut": [[0, 0.05],
-[0.1, 0.05]]}` (other keys: `component`, `warp`, `scale`; a missing key takes
+[0.1, 0.05]]}` (other keys: `component`, `warp`, `scale`, `edges` (the edges of
+the elements over the field, false by default); a missing key takes
 its default value). Global graphics (later): curves of histories.
 
 ## Interface

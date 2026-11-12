@@ -239,7 +239,7 @@ PROPERTIES = {
 # Saved views of a result field (models[k].graphics): their display settings;
 # a missing key takes the default value.
 GRAPHIC_DEFAULTS = {"component": None, "warp": True, "scale": None, "isolines": 0, "bands": False,
-                    "cmap": None, "range": None, "arrows": None, "cut": None}
+                    "cmap": None, "range": None, "arrows": None, "cut": None, "edges": False}
 
 # Generic conditions on a variable: their values ("var": the kind of the
 # variable, scalar or vector)
@@ -1650,7 +1650,7 @@ def _validate_graphics(graphics, where, errors) -> None:
         c = g.get("component")
         if c is not None and (isinstance(c, bool) or not isinstance(c, int) or c < 0):
             errors.append(f"{w}.component: component number or null expected")
-        for key in ("warp", "bands"):
+        for key in ("warp", "bands", "edges"):
             if key in g and not isinstance(g[key], bool):
                 errors.append(f"{w}.{key}: true or false expected")
         if "isolines" in g:

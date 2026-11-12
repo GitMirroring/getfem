@@ -116,6 +116,8 @@ class MainWindow(QMainWindow):
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
         self.viewer.handleClicked.connect(self._handle_clicked)
+        self.viewer.fieldEdgesToggled.connect(self._field_edges_toggled)
+        self.viewer.field_edges_saved = True
         self.viewer.regionClicked.connect(self._region_clicked)
         self.viewer.faceClicked.connect(self._face_clicked)
         self.viewer.cutDrawn.connect(lambda ab: self._set_cut(ab))
@@ -631,6 +633,17 @@ class MainWindow(QMainWindow):
             return ("models", k, "graphics", gi), md["graphics"][gi]
         return None, None
 
+    def _field_edges_toggled(self, on: bool) -> None:
+        """The Edges button of the view on a result field: its setting, and
+        the check box of the form."""
+        from PySide6.QtWidgets import QCheckBox
+        box = self.props.findChild(QCheckBox, "edges")
+        if box is not None:
+            box.blockSignals(True)
+            box.setChecked(on)
+            box.blockSignals(False)
+        self._result_view_changed({"edges": on})
+
     def _result_view_changed(self, change: dict):
         """A display setting changed: saved in the graphic (an edit of the
         model, undoable, which does not make the results out of date)."""
@@ -691,7 +704,7 @@ class MainWindow(QMainWindow):
         try:
             view = {"isolines": s.get("isolines", 0), "bands": s.get("bands", False),
                     "cmap": s.get("cmap"), "clim": s.get("range"), "arrows": s.get("arrows"),
-                    "cut": s.get("cut")}
+                    "cut": s.get("cut"), "edges": bool(s.get("edges", False))}
             self.viewer.show_field(file, name, s.get("component"), warp,
                                    s.get("scale") or 1.0, status=status, view=view)
         except Exception as exc:  # noqa: BLE001 (unreadable or unexpected file)

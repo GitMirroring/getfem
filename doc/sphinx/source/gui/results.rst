@@ -17,6 +17,8 @@ result field selected, its form sets:
 * the deformed shape, with its scale factor (displacements);
 * the colormap and the color range (empty bounds: the range of the values);
 * isolines, evenly spaced in the range, and color bands;
+* the edges of the elements over the field (*mesh edges*, also the **Edges**
+  button of the view);
 * arrows of a vector field, on a regular grid, of a length proportional to
   the magnitude;
 * a cut line.

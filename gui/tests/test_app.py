@@ -675,6 +675,14 @@ def test_elasticity_results_and_display_settings():
         spin.setValue(5.0)
         spin.editingFinished.emit()
         assert win.graphic_settings("mechanics", "u")["scale"] == 5.0
+        # the edges of the elements over the field: a setting (the check box, or the Edges button)
+        assert win.graphic_settings("mechanics", "u").get("edges", False) is False
+        win.props.findChild(QCheckBox, "edges").setChecked(True)
+        assert win.graphic_settings("mechanics", "u")["edges"] is True and win.viewer.edges["field"]
+        win.viewer.toggle_edges()                           # the button of the view: the same setting
+        assert win.graphic_settings("mechanics", "u")["edges"] is False and not win.viewer.edges["field"]
+        assert not win.props.findChild(QCheckBox, "edges").isChecked()
+        assert M.validate(win.model) == []
         close(win)
 
 

@@ -213,6 +213,7 @@ class Viewer(QWidget):
     escaped = Signal()                    # Escape pressed in the view (drawing stopped)
     handleAction = Signal(str)            # an editing action chosen in the menu of a handle
     handleClicked = Signal(str)           # a handle clicked (pressed and released without moving)
+    fieldEdgesToggled = Signal(bool)      # the Edges button on a result field: its setting
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -230,7 +231,8 @@ class Viewer(QWidget):
                                 ("XY", "View the XY plane (pan and zoom; Ctrl + drag to rotate)", lambda: self._view("view_xy")),
                                 ("3D", "Isometric view, free rotation (a profile: drawn on its plane, in the "
                                        "3D geometry)", lambda: self._view("view_isometric")),
-                                ("Edges", "Show or hide the element edges", self.toggle_edges)):
+                                ("Edges", "Show or hide the element edges (on a result field: a setting of its graphic)",
+                                 self.toggle_edges)):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(tip)
@@ -1054,9 +1056,13 @@ class Viewer(QWidget):
     def show_field(self, result_file: Path, name: str, component=None, warp=None,
                    scale=1.0, status: str = "", view: dict | None = None) -> None:
         """A result field; view: display options of scene.show_field (isolines,
-        bands, cmap, clim, arrows, cut). A cut line also shows the values
-        along it under the view; a click on a 2D field shows its value."""
+        bands, cmap, clim, arrows, cut, edges: the edges of the elements). A
+        cut line also shows the values along it under the view; a click on a
+        2D field shows its value."""
         view = dict(view or {})
+        if "edges" in view:                    # the setting of the graphic
+            self.edges["field"] = bool(view["edges"])
+        view.pop("edges", None)
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status, view)
         self._snap_points = None
@@ -1201,8 +1207,13 @@ class Viewer(QWidget):
         self.curved_box.setVisible(on)
 
     def toggle_edges(self):
+        """The edges of the elements shown or hidden: on a result field, its
+        display setting (saved in its graphic, by the window)."""
         kind = "field" if self._last and self._last[0] == "field" else "mesh"
         self.edges[kind] = not self.edges[kind]
+        if kind == "field" and getattr(self, "field_edges_saved", False):
+            self.fieldEdgesToggled.emit(self.edges[kind])     # the window shows the field again
+            return
         self.refresh()
 
     def refresh(self):
