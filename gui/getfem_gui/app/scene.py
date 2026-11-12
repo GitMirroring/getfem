@@ -279,7 +279,8 @@ def _segments(lines: np.ndarray) -> np.ndarray:
 def facing_wire(ds: pv.DataSet, level: int = CURVED) -> pv.PolyData | None:
     """The edges of the boundary of a mesh of solid elements (as _wire),
     each segment once per boundary triangle drawn along it, with the three
-    corners of that triangle, in the order seen from outside, at both ends
+    corners of that triangle, in the order seen from outside (the boundary
+    being closed), at both ends
     (point arrays tri0, tri1, tri2): the shader of cull_back_edges drops the
     copies whose triangle is turned away from the camera, so that an edge
     shows only if one of its faces does. Without that, the edges of the
@@ -292,17 +293,23 @@ def facing_wire(ds: pv.DataSet, level: int = CURVED) -> pv.PolyData | None:
     wire = _wire(ds, level)
     if not wire.n_points or not getattr(wire, "n_lines", 0):
         return None
-    surf = ds.extract_surface(pass_cellid=True, nonlinear_subdivision=max(0, int(level)) if is_curved(ds) else 0)
-    surf = surf.triangulate()
+    surf = ds.extract_surface(nonlinear_subdivision=max(0, int(level)) if is_curved(ds) else 0).triangulate()
     if not surf.n_cells:
         return None
+    # the triangles seen from outside: made consistent along their edges, then
+    # each closed part turned outward (VTK: from its leftmost point)
+    from vtkmodules.vtkFiltersCore import vtkPolyDataNormals
+    f = vtkPolyDataNormals()
+    f.SetInputData(surf.clean(tolerance=1e-9, absolute=False))
+    f.ConsistencyOn()
+    f.AutoOrientNormalsOn()
+    f.SplittingOff()
+    f.ComputePointNormalsOff()
+    f.ComputeCellNormalsOn()                      # (without normals, nothing is reordered)
+    f.Update()
+    surf = pv.wrap(f.GetOutput())
     Y = np.asarray(surf.points, float)
-    F = np.array(np.asarray(surf.faces).reshape(-1, 4)[:, 1:])
-    # each triangle seen from outside: its normal away from the inside of its element
-    inside = np.asarray(ds.cell_centers().points, float)[np.asarray(surf.cell_data["vtkOriginalCellIds"])]
-    n = np.cross(Y[F[:, 1]] - Y[F[:, 0]], Y[F[:, 2]] - Y[F[:, 0]])
-    flip = np.einsum("ij,ij->i", n, inside - Y[F[:, 0]]) > 0
-    F[flip] = F[flip][:, [0, 2, 1]]
+    F = np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
     # the segments of the wire as pairs of points of the surface (found by their coordinates)
     seg = _segments(np.asarray(wire.lines))
     X = np.asarray(wire.points, float)

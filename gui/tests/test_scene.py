@@ -507,6 +507,38 @@ def _ball(n=200, seed=1):
     return pv.PolyData(np.vstack([P, 0.5 * P[: n // 3]])).delaunay_3d()
 
 
+def _flipped(ds):
+    """The tetrahedra of ds, half of them in the other orientation."""
+    T = np.array(ds.cells_dict[10])
+    T[::2] = T[::2][:, [0, 2, 1, 3]]
+    return pv.UnstructuredGrid(np.hstack([np.full((len(T), 1), 4), T]).ravel(),
+                               np.full(len(T), 10, np.uint8), np.asarray(ds.points))
+
+
+def _quadratic_ball(n=150, seed=2):
+    """The ball of _ball with quadratic tetrahedra (middle nodes of the
+    boundary on the sphere)."""
+    ball = _ball(n, seed)
+    X, T = np.asarray(ball.points), np.asarray(ball.cells_dict[10])
+    edges = [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)]
+    pts, key, conn = list(X), {}, []
+    for t in T:
+        c = list(t)
+        for a, b in edges:
+            k = tuple(sorted((t[a], t[b])))
+            if k not in key:
+                m = 0.5 * (X[k[0]] + X[k[1]])
+                if min(np.linalg.norm(X[k[0]]), np.linalg.norm(X[k[1]])) > 1 - 1e-9:
+                    m /= np.linalg.norm(m)
+                key[k] = len(pts)
+                pts.append(m)
+            c.append(key[k])
+        conn.append(c)
+    conn = np.array(conn)
+    return pv.UnstructuredGrid(np.hstack([np.full((len(conn), 1), 10), conn]).ravel(),
+                               np.full(len(conn), 24, np.uint8), np.array(pts))
+
+
 def test_edges_of_the_faces_turned_to_the_camera():
     """The edges of a solid mesh: each segment once per boundary triangle
     along it, with its corners seen from outside (the shader drops those of
@@ -514,13 +546,18 @@ def test_edges_of_the_faces_turned_to_the_camera():
     the silhouettes); drawn by the shader (edge pixels on the image); the
     same far from the origin (the coordinates of VTK in float32)."""
     from getfem_gui.app import scene
-    ball = _ball()
-    for ds in (ball, ball.translate((1000.0, 2000.0, 500.0))):
+    ball, curved = _flipped(_ball()), _quadratic_ball()
+    two = ball.merge(curved.translate((3.0, 0.0, 0.0)))               # two parts, linear and curved
+    for ds, centers in ((ball, [(0, 0, 0)]), (ball.translate((1000.0, 2000.0, 500.0)), [(1000, 2000, 500)]),
+                        (curved, [(0, 0, 0)]), (two, [(0, 0, 0), (3, 0, 0)])):
         w = scene.facing_wire(ds)
-        assert w.n_lines == 2 * scene._wire(ds).n_lines             # two faces along each edge
+        assert w.n_lines == 2 * scene._segments(np.asarray(scene._wire(ds).lines)).shape[0]  # 2 faces/edge
         T0, T1, T2 = (np.asarray(w.point_data[k], float) for k in ("tri0", "tri1", "tri2"))
+        assert not np.any(np.all(T0 == T1, axis=1))                   # all found on the surface
         n = np.cross(T1 - T0, T2 - T0)
-        assert np.all(np.einsum("ij,ij->i", n, T0 - np.asarray(ds.center)) > 0)   # outward (convex)
+        C = np.asarray(centers, float)
+        c = C[np.argmin(np.linalg.norm(T0[:, None] - C[None], axis=2), axis=1)]
+        assert np.all(np.einsum("ij,ij->i", n, T0 - c) > 0)           # all outward (convex balls)
     assert scene.facing_wire(pv.Plane().cast_to_unstructured_grid()) is None  # no solid elements
     assert scene._unique_rows(np.array([[2, 1], [0, 3], [2, 1]])).tolist() == [[0, 3], [2, 1]]
     assert scene._rows_once(np.array([[2, 1], [0, 3], [2, 1]])).tolist() == [False, True, False]
