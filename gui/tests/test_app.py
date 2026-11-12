@@ -849,3 +849,36 @@ def test_opengl_format():
     fmt = QSurfaceFormat.defaultFormat()
     assert fmt.depthBufferSize() >= 24 and fmt.majorVersion() == 3
 
+
+def test_export_view():
+    """The view exported: an image (PNG), a PDF (vector through the GL2PS
+    module of VTK, or the image in a page without it), SVG only as vector."""
+    import tempfile
+    from getfem_gui.app.window import MainWindow
+    app()
+    os.environ.update(GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    win = MainWindow(EXAMPLES / "plate.json")
+    try:
+        v = win.viewer
+        if v.plotter is None:
+            return
+        win.select(("geometries", 0))
+        with tempfile.TemporaryDirectory() as tmp:
+            png, pdf = Path(tmp) / "view.png", Path(tmp) / "view.pdf"
+            assert win.export_view(png) and png.read_bytes()[:4] == b"\x89PNG"
+            assert win.export_view(pdf) and pdf.read_bytes()[:4] == b"%PDF"
+            if not v.vector_export_available():
+                try:
+                    v.export_view(Path(tmp) / "view.svg")
+                    raise AssertionError("an SVG without GL2PS")
+                except ValueError as exc:
+                    assert "GL2PS" in str(exc)
+            calls = []                                  # the vector path: save_graphic of PyVista
+            v.vector_export_available = lambda: True
+            v.plotter.save_graphic = lambda path, **kw: calls.append((path, kw))
+            assert v.export_view(Path(tmp) / "view.svg") == "vector"
+            assert calls[0][0].endswith("view.svg") and calls[0][1]["raster"] is False
+    finally:
+        os.environ["GETFEM_GUI_NO_3D"] = "1"
+        win.setWindowModified(False)
+        win.close()

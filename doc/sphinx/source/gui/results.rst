@@ -36,3 +36,13 @@ results out of date.
 
 The fields are also in the |vtu| files of the working folder, to be opened
 with ParaView, for instance.
+
+Exporting the view
+^^^^^^^^^^^^^^^^^^
+
+**File → Export the view...** (or the **Export** button of the view) writes
+what the view shows (a field, a mesh, a geometry) as vector graphics, PDF,
+SVG, EPS or PostScript, for documents: the polygons and lines drawn by VTK,
+through its GL2PS module (in the VTK of PyPI and of most distributions); or
+as an image, PNG, JPEG or TIFF, at twice the size of the view. Without the
+GL2PS module, a PDF holds the image of the view.

@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
         self.viewer.edgeClicked.connect(self._edge_clicked)
         self.viewer.handleClicked.connect(self._handle_clicked)
         self.viewer.fieldEdgesToggled.connect(self._field_edges_toggled)
+        self.viewer.exportRequested.connect(lambda: self.export_view())
         self.viewer.field_edges_saved = True
         self.viewer.regionClicked.connect(self._region_clicked)
         self.viewer.faceClicked.connect(self._face_clicked)
@@ -192,6 +193,9 @@ class MainWindow(QMainWindow):
                                                     "STEP...")
         self.a_export_mesh = self._action("Export the &mesh...", lambda: self.export_mesh(), None, None,
                                           "The mesh of the selected node as GetFEM, VTK, Gmsh, Abaqus...")
+        self.a_export_view = self._action("Export the &view...", lambda: self.export_view(), None, None,
+                                          "The view (mesh, field, geometry) as PDF, SVG or EPS (vector) or "
+                                          "as an image (PNG...)")
         self.a_quit = self._action("&Quit", self.close, QKeySequence.StandardKey.Quit)
         self.a_undo = self._action("&Undo", self.undo, QKeySequence.StandardKey.Undo, SP.SP_ArrowBack)
         self.a_redo = self._action("&Redo", self.redo, QKeySequence.StandardKey.Redo, SP.SP_ArrowForward)
@@ -213,7 +217,8 @@ class MainWindow(QMainWindow):
         for p in sorted(EXAMPLES_DIR.glob("*.json")):
             ex.addAction(self._action(p.stem, lambda _=False, p=p: self.open_example(p)))
         m.addSeparator()
-        for a in (self.a_save, self.a_save_as, self.a_export, self.a_export_geometry, self.a_export_mesh):
+        for a in (self.a_save, self.a_save_as, self.a_export, self.a_export_geometry, self.a_export_mesh,
+                  self.a_export_view):
             m.addAction(a)
         m.addSeparator()
         m.addAction(self.a_quit)
@@ -1735,6 +1740,36 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
         self._log(f"Mesh {name!r} written to {path}")
         self.state.setText(f"Mesh {name!r} written to {path}")
+        return True
+
+    def export_view(self, path=None) -> bool:
+        """Write the view as vector graphics (PDF, SVG, EPS) or as an image."""
+        v = self.viewer
+        if v.plotter is None:
+            QMessageBox.information(self, APP_NAME, "No 3D view to export.")
+            return False
+        if path is None:
+            formats = dict(v.VECTOR_FORMATS)
+            filters = [f"{name} (vector) (*{ext})" for ext, name in formats.items()] + \
+                [f"{name} (*{ext})" for ext, name in v.IMAGE_FORMATS.items()]
+            stem = re.sub(r"[^\w.-]+", "_", v.status.text().split(" — ")[0])[:60].strip("_") or "view"
+            start = str((self.path.parent if self.path else Path.cwd()) / f"{stem}.pdf")
+            path, chosen = QFileDialog.getSaveFileName(self, "Export the view", start, ";;".join(filters))
+            if not path:
+                return False
+            if not Path(path).suffix:
+                path += re.search(r"\*(\.\w+)", chosen).group(1) if chosen else ".pdf"
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            what = v.export_view(path)
+        except (ValueError, OSError, RuntimeError) as exc:
+            QMessageBox.critical(self, APP_NAME, f"Cannot export the view:\n{exc}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+        note = " (an image: the vector export needs the GL2PS module of VTK)" if what == "image in PDF" else ""
+        self._log(f"View written to {path}{note}")
+        self.state.setText(f"View written to {path}{note}")
         return True
 
     def show_script(self):

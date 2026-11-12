@@ -219,6 +219,7 @@ class Viewer(QWidget):
     handleAction = Signal(str)            # an editing action chosen in the menu of a handle
     handleClicked = Signal(str)           # a handle clicked (pressed and released without moving)
     fieldEdgesToggled = Signal(bool)      # the Edges button on a result field: its setting
+    exportRequested = Signal()            # the Export button: the window asks where
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -237,7 +238,9 @@ class Viewer(QWidget):
                                 ("3D", "Isometric view, free rotation (a profile: drawn on its plane, in the "
                                        "3D geometry)", lambda: self._view("view_isometric")),
                                 ("Edges", "Show or hide the element edges (on a result field: a setting of its graphic)",
-                                 self.toggle_edges)):
+                                 self.toggle_edges),
+                                ("Export", "Export the view: PDF, SVG, EPS (vector) or an image (PNG...)",
+                                 self.exportRequested.emit)):
             b = QToolButton()
             b.setText(text)
             b.setToolTip(tip)
@@ -1239,6 +1242,54 @@ class Viewer(QWidget):
     def screenshot(self, path: str | Path) -> None:
         if self.plotter is not None:
             self.plotter.screenshot(str(path))
+
+    VECTOR_FORMATS = {".pdf": "PDF", ".svg": "SVG", ".eps": "EPS", ".ps": "PostScript"}
+    IMAGE_FORMATS = {".png": "PNG image", ".jpg": "JPEG image", ".tif": "TIFF image"}
+
+    @staticmethod
+    def vector_export_available() -> bool:
+        """Whether VTK has its GL2PS module (the vector export of the view)."""
+        try:
+            import vtkmodules.vtkRenderingGL2PSOpenGL2  # noqa: F401 (the capture of the primitives)
+            from vtkmodules.vtkIOExportGL2PS import vtkGL2PSExporter
+            vtkGL2PSExporter()
+        except ImportError:
+            return False
+        return True
+
+    def export_view(self, path: str | Path, scale: int = 2) -> str:
+        """The view written to a file: PDF, SVG, EPS or PostScript as vector
+        graphics (the polygons and lines of VTK, through GL2PS), PNG, JPEG
+        or TIFF as an image (scale times the size of the view). Without the
+        GL2PS module of VTK, a PDF is the image of the view in a page.
+        What was written ("vector", "image" or "image in PDF")."""
+        if self.plotter is None:
+            raise ValueError("no 3D view")
+        path = Path(path)
+        ext = path.suffix.lower()
+        if ext in self.VECTOR_FORMATS and self.vector_export_available():
+            self.plotter.save_graphic(str(path), title=self.status.text() or "GetFEM", raster=False, painter=True)
+            return "vector"
+        if ext in self.IMAGE_FORMATS:
+            self.plotter.screenshot(str(path), scale=scale)
+            return "image"
+        if ext != ".pdf":
+            raise ValueError(f"{self.VECTOR_FORMATS.get(ext, ext)}: a vector export, which needs the GL2PS "
+                             "module of VTK (not in this VTK); PDF or PNG instead")
+        from PySide6.QtCore import QMarginsF, QSizeF
+        from PySide6.QtGui import QImage, QPageLayout, QPageSize, QPainter, QPdfWriter
+        img = self.plotter.screenshot(None, return_img=True, scale=scale)
+        h, w = img.shape[:2]
+        data = np.ascontiguousarray(img[:, :, :3])
+        qimg = QImage(data.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        pdf = QPdfWriter(str(path))
+        pdf.setResolution(150 * scale)
+        pdf.setPageSize(QPageSize(QSizeF(w / (1.5 * scale), h / (1.5 * scale)), QPageSize.Unit.Point))
+        pdf.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout.Unit.Point)
+        painter = QPainter(pdf)
+        painter.drawImage(painter.viewport(), qimg)
+        painter.end()
+        return "image in PDF"
 
     def close_plotter(self):
         if self.plotter is not None:
