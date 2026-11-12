@@ -1257,6 +1257,20 @@ class Viewer(QWidget):
             return False
         return True
 
+    def vector_problem(self) -> str:
+        """Why the view cannot be exported as vector graphics ("" if it can):
+        a 3D view needs the GL2PS module of VTK."""
+        if self.plotter is None:
+            return "no view"
+        if self.vector_export_available():
+            return ""
+        from .vector2d import planar_parts
+        try:
+            planar_parts(self.plotter)
+        except ValueError as exc:
+            return str(exc).replace("a 3D view: its vector export needs", "a 3D view needs")
+        return ""
+
     def _bar_label(self) -> str:
         bars = getattr(self.plotter, "scalar_bars", None) or {}
         return next(iter(bars.keys()), "") if hasattr(bars, "keys") else ""

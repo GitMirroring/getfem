@@ -1744,46 +1744,37 @@ class MainWindow(QMainWindow):
 
     def export_view(self, path=None, mode: str | None = None, dpi: int | None = None) -> bool:
         """Write the view as vector graphics (PDF, SVG, EPS) or as an image
-        (PNG, JPEG, TIFF, or PDF with the image), at a density asked."""
+        (PNG, JPEG, TIFF, or PDF with the image): without path, the format,
+        the kind and the density chosen in a dialog, then the file."""
         v = self.viewer
         if v.plotter is None:
             QMessageBox.information(self, APP_NAME, "No 3D view to export.")
             return False
         if path is None:
-            filters = [f"{name} (vector) (*{ext})" for ext, name in v.VECTOR_FORMATS.items()] + \
-                [f"{name} (image) (*{ext})" for ext, name in v.VECTOR_FORMATS.items() if ext != ".ps"] + \
-                [f"{name} (*{ext})" for ext, name in v.IMAGE_FORMATS.items()]
+            from .export_dialog import FORMATS, ExportDialog
+            last = getattr(self, "_export_choice", (".pdf", "vector", 300))
+            dlg = ExportDialog(self, tuple(v.plotter.window_size), v.vector_problem(), *last)
+            if not self.run_export_dialog(dlg):
+                return False
+            ext, mode, dpi = dlg.ext(), dlg.mode(), dlg.dpi()
+            self._export_choice = (ext, mode, dpi)
+            name = next(n for e, n, _ in FORMATS if e == ext)
             stem = re.sub(r"[^\w.-]+", "_", v.status.text().split(" — ")[0])[:60].strip("_") or "view"
-            start = str((self.path.parent if self.path else Path.cwd()) / f"{stem}.pdf")
-            path, chosen = QFileDialog.getSaveFileName(self, "Export the view", start, ";;".join(filters),
-                                                       getattr(self, "_export_filter", filters[0]))
+            start = str((self.path.parent if self.path else Path.cwd()) / f"{stem}{ext}")
+            path, _ = QFileDialog.getSaveFileName(self, "Export the view", start, f"{name} (*{ext})")
             if not path:
                 return False
-            self._export_filter = chosen
-            if not Path(path).suffix:
-                path += re.search(r"\*(\.\w+)", chosen).group(1) if chosen else ".pdf"
-            if mode is None:
-                mode = "vector" if "(vector)" in (chosen or "") else "image"
+            if Path(path).suffix.lower() != ext:
+                path += ext
         ext = Path(path).suffix.lower()
         if mode is None:
             mode = "vector" if ext in v.VECTOR_FORMATS else "image"
-        if mode == "image" and dpi is None:
-            dpi, ok = QInputDialog.getInt(self, "Export the view", "Pixel density (dots per inch):",
-                                          getattr(self, "_export_dpi", 300), 24, 2400, 50)
-            if not ok:
-                return False
-            self._export_dpi = dpi
+        dpi = int(dpi or 300)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            what = v.export_view(path, mode=mode, dpi=dpi or 300)
+            what = v.export_view(path, mode=mode, dpi=dpi)
         except (ValueError, OSError, RuntimeError) as exc:
             QApplication.restoreOverrideCursor()
-            if mode == "vector" and "GL2PS" in str(exc) and ext != ".ps":
-                if QMessageBox.question(self, APP_NAME, f"Cannot export the view as vector graphics: {exc}."
-                                        f"\n\nExport it as an image in the {ext[1:].upper()} instead?"
-                                        ) == QMessageBox.StandardButton.Yes:
-                    return self.export_view(path, mode="image", dpi=dpi)
-                return False
             QMessageBox.critical(self, APP_NAME, f"Cannot export the view:\n{exc}")
             return False
         finally:
@@ -1793,6 +1784,10 @@ class MainWindow(QMainWindow):
         self._log(f"View written to {path}{note}")
         self.state.setText(f"View written to {path}{note}")
         return True
+
+    def run_export_dialog(self, dlg) -> bool:
+        """The dialog of the export run (replaced by the tests)."""
+        return dlg.exec() == dlg.DialogCode.Accepted
 
     def show_script(self):
         script = self.workdir / "run_getfem.py"

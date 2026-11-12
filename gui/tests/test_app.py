@@ -880,6 +880,34 @@ def test_export_view():
                 assert v.export_view(svg) == "vector (matplotlib)" and b"<image" not in svg.read_bytes()
                 assert b"<path" in svg.read_bytes()
                 assert v.export_view(pdf) == "vector (matplotlib)" and b"/Subtype /Image" not in pdf.read_bytes()
+            # the dialog: the format, vector or image, the density (the size it gives), then the file
+            from PySide6.QtWidgets import QFileDialog
+            from getfem_gui.app.export_dialog import ExportDialog
+            seen = {}
+            def run(dlg):
+                seen["problem"] = dlg.vector_problem
+                dlg.format.setCurrentIndex(dlg.format.findData(".png"))
+                assert not dlg.vector.isEnabled() and dlg.density.isEnabled()   # PNG: an image
+                dlg.density.setValue(192)
+                assert dlg.size.text().startswith(f"{2 * w} × {2 * h} pixels")
+                return True
+            win.run_export_dialog = run
+            saved = QFileDialog.getSaveFileName
+            QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(Path(tmp) / "chosen"), ""))
+            try:
+                assert win.export_view()
+                assert QImage(str(Path(tmp) / "chosen.png")).width() == 2 * w
+                assert win._export_choice == (".png", "image", 192)
+                dlg = ExportDialog(None, (w, h), "", *win._export_choice)        # the last choice again
+                assert dlg.ext() == ".png" and dlg.dpi() == 192
+                dlg.format.setCurrentIndex(dlg.format.findData(".svg"))
+                dlg.vector.setChecked(True)
+                assert dlg.mode() == "vector" and not dlg.density.isEnabled()
+                dlg = ExportDialog(None, (w, h), "a 3D view needs the GL2PS module of VTK", ".pdf", "vector")
+                assert dlg.mode() == "image" and "GL2PS" in dlg.note.text()     # no vector for a 3D view
+            finally:
+                QFileDialog.getSaveFileName = saved
+            assert seen["problem"] == ("" if v.vector_export_available() else v.vector_problem())
             calls = []                                  # the vector path: save_graphic of PyVista
             avail = v.vector_export_available
             v.vector_export_available = lambda: True

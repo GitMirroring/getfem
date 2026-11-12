@@ -41,14 +41,17 @@ Exporting the view
 ^^^^^^^^^^^^^^^^^^
 
 **File → Export the view...** (or the **Export** button of the view) writes
-what the view shows (a field, a mesh, a geometry), the format chosen in the
-file dialog:
+what the view shows (a field, a mesh, a geometry). A dialog asks first for
+the format, for vector graphics or an image, and for the pixel density of an
+image (with the size in pixels it gives), then for the file:
 
 - *vector* (PDF, SVG, EPS, PostScript), for documents: the polygons and lines
   drawn by VTK, through its GL2PS module when this VTK has it; otherwise a 2D
   view is drawn again by matplotlib (the field with smooth colors, the edges,
   the isolines, the color bar and the title). A 3D view without GL2PS is
-  offered as an image instead;
-- *image* (PNG, JPEG, TIFF, or a PDF, SVG or EPS holding the image): the
-  pixel density is asked (300 dpi by default, a pixel of the view counting
-  for 1/96 inch), the page of a PDF having the size of the view.
+  exported as an image (the dialog says why);
+- *image* (PNG, JPEG, TIFF, or a PDF, SVG or EPS holding the image), at the
+  pixel density chosen (300 dpi by default, a pixel of the view counting for
+  1/96 inch), the page of a PDF having the size of the view.
+
+The choices are kept for the next export.
