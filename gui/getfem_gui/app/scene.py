@@ -184,6 +184,19 @@ def message(plotter, text: str) -> None:
     plotter.add_text(text, position="upper_left", font_size=10, color="#444444")
 
 
+def behind_lines(actor):
+    """The faces of an actor drawn a little behind the lines at the same
+    place (the edges of the elements, the isolines): without it, the depth
+    test lets the faces hide parts of the edges, which appear and
+    disappear as the view turns. An offset of the depth of the polygons in
+    the depth buffer (OpenGL polygon offset): no cost at drawing."""
+    mapper = actor.GetMapper() if actor is not None else None
+    if mapper is not None:
+        mapper.SetResolveCoincidentTopologyToPolygonOffset()
+        mapper.SetRelativeCoincidentTopologyPolygonOffsetParameters(2.0, 4.0)
+    return actor
+
+
 def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
               title: str = "", reset: bool = True, edges: bool = True, level: int = CURVED) -> None:
     """The mesh, and optionally a selection (faces or elements) highlighted;
@@ -191,9 +204,9 @@ def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
     clear(plotter)
     planar = is_planar(mesh)
     faded = selection is not None
-    plotter.add_mesh(surface(mesh, level), color=FADED if faded else SURFACE,
-                     opacity=1.0 if planar or not faded else 0.35,
-                     show_edges=False, lighting=not planar, name="mesh")
+    behind_lines(plotter.add_mesh(surface(mesh, level), color=FADED if faded else SURFACE,
+                                  opacity=1.0 if planar or not faded else 0.35,
+                                  show_edges=False, lighting=not planar, name="mesh"))
     if edges:
         plotter.add_mesh(_wire(mesh, level), color=EDGES, opacity=0.35 if faded else 1.0,
                          line_width=1, lighting=False, name="edges")
@@ -203,8 +216,8 @@ def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
             plotter.add_mesh(selection, color=HIGHLIGHT, line_width=5, lighting=False,
                              render_lines_as_tubes=False, name="selection")
         else:
-            plotter.add_mesh(surface(selection, level), color=HIGHLIGHT, show_edges=False, lighting=not planar,
-                             name="selection")
+            behind_lines(plotter.add_mesh(surface(selection, level), color=HIGHLIGHT, show_edges=False,
+                                          lighting=not planar, name="selection"))
             if edges:
                 plotter.add_mesh(_wire(selection, level), color="#7a2a14", line_width=1,
                                  lighting=False, name="selection_edges")
@@ -314,16 +327,17 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
     if not clim[1] > clim[0]:
         clim = (clim[0] - 0.5 * (abs(clim[0]) or 1.0), clim[0] + 0.5 * (abs(clim[0]) or 1.0))
     planar = is_planar(ds)
-    plotter.add_mesh(drawn, scalars="_shown", cmap=cmap or CMAP, clim=clim,
-                     n_colors=(isolines + 1 if isolines > 0 else 10) if bands else 256,
-                     show_edges=edges and not curved, edge_color=EDGES, lighting=not planar,
-                     scalar_bar_args={"title": label, "vertical": True, "position_x": 0.86,
-                                      "position_y": 0.1, "height": 0.65, "width": 0.05,
-                                      "fmt": "%.3g", "color": "#333333",
-                                      "n_labels": (isolines + 2 if isolines + 2 <= 12 else 5) if bands and isolines
-                                      else 11 if bands else 5,
-                                      "title_font_size": 14, "label_font_size": 12},
-                     name="field")
+    field = plotter.add_mesh(drawn, scalars="_shown", cmap=cmap or CMAP, clim=clim,
+                         n_colors=(isolines + 1 if isolines > 0 else 10) if bands else 256,
+                         show_edges=edges and not curved, edge_color=EDGES, lighting=not planar,
+                         scalar_bar_args={"title": label, "vertical": True, "position_x": 0.86,
+                                          "position_y": 0.1, "height": 0.65, "width": 0.05,
+                                          "fmt": "%.3g", "color": "#333333",
+                                          "n_labels": (isolines + 2 if isolines + 2 <= 12 else 5) if bands and isolines
+                                          else 11 if bands else 5,
+                                          "title_font_size": 14, "label_font_size": 12},
+                         name="field")
+    behind_lines(field)                     # (the edges, the isolines in front of it)
     if edges and curved:                    # the edges of the elements, not of their subdivisions
         plotter.add_mesh(_wire(shown, level), color=EDGES, line_width=1, lighting=False, name="edges")
     levels = isoline_levels(*clim, isolines)
@@ -785,9 +799,9 @@ def show_geometry_3d(plotter, shape: dict, highlighted=None, part: dict | None =
         message(plotter, "empty geometry")
         return
     exact = "edges_kind" in surf.field_data
-    plotter.add_mesh(surf, color=HIGHLIGHT if highlighted is True else SURFACE, smooth_shading=not exact,
-                     opacity=0.55 if highlighted is True else 1.0, ambient=0.3, diffuse=0.7,
-                     specular=0.1, name="surface")
+    behind_lines(plotter.add_mesh(surf, color=HIGHLIGHT if highlighted is True else SURFACE,
+                                  smooth_shading=not exact, opacity=0.55 if highlighted is True else 1.0,
+                                  ambient=0.3, diffuse=0.7, specular=0.1, name="surface"))
     edges = surf.extract_feature_edges(feature_angle=30, boundary_edges=exact, manifold_edges=False,
                                        non_manifold_edges=False)
     if edges.n_points:
@@ -861,8 +875,8 @@ def show_manifold(plotter, src: dict, values: dict, title: str = "", reset: bool
             plotter.enable_lightkit()
         except (AttributeError, TypeError):
             pass
-        plotter.add_mesh(surf, color=SURFACE, smooth_shading=True, ambient=0.3, diffuse=0.7, specular=0.1,
-                         name="surface")
+        behind_lines(plotter.add_mesh(surf, color=SURFACE, smooth_shading=True, ambient=0.3, diffuse=0.7,
+                                      specular=0.1, name="surface"))
         edges = surf.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False,
                                            non_manifold_edges=False)
         if edges.n_points:

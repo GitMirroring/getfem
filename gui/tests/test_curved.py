@@ -115,6 +115,13 @@ def test_view_control():
             v.curved_box.setValue(4)
             n4 = v.plotter.actors["edges"].GetMapper().GetInput().GetNumberOfPoints()
             assert n4 > 3 * n2
+            # the faces drawn behind the edges (no edges hidden by the faces as the view turns)
+            mapper = v.plotter.actors["mesh"].GetMapper()
+            assert mapper.GetResolveCoincidentTopology() == 1                       # polygon offset
+            from vtkmodules.vtkCommonCore import reference
+            factor, units = reference(0.0), reference(0.0)
+            mapper.GetRelativeCoincidentTopologyPolygonOffsetParameters(factor, units)
+            assert float(factor) > 0 and float(units) > 0
             win.select(("geometries", 0))
             assert v.curved_box.isHidden()
         finally:
