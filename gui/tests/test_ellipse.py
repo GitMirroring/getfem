@@ -37,7 +37,8 @@ ROOT = ("geometries", 0, "source", "shape")
 
 def perimeter(a, b):
     t = np.linspace(0, 2 * np.pi, 200001)
-    return float(np.trapezoid(np.hypot(a * np.sin(t), b * np.cos(t)), t))
+    trapezoid = getattr(np, "trapezoid", None) or np.trapz          # (NumPy < 2: trapz)
+    return float(trapezoid(np.hypot(a * np.sin(t), b * np.cos(t)), t))
 
 
 def model_with(shape, h=0.08):

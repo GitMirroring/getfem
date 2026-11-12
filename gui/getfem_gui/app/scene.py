@@ -259,6 +259,13 @@ def _same_points(Y: np.ndarray, X: np.ndarray, tol: float):
     return ids, out
 
 
+def _padded_lines(poly) -> np.ndarray:
+    """The lines of a PolyData as [n, i0, ..., n, ...] (through VTK)."""
+    from .vector2d import cell_rows
+    rows = cell_rows(poly.GetLines())
+    return np.concatenate([np.concatenate([[len(r)], r]) for r in rows]).astype(np.int64) if rows else np.zeros(0, np.int64)
+
+
 def _segments(lines: np.ndarray) -> np.ndarray:
     """The segments (pairs of point indices) of the polylines of VTK."""
     if not len(lines):
@@ -309,9 +316,10 @@ def facing_wire(ds: pv.DataSet, level: int = CURVED) -> pv.PolyData | None:
     f.Update()
     surf = pv.wrap(f.GetOutput())
     Y = np.asarray(surf.points, float)
-    F = np.asarray(surf.faces).reshape(-1, 4)[:, 1:]
+    from .vector2d import cell_rows
+    F = np.array([r for r in cell_rows(surf.GetPolys()) if len(r) == 3], np.int64).reshape(-1, 3)
     # the segments of the wire as pairs of points of the surface (found by their coordinates)
-    seg = _segments(np.asarray(wire.lines))
+    seg = _segments(_padded_lines(wire))
     X = np.asarray(wire.points, float)
     tol = max(1e-5 * size(ds), 2e-6 * float(np.max(np.abs(Y))) if Y.size else 0.0, 1e-300)  # (float32: 6e-8)
     inv, sid = _same_points(Y, X, tol)

@@ -551,7 +551,7 @@ def test_edges_of_the_faces_turned_to_the_camera():
     for ds, centers in ((ball, [(0, 0, 0)]), (ball.translate((1000.0, 2000.0, 500.0)), [(1000, 2000, 500)]),
                         (curved, [(0, 0, 0)]), (two, [(0, 0, 0), (3, 0, 0)])):
         w = scene.facing_wire(ds)
-        assert w.n_lines == 2 * scene._segments(np.asarray(scene._wire(ds).lines)).shape[0]  # 2 faces/edge
+        assert w.n_lines == 2 * scene._segments(scene._padded_lines(scene._wire(ds))).shape[0]  # 2 faces/edge
         T0, T1, T2 = (np.asarray(w.point_data[k], float) for k in ("tri0", "tri1", "tri2"))
         assert not np.any(np.all(T0 == T1, axis=1))                   # all found on the surface
         n = np.cross(T1 - T0, T2 - T0)

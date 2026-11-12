@@ -934,10 +934,20 @@ def test_planar_vector_export():
         pl.add_mesh(sq, scalars="_shown", cmap="viridis", clim=(-0.5, 0.5), name="field")
         pl.add_mesh(sq.extract_all_edges(), color="black", name="edges")
         pl.add_mesh(pv.Plane(center=(3, 0, 0)), color="red", name="mesh")
+        # a mesh given to its mapper through a pipeline (as recent PyVista does)
+        from vtkmodules.vtkFiltersCore import vtkPassThrough
+        from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+        piped = vtkPassThrough()
+        piped.SetInputData(pv.Plane(center=(0, 3, 0)))
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputConnection(piped.GetOutputPort())
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+        pl.add_actor(actor, name="piped")
         parts = vector2d.planar_parts(pl)
         kinds = {p[-1]: p for p in parts}
         assert kinds["field"][0] == "faces" and kinds["field"][3] is not None
-        assert kinds["field"][5] == (-0.5, 0.5) and kinds["mesh"][3] is None
+        assert kinds["field"][5] == (-0.5, 0.5) and kinds["mesh"][3] is None and kinds["piped"][0] == "faces"
         assert kinds["edges"][0] == "lines" and len(kinds["edges"][1]) == 40
         assert parts[-1][0] == "lines"                       # the lines over the faces
         with tempfile.TemporaryDirectory() as tmp:

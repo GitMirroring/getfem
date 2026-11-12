@@ -41,6 +41,28 @@ def _lut_cmap(lut):
     return ListedColormap([lut.GetTableValue(i)[:3] for i in range(n)])
 
 
+def cell_rows(cells) -> list:
+    """The point indices of each cell of a vtkCellArray (polygons, lines),
+    read through VTK (the same in all versions of PyVista)."""
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+    if cells is None or not cells.GetNumberOfCells():
+        return []
+    off = vtk_to_numpy(cells.GetOffsetsArray()).astype(np.int64)
+    conn = vtk_to_numpy(cells.GetConnectivityArray()).astype(np.int64)
+    return [conn[a:b] for a, b in zip(off[:-1], off[1:])]
+
+
+def _input(mapper):
+    """The dataset drawn by a mapper, given as data or through a pipeline
+    (recent PyVista: the mesh with its scalars through a filter), updated."""
+    if mapper.GetNumberOfInputConnections(0):
+        alg = mapper.GetInputAlgorithm()
+        if alg is not None:
+            alg.Update()
+        return mapper.GetInputDataObject(0, 0)
+    return mapper.GetInput() if hasattr(mapper, "GetInput") else None
+
+
 def planar_parts(plotter) -> list:
     """The parts of a 2D view, back to front: ("faces", triangles (m x 3),
     points (n x 2), values or None, cmap, clim, color, opacity, name),
@@ -52,9 +74,10 @@ def planar_parts(plotter) -> list:
         if name.startswith(_SKIP_PREFIX) or not actor.GetVisibility():
             continue
         mapper = actor.GetMapper()
-        if mapper is None or not hasattr(mapper, "GetInput") or mapper.GetInput() is None:
+        data = _input(mapper) if mapper is not None else None
+        if data is None:
             continue
-        ds = pv.wrap(mapper.GetInput())
+        ds = pv.wrap(data)
         if not getattr(ds, "n_points", 0):
             continue
         P = np.asarray(ds.points, float)
@@ -62,9 +85,10 @@ def planar_parts(plotter) -> list:
             raise ValueError("a 3D view: its vector export needs the GL2PS module of VTK")
         prop = actor.GetProperty()
         poly = ds if isinstance(ds, pv.PolyData) else ds.extract_surface()
-        if poly.n_cells and getattr(poly, "n_faces_strict", poly.n_cells - poly.n_lines - poly.n_verts) > 0:
+        if poly.GetNumberOfPolys() or poly.GetNumberOfStrips():
             tri = poly.triangulate()
-            faces = np.asarray(tri.faces).reshape(-1, 4)[:, 1:] if tri.n_faces_strict else np.zeros((0, 3), int)
+            rows = [r for r in cell_rows(tri.GetPolys()) if len(r) == 3]
+            faces = np.array(rows, np.int64).reshape(-1, 3)
             values, cmap, clim = None, None, None
             if mapper.GetScalarVisibility() and mapper.GetLookupTable() is not None:
                 arr = mapper.GetArrayName() or "_shown"
@@ -76,15 +100,9 @@ def planar_parts(plotter) -> list:
             if len(faces):
                 out.append(("faces", faces, np.asarray(tri.points)[:, :2], values, cmap, clim, _rgb(prop),
                             float(prop.GetOpacity()), name))
-        if poly.n_lines:
-            lines = np.asarray(poly.lines)
-            segs, i = [], 0
+        if poly.GetNumberOfLines():
             Q = np.asarray(poly.points)[:, :2]
-            while i < len(lines):
-                k = int(lines[i])
-                ids = lines[i + 1:i + 1 + k]
-                segs.append(np.stack([Q[ids[:-1]], Q[ids[1:]]], axis=1))
-                i += k + 1
+            segs = [np.stack([Q[ids[:-1]], Q[ids[1:]]], axis=1) for ids in cell_rows(poly.GetLines()) if len(ids) > 1]
             if segs:
                 out.append(("lines", np.concatenate(segs), _rgb(prop), float(prop.GetLineWidth()),
                             float(prop.GetOpacity()), name))
