@@ -497,3 +497,52 @@ def test_3d_geometry_preview():
         finally:
             win.setWindowModified(False)
             win.close()
+
+
+def _ball(n=200, seed=1):
+    """Tetrahedra of a ball (points on the sphere and inside)."""
+    rng = np.random.default_rng(seed)
+    P = rng.normal(size=(n, 3))
+    P /= np.linalg.norm(P, axis=1)[:, None]
+    return pv.PolyData(np.vstack([P, 0.5 * P[: n // 3]])).delaunay_3d()
+
+
+def test_edges_of_the_faces_turned_to_the_camera():
+    """The edges of a solid mesh: each segment once per boundary triangle
+    along it, with its corners seen from outside (the shader drops those of
+    the triangles turned away: no edges of the back showing through near
+    the silhouettes); drawn by the shader (edge pixels on the image); the
+    same far from the origin (the coordinates of VTK in float32)."""
+    from getfem_gui.app import scene
+    ball = _ball()
+    for ds in (ball, ball.translate((1000.0, 2000.0, 500.0))):
+        w = scene.facing_wire(ds)
+        assert w.n_lines == 2 * scene._wire(ds).n_lines             # two faces along each edge
+        T0, T1, T2 = (np.asarray(w.point_data[k], float) for k in ("tri0", "tri1", "tri2"))
+        n = np.cross(T1 - T0, T2 - T0)
+        assert np.all(np.einsum("ij,ij->i", n, T0 - np.asarray(ds.center)) > 0)   # outward (convex)
+    assert scene.facing_wire(pv.Plane().cast_to_unstructured_grid()) is None  # no solid elements
+    assert scene._unique_rows(np.array([[2, 1], [0, 3], [2, 1]])).tolist() == [[0, 3], [2, 1]]
+    assert scene._rows_once(np.array([[2, 1], [0, 3], [2, 1]])).tolist() == [False, True, False]
+    def darkness(offset=None):
+        """The ink of the image of the ball seen from near (the edges)."""
+        behind = scene.behind_lines
+        if offset is not None:              # the faces pushed far back: the edges behind would show
+            def far(actor):
+                actor.GetMapper().SetRelativeCoincidentTopologyPolygonOffsetParameters(*offset)
+                return actor
+            scene.behind_lines = far
+        p = plotter()
+        try:
+            scene.show_mesh(p, ball)
+            assert p.actors["edges"].GetMapper().GetInput().GetPointData().GetArray("tri0") is not None
+            p.camera.focal_point, p.camera.position, p.camera.up = (0, 0, 0.6), (2.5, 0.3, -0.6), (0, 0, 1)
+            p.camera.view_angle = 30
+            L = p.screenshot(return_img=True)[..., :3].astype(float).mean(axis=2)
+            return float(np.clip(np.median(L[L < 250]) - L, 0, None).sum())
+        finally:
+            scene.behind_lines = behind
+            p.close()
+    front = darkness()
+    assert front > 1e5                                                # the edges drawn
+    assert darkness((4, 400)) < 1.02 * front                          # and none of the back

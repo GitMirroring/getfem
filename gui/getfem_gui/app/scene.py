@@ -133,6 +133,36 @@ def surface(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
 _VOLUME_TYPES = {10, 11, 12, 13, 14, 24, 25, 26, 27, 29, 32, 33}   # VTK cells of dimension 3
 
 
+def _row_codes(A: np.ndarray):
+    """Rows of nonnegative integers as single integers (None if too large)."""
+    A = np.asarray(A, np.int64)
+    n = int(A.max()) + 1 if A.size else 1
+    if n ** A.shape[1] >= 2 ** 62:
+        return None
+    code = np.zeros(len(A), np.int64)
+    for j in range(A.shape[1]):
+        code = code * n + A[:, j]
+    return code
+
+
+def _rows_once(A: np.ndarray) -> np.ndarray:
+    """Mask of the rows seen once in A (faster than np.unique with axis)."""
+    code = _row_codes(A)
+    if code is None:
+        _, inv, count = np.unique(A, axis=0, return_inverse=True, return_counts=True)
+        return count[inv.ravel()] == 1
+    _, inv, count = np.unique(code, return_inverse=True, return_counts=True)
+    return count[inv] == 1
+
+
+def _unique_rows(A: np.ndarray) -> np.ndarray:
+    code = _row_codes(A)
+    if code is None:
+        return np.unique(A, axis=0)
+    _, first = np.unique(code, return_index=True)
+    return np.asarray(A)[first]
+
+
 def _boundary_pairs(ds: pv.DataSet):
     """For a mesh of solid elements: the edges of its boundary faces, as
     lines between the corners, and their pairs of corners (indices of the
@@ -145,9 +175,8 @@ def _boundary_pairs(ds: pv.DataSet):
         cells = ds.cells_dict
         T = np.vstack([np.asarray(cells[t])[:, :4] for t in (10, 24) if t in cells])
         F = np.sort(np.vstack([T[:, list(f)] for f in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))]), axis=1)
-        F, count = np.unique(F, axis=0, return_counts=True)
-        F = F[count == 1]
-        pairs = np.unique(np.sort(np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [0, 2]]]), axis=1), axis=0)
+        F = F[_rows_once(F)]
+        pairs = _unique_rows(np.sort(np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [0, 2]]]), axis=1))
     elif types & {24, 25, 26, 27, 29, 32, 33}:   # other quadratic solids: all the edges
         return None, None
     else:                                        # linear solids: the surface of VTK
@@ -201,6 +230,187 @@ def _wire(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     return pv.PolyData(P.reshape(-1, 3), lines=lines)
 
 
+def _same_points(Y: np.ndarray, X: np.ndarray, tol: float):
+    """The points of Y numbered, the same number for those within about tol
+    (computed twice at the same place: Y float32 from VTK); and for each
+    point of X, the number of a point of Y within tol/2 (-1 for none). Two
+    roundings of the coordinates to a grid of step tol, the second shifted
+    by half a step: two close points fall in the same cell of one of them."""
+    def lookup(keys, K):
+        if not len(keys):
+            return np.full(len(K), -1)
+        kv, Kv = (np.ascontiguousarray(a).view([("", np.int64)] * 3).ravel() for a in (keys, K))
+        pos = np.minimum(np.searchsorted(kv, Kv), len(keys) - 1)
+        return np.where(kv[pos] == Kv, pos, -1)
+    Y, X = np.asarray(Y, float), np.asarray(X, float)
+    keys, ids = np.unique(np.floor(Y / tol).astype(np.int64), axis=0, return_inverse=True)
+    ids = ids.ravel()
+    found = lookup(keys, np.floor(X / tol).astype(np.int64))
+    rep = np.zeros(len(keys), int)
+    rep[ids] = np.arange(len(Y))
+    out = np.where(found >= 0, ids[rep[np.maximum(found, 0)]], -1)
+    missing = out < 0
+    if np.any(missing):                                  # the shifted grid
+        keys2, ids2 = np.unique(np.floor(Y / tol + 0.5).astype(np.int64), axis=0, return_inverse=True)
+        rep2 = np.zeros(len(keys2), int)
+        rep2[ids2.ravel()] = np.arange(len(Y))
+        f2 = lookup(keys2, np.floor(X[missing] / tol + 0.5).astype(np.int64))
+        out[missing] = np.where(f2 >= 0, ids[rep2[np.maximum(f2, 0)]], -1)
+    return ids, out
+
+
+def _segments(lines: np.ndarray) -> np.ndarray:
+    """The segments (pairs of point indices) of the polylines of VTK."""
+    if not len(lines):
+        return np.zeros((0, 2), int)
+    k = int(lines[0])
+    if k >= 2 and len(lines) % (k + 1) == 0 and np.all(lines[::k + 1] == k):   # all of k points
+        ids = lines.reshape(-1, k + 1)[:, 1:]
+        return np.stack([ids[:, :-1], ids[:, 1:]], axis=2).reshape(-1, 2)
+    segs, i = [], 0
+    while i < len(lines):
+        k = int(lines[i])
+        ids = lines[i + 1:i + 1 + k]
+        segs.append(np.stack([ids[:-1], ids[1:]], axis=1))
+        i += k + 1
+    return np.concatenate(segs)
+
+
+def facing_wire(ds: pv.DataSet, level: int = CURVED) -> pv.PolyData | None:
+    """The edges of the boundary of a mesh of solid elements (as _wire),
+    each segment once per boundary triangle drawn along it, with the three
+    corners of that triangle, in the order seen from outside, at both ends
+    (point arrays tri0, tri1, tri2): the shader of cull_back_edges drops the
+    copies whose triangle is turned away from the camera, so that an edge
+    shows only if one of its faces does. Without that, the edges of the
+    faces behind a silhouette show over the surface for a few pixels (the
+    polygon offset of behind_lines lets the lines win just in front of the
+    surface). None for a mesh without solid elements."""
+    types = set(np.unique(np.asarray(getattr(ds, "celltypes", []))).tolist())
+    if not types & _VOLUME_TYPES:
+        return None
+    wire = _wire(ds, level)
+    if not wire.n_points or not getattr(wire, "n_lines", 0):
+        return None
+    surf = ds.extract_surface(pass_cellid=True, nonlinear_subdivision=max(0, int(level)) if is_curved(ds) else 0)
+    surf = surf.triangulate()
+    if not surf.n_cells:
+        return None
+    Y = np.asarray(surf.points, float)
+    F = np.array(np.asarray(surf.faces).reshape(-1, 4)[:, 1:])
+    # each triangle seen from outside: its normal away from the inside of its element
+    inside = np.asarray(ds.cell_centers().points, float)[np.asarray(surf.cell_data["vtkOriginalCellIds"])]
+    n = np.cross(Y[F[:, 1]] - Y[F[:, 0]], Y[F[:, 2]] - Y[F[:, 0]])
+    flip = np.einsum("ij,ij->i", n, inside - Y[F[:, 0]]) > 0
+    F[flip] = F[flip][:, [0, 2, 1]]
+    # the segments of the wire as pairs of points of the surface (found by their coordinates)
+    seg = _segments(np.asarray(wire.lines))
+    X = np.asarray(wire.points, float)
+    tol = max(1e-5 * size(ds), 2e-6 * float(np.max(np.abs(Y))) if Y.size else 0.0, 1e-300)  # (float32: 6e-8)
+    inv, sid = _same_points(Y, X, tol)
+    m = int(inv.max()) + 1
+    # the edges of the triangles, coded, with their triangle
+    TE = np.sort(np.stack([inv[F[:, [0, 1]]], inv[F[:, [1, 2]]], inv[F[:, [2, 0]]]], axis=1), axis=2)
+    code = (TE[..., 0] * m + TE[..., 1]).ravel()
+    tri_of = np.repeat(np.arange(len(F)), 3)
+    order = np.argsort(code, kind="stable")
+    code, tri_of = code[order], tri_of[order]
+    a, b = sid[seg[:, 0]], sid[seg[:, 1]]
+    ok = (a >= 0) & (b >= 0)
+    sc = np.where(ok, np.minimum(a, b) * m + np.maximum(a, b), -1)
+    lo, hi = np.searchsorted(code, sc, "left"), np.searchsorted(code, sc, "right")
+    count = np.where(ok, hi - lo, 0)
+    P0, P1, T0, T1, T2 = [], [], [], [], []
+    alone = count == 0                                   # not found on the surface: always drawn
+    if np.any(alone):
+        q0, q1 = X[seg[alone, 0]], X[seg[alone, 1]]
+        P0.append(q0), P1.append(q1), T0.append(q0), T1.append(q0), T2.append(q0)
+    for j in range(int(count.max()) if len(count) else 0):
+        sel = count > j
+        t = F[tri_of[lo[sel] + j]]
+        P0.append(X[seg[sel, 0]]), P1.append(X[seg[sel, 1]])
+        T0.append(Y[t[:, 0]]), T1.append(Y[t[:, 1]]), T2.append(Y[t[:, 2]])
+    P0, P1 = np.concatenate(P0), np.concatenate(P1)
+    k = len(P0)
+    out = pv.PolyData(np.stack([P0, P1], axis=1).reshape(-1, 3),
+                      lines=np.hstack([np.full((k, 1), 2), np.arange(2 * k).reshape(k, 2)]).ravel())
+    for name, T in (("tri0", T0), ("tri1", T1), ("tri2", T2)):
+        T = np.concatenate(T)
+        out.point_data[name] = np.repeat(T, 2, axis=0).astype(np.float32)
+    return out
+
+
+_FACING_VS_DEC = """//VTK::Normal::Dec
+in vec3 tri0;
+in vec3 tri1;
+in vec3 tri2;
+out float facingVSOutput;
+"""
+_FACING_VS_IMPL = """//VTK::Normal::Impl
+  {
+    vec4 qa = MCDCMatrix * vec4(tri0, 1.0);
+    vec4 qb = MCDCMatrix * vec4(tri1, 1.0);
+    vec4 qc = MCDCMatrix * vec4(tri2, 1.0);
+    if (qa.w > 0.0 && qb.w > 0.0 && qc.w > 0.0) {
+      vec2 u = qb.xy / qb.w - qa.xy / qa.w;
+      vec2 v = qc.xy / qc.w - qa.xy / qa.w;
+      facingVSOutput = u.x * v.y - u.y * v.x;
+    } else {
+      facingVSOutput = 1.0;
+    }
+  }
+"""
+_FACING_FS_DEC = """//VTK::Normal::Dec
+in float facingVSOutput;
+"""
+_FACING_FS_IMPL = """//VTK::Clip::Impl
+  if (facingVSOutput < 0.0) { discard; }
+"""
+
+
+def cull_back_edges(actor):
+    """The lines of facing_wire drawn only where their triangle faces the
+    camera (its corners projected by the vertex shader: the sign of its area
+    on the screen; no cost on the processor as the view turns)."""
+    mapper = actor.GetMapper() if actor is not None else None
+    if mapper is None:
+        return actor
+    from vtkmodules.vtkCommonDataModel import vtkDataObject
+    for name in ("tri0", "tri1", "tri2"):
+        mapper.MapDataArrayToVertexAttribute(name, name, vtkDataObject.FIELD_ASSOCIATION_POINTS, -1)
+    if hasattr(mapper, "SetVBOShiftScaleMethod"):
+        mapper.SetVBOShiftScaleMethod(0)          # the positions as given: the corners are not shifted
+    sp = actor.GetShaderProperty()
+    sp.AddVertexShaderReplacement("//VTK::Normal::Dec", True, _FACING_VS_DEC, False)
+    sp.AddVertexShaderReplacement("//VTK::Normal::Impl", True, _FACING_VS_IMPL, False)
+    sp.AddFragmentShaderReplacement("//VTK::Normal::Dec", True, _FACING_FS_DEC, False)
+    sp.AddFragmentShaderReplacement("//VTK::Clip::Impl", True, _FACING_FS_IMPL, False)
+    return actor
+
+
+def add_edges(plotter, ds: pv.DataSet, level: int = CURVED, name: str = "edges", color=EDGES,
+              opacity: float = 1.0, line_width: float = 1):
+    """The edges of the elements of ds (see _wire); for solid elements, those
+    of the faces turned to the camera only (facing_wire)."""
+    wire = facing_wire(ds, level) if not is_planar(ds) else None
+    if wire is None:
+        return plotter.add_mesh(_wire(ds, level), color=color, opacity=opacity, line_width=line_width,
+                                lighting=False, name=name)
+    from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+    mapper = vtkPolyDataMapper()                 # (that of OpenGL: its vertex attributes)
+    mapper.SetInputData(wire)
+    mapper.ScalarVisibilityOff()
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    prop = actor.GetProperty()
+    prop.SetColor(pv.Color(color).float_rgb)
+    prop.SetOpacity(opacity)
+    prop.SetLineWidth(line_width)
+    prop.LightingOff()
+    plotter.add_actor(actor, name=name, reset_camera=False)
+    return cull_back_edges(actor)
+
+
 def _outline(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     """Contour of the domain: boundary edges in 2D, feature edges in 3D."""
     surf = ds.extract_surface(nonlinear_subdivision=level if is_curved(ds) else 0)
@@ -248,8 +458,7 @@ def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
                                   opacity=1.0 if planar or not faded else 0.35,
                                   show_edges=False, lighting=not planar, name="mesh"))
     if edges:
-        plotter.add_mesh(_wire(mesh, level), color=EDGES, opacity=0.35 if faded else 1.0,
-                         line_width=1, lighting=False, name="edges")
+        add_edges(plotter, mesh, level, color=EDGES, opacity=0.35 if faded else 1.0, line_width=1, name="edges")
     if selection is not None and selection.n_points:
         dim = selection.get_cell(0).dimension if selection.n_cells else 0
         if dim == 1:   # boundary of a 2D domain
@@ -259,8 +468,7 @@ def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
             behind_lines(plotter.add_mesh(surface(selection, level), color=HIGHLIGHT, show_edges=False,
                                           lighting=not planar, name="selection"))
             if edges:
-                plotter.add_mesh(_wire(selection, level), color="#7a2a14", line_width=1,
-                                 lighting=False, name="selection_edges")
+                add_edges(plotter, selection, level, color="#7a2a14", line_width=1, name="selection_edges")
     if title:
         plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
     _camera(plotter, mesh, reset)
@@ -379,7 +587,7 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
                          name="field")
     behind_lines(field)                     # (the edges, the isolines in front of it)
     if edges and curved:                    # the edges of the elements, not of their subdivisions
-        plotter.add_mesh(_wire(shown, level), color=EDGES, line_width=1, lighting=False, name="edges")
+        add_edges(plotter, shown, level, color=EDGES, line_width=1, name="edges")
     levels = isoline_levels(*clim, isolines)
     if levels.size:
         surf = drawn.extract_surface(nonlinear_subdivision=0)
