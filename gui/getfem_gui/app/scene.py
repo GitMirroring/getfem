@@ -521,6 +521,67 @@ def show_mesh(plotter, mesh: pv.DataSet, selection: pv.DataSet | None = None,
     _camera(plotter, mesh, reset)
 
 
+QUALITY_CMAP = "RdYlGn"          # red: the bad elements, green: the good ones
+
+
+def mesh_quality(mesh: pv.DataSet) -> np.ndarray:
+    """The quality of each cell of a mesh (quality.cell_quality), kept with
+    the dataset (the meshes read are cached)."""
+    from .. import quality as Q
+    from .vector2d import cell_rows
+    cached = getattr(mesh, "_getfem_quality", None)
+    if cached is not None and len(cached) == mesh.n_cells:
+        return cached
+    q = Q.cell_quality(mesh.points, mesh.celltypes, cell_rows(mesh.GetCells()))
+    try:
+        mesh._getfem_quality = q
+    except AttributeError:
+        pass
+    return q
+
+
+def show_quality(plotter, mesh: pv.DataSet, threshold: float, reset: bool = True, edges: bool = True,
+                 level: int = CURVED) -> str:
+    """The quality of the elements of a mesh (from 0, red, to 1, green).
+    Elements of a plane or a surface: all of them colored, those below the
+    threshold outlined; solid elements: the mesh translucent, and only the
+    elements below the threshold, opaque and colored. Returns the summary
+    (minimum, mean, number below the threshold)."""
+    from .. import quality as Q
+    clear(plotter)
+    q = mesh_quality(mesh)
+    shown = mesh.copy()
+    shown.cell_data["quality"] = np.nan_to_num(q, nan=1.0)
+    bad = np.flatnonzero(np.isfinite(q) & (q < threshold))
+    planar = is_planar(mesh)
+    bar = {"title": "quality", "vertical": True, "position_x": 0.86, "position_y": 0.1, "height": 0.65,
+           "width": 0.05, "fmt": "%.2g", "color": "#333333", "n_labels": 6, "title_font_size": 14,
+           "label_font_size": 12}
+    solid = bool(np.isin(mesh.celltypes, list(_VOLUME_TYPES)).any())
+    if not solid:
+        behind_lines(plotter.add_mesh(surface(shown, level), scalars="quality", cmap=QUALITY_CMAP,
+                                      clim=(0.0, 1.0), show_edges=False, lighting=not planar,
+                                      scalar_bar_args=bar, name="mesh"))
+        if edges:
+            add_edges(plotter, shown, level, color=EDGES, line_width=1, name="edges")
+        if len(bad):
+            add_edges(plotter, shown.extract_cells(bad), level, color="#1b1b1b", line_width=3,
+                      name="quality_worst")
+    else:
+        plotter.add_mesh(surface(mesh, level), color=FADED, opacity=0.18, show_edges=False,
+                         name="mesh", pickable=False)
+        plotter.add_mesh(_outline(mesh, level), color=EDGES, opacity=0.6, line_width=1, lighting=False,
+                         name="outline")
+        if len(bad):
+            worst = shown.extract_cells(bad)
+            behind_lines(plotter.add_mesh(surface(worst, level), scalars="quality", cmap=QUALITY_CMAP,
+                                          clim=(0.0, 1.0), show_edges=False, scalar_bar_args=bar,
+                                          name="quality_worst"))
+            add_edges(plotter, worst, level, color="#1b1b1b", line_width=1, name="quality_worst_edges")
+    _camera(plotter, mesh, reset)
+    return Q.summary(q, threshold)
+
+
 def deformation_scale(ds: pv.DataSet, name: str) -> float:
     """Factor such that the largest displacement is 10% of the model size."""
     u = np.asarray(ds.point_data[name])

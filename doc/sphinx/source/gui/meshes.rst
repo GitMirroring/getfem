@@ -84,6 +84,27 @@ being on them; a surface by a mesh of its flat domain (with any 2D mesher),
 mapped to 3D (curved with order 2); a swept surface by a mesh of its curve,
 extruded or turned in layers (quadrangles).
 
+Quality of the elements
+-----------------------
+
+.. image:: images/mesh_quality.png
+   :width: 100%
+   :alt: The tetrahedra of quality below 0.5 of a block with a hole, in the mesh made transparent
+
+*Quality*, in the bar of the view of a mesh, shows the quality of its
+elements, from 0 (a flat or folded element, red) to 1 (the regular element
+of its kind, green): the radius ratio *d r / R* of the triangles and
+tetrahedra (*r* the radius of the inscribed circle or sphere, *R* that of
+the circumscribed one, *d* the dimension: the inverse of the worst element
+reported by the ``getfem`` mesher), the smallest scaled Jacobian at the
+corners of the quadrangles, hexahedra, prisms and pyramids, relative to that
+of the regular element (a square, a cube...). Curved elements are measured
+by their corners. The elements of a plane or a surface are all colored, and
+those below the threshold (*below*, 0.3 by default) outlined; in 3D only
+the elements below the threshold are drawn, in the mesh made transparent.
+The bar gives the minimum, the mean and the number of elements below the
+threshold.
+
 The cache
 ---------
 

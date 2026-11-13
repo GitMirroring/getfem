@@ -166,6 +166,13 @@ def mesh_layers(win):
     win.select(("meshes", 0))
 
 
+def mesh_quality(win):
+    """The worst tetrahedra of a 3D mesh, in the mesh made transparent."""
+    mesh_layers(win)
+    win.viewer.quality_box.setValue(0.5)
+    win.viewer.quality_button.setChecked(True)
+
+
 def results(win):
     """The von Mises stress of the plate with a hole."""
     win.compute()
@@ -267,6 +274,7 @@ SHOTS = {
     "array_3d.png": ("block_with_hole_3d.json", array_3d),
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
+    "mesh_quality.png": ("block_with_hole_3d.json", mesh_quality),
     "results.png": ("plate_hole_tension.json", results),
     "anisotropic.png": ("anisotropic_plate.json", anisotropic),
 }

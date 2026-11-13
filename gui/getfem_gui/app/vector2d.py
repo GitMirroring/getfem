@@ -93,15 +93,21 @@ def planar_parts(plotter) -> list:
             rows = [r for r in cell_rows(tri.GetPolys()) if len(r) == 3]
             faces = np.array(rows, np.int64).reshape(-1, 3)
             values, cmap, clim = None, None, None
+            X = np.asarray(tri.points)[:, :2]
             if mapper.GetScalarVisibility() and mapper.GetLookupTable() is not None:
                 arr = mapper.GetArrayName() or "_shown"
                 if arr in tri.point_data:
                     values = np.asarray(tri.point_data[arr], float)
+                elif arr in tri.cell_data and len(faces) == tri.n_cells:
+                    # one value per triangle (the quality of the elements): their corners apart
+                    values = np.repeat(np.asarray(tri.cell_data[arr], float), 3, axis=0)
+                    X, faces = X[faces.ravel()], np.arange(3 * len(faces)).reshape(-1, 3)
+                if values is not None:
                     if values.ndim > 1:
                         values = np.linalg.norm(values, axis=1)
                     cmap, clim = _lut_cmap(mapper.GetLookupTable()), tuple(mapper.GetScalarRange())
             if len(faces):
-                out.append(("faces", faces, np.asarray(tri.points)[:, :2], values, cmap, clim, _rgb(prop),
+                out.append(("faces", faces, X, values, cmap, clim, _rgb(prop),
                             float(prop.GetOpacity()), name))
         if poly.GetNumberOfLines():
             Q = np.asarray(poly.points)[:, :2]

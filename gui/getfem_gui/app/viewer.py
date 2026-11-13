@@ -35,8 +35,8 @@ import numpy as np
 
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu,
-                               QSpinBox, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+                               QMenu, QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 
 def prepare_opengl() -> None:
@@ -292,6 +292,29 @@ class Viewer(QWidget):
         for w in (self.curved_label, self.curved_box):
             w.setVisible(False)
             bar.insertWidget(bar.count() - 1, w)
+        # the quality of the elements of a mesh (quality.py), on demand
+        self.quality_button = QToolButton()
+        self.quality_button.setText("Quality")
+        self.quality_button.setObjectName("quality")
+        self.quality_button.setCheckable(True)
+        self.quality_button.setToolTip(
+            "The quality of the elements, from 0 (flat) to 1 (regular): triangles and tetrahedra by their radius "
+            "ratio, the other elements by their scaled Jacobian. In 2D (and on surfaces) all the elements are "
+            "colored and those below the threshold outlined; in 3D only the elements below it are drawn, in the "
+            "mesh made transparent")
+        self.quality_button.toggled.connect(lambda _on: self.refresh())
+        self.quality_label = QLabel("below:")
+        self.quality_box = QDoubleSpinBox()
+        self.quality_box.setObjectName("quality_threshold")
+        self.quality_box.setRange(0.0, 1.0)
+        self.quality_box.setSingleStep(0.05)
+        self.quality_box.setDecimals(2)
+        self.quality_box.setValue(0.3)
+        self.quality_box.setToolTip("The elements of a quality below this threshold are shown as the worst ones")
+        self.quality_box.valueChanged.connect(lambda _v: self.refresh() if self.quality_button.isChecked() else None)
+        for w in (self.quality_button, self.quality_label, self.quality_box):
+            w.setVisible(False)
+            bar.insertWidget(bar.count() - 1, w)
         layout.addLayout(bar)
         self._build_draw_bar(layout)
         self._build_result_bar(layout)
@@ -343,6 +366,7 @@ class Viewer(QWidget):
         if self._tool == "line":
             self.cut_button.setChecked(False)
         self.result_bar.hide()
+        self._show_quality_controls(False)
         if self.cut_panel is not None:
             self.cut_panel.hide()
         self._cut = None
@@ -376,8 +400,14 @@ class Viewer(QWidget):
         mesh = scene.read(mesh_file)
         sel = scene.read(selection_file) if selection_file else None
         self._show_curved(scene.is_curved(mesh))
-        scene.show_mesh(self.plotter, mesh, sel, reset=key != self._shown_key, edges=self.edges["mesh"],
-                        level=self.curved_box.value())
+        self._show_quality_controls(True)
+        if self.quality_button.isChecked():
+            summary = scene.show_quality(self.plotter, mesh, self.quality_box.value(), reset=key != self._shown_key,
+                                         edges=self.edges["mesh"], level=self.curved_box.value())
+            self.status.setText(f"{status} — {summary}" if status else summary)
+        else:
+            scene.show_mesh(self.plotter, mesh, sel, reset=key != self._shown_key, edges=self.edges["mesh"],
+                            level=self.curved_box.value())
         self._shown_key = key
         self.plotter.render()
 
@@ -1340,6 +1370,14 @@ class Viewer(QWidget):
             scene.set_style(self.plotter, planar=method == "view_xy")
             self.plotter.reset_camera()
             self.plotter.render()
+
+    def _show_quality_controls(self, on: bool) -> None:
+        """The quality controls, for a display of a mesh; the threshold only
+        while the quality is shown."""
+        on = on and self.plotter is not None
+        self.quality_button.setVisible(on)
+        for w in (self.quality_label, self.quality_box):
+            w.setVisible(on and self.quality_button.isChecked())
 
     def _show_curved(self, on: bool) -> None:
         """The subdivision control, for a display of quadratic elements."""

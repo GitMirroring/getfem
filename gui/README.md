@@ -288,6 +288,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `getfem_gui/library.py`, `data/materials.json` | material libraries (built-in, user's), copies into the model |
 | `getfem_gui/geometry3d.py` | 3D shapes as distance functions, selections on the preview surface |
 | `getfem_gui/geometry2d.py` | exact 2D geometry: boundary pieces of CSG shapes, picked edges, regions and interfaces |
+| `getfem_gui/quality.py` | quality of the elements of a mesh (radius ratio, scaled Jacobian), for the view |
 | `getfem_gui/parameters.py` | global parameters: safe evaluation, resolution of numerical fields |
 | `getfem_gui/app/window.py` | main window (PySide6) |
 | `getfem_gui/app/properties.py` | properties form of the selected node |
@@ -311,6 +312,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_meshers.py` | Netgen, quadrangles, meshes in layers (prisms, hexahedra) |
 | `tests/test_export.py` | export of geometries and meshes (read back by GetFEM) |
 | `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |
+| `tests/test_quality.py` | quality of the elements: measures, display in 2D and 3D, export |
 | `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
