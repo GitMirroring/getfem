@@ -57,7 +57,7 @@ ones (the difference subtracts them all from the first one)::
 The primitives (:ref:`gui-ref-shapes`) are:
 
 * ``rectangle``: lower and upper corners;
-* ``ball`` (a disk in 2D): center and radius;
+* ``ball`` (shown as a *disk* in 2D): center and radius;
 * ``ellipse``: center, semi-axes, angle of the first semi-axis in degrees;
 * ``polygon``: its vertices, in either order, not necessarily convex (but
   it must not cross itself), each one possibly rounded (see
@@ -270,8 +270,9 @@ A new constructive geometry starts from nothing: its root is an empty union
 The actions of a shape node (right click, the **+** button, or the buttons
 of its form) build the tree:
 
-* on a boolean: *Add a rectangle*, *a ball*... (the primitives of its
-  dimension), and *Add a union / an intersection / a difference*, an empty
+* on a boolean: *Add a rectangle*, *a disk*... in 2D, *Add a box*, *a ball*,
+  *a cylinder*... in 3D (the primitives of its dimension), and *Add a
+  union / an intersection / a difference*, an empty
   boolean to fill in turn;
 * on any shape: *Put in a union / an intersection / a difference*, which
   makes it the first part of a new boolean (the other parts are then
@@ -293,7 +294,7 @@ Geometries in 3D
    :width: 100%
    :alt: The preview of an extruded heat sink
 
-The 3D primitives are the ``rectangle`` (a box), the ``ball``, the
+The 3D primitives are the ``rectangle`` (shown as a *box*), the ``ball``, the
 ``cylinder`` (origin, axis, length, radius), and two shapes made of a 2D
 profile, itself a 2D constructive tree edited under the shape:
 

@@ -331,7 +331,7 @@ def test_regions_and_interfaces():
     assert v[0] < 0 and v[1] < 0 and v[2] > 0 and v[3] > 0
     outline = sides_of(G.pieces(plate, level=G.region_level(plate, [[[0, 0], [0, 1]]])))
     assert outline == [((0, 1), "circle"), ((1,), "circle")]
-    assert G.region_label(plate, [[0, 0], [0, 1]]) == "rectangle 1 + ball 2"
+    assert G.region_label(plate, [[0, 0], [0, 1]]) == "rectangle 1 + disk 2"   # (a ball in 2D)
 
 
 def test_toggle_region_and_domain_level():

@@ -302,8 +302,8 @@ def split_vector(v, size: int) -> list | None:
 
 # ------------------------------------------------------------------ tree
 
-def _shape_label(shape: dict) -> str:
-    t = shape.get("type", "?")
+def _shape_label(shape: dict, dim: int | None = None) -> str:
+    t = M.shape_word(shape.get("type", "?"), dim)
     if t in M.SHAPES_BOOLEAN and not shape.get("of"):
         return f"{t.capitalize()} (empty: add shapes)"
     if t == "transform":
@@ -324,13 +324,13 @@ def _a(word: str) -> str:
     return "an" if word[0] in "aeio" else "a"
 
 
-def _shape_node(shape: dict, path: Path) -> Node:
-    node = Node(path, _shape_label(shape), "shape")
+def _shape_node(shape: dict, path: Path, dim: int | None = None) -> Node:
+    node = Node(path, _shape_label(shape, dim), "shape")
     if shape.get("type") in M.SHAPES_BOOLEAN or shape.get("type") in M.SHAPES_TRANSFORM:
         for j, s in enumerate(shape.get("of", [])):
-            node.children.append(_shape_node(s, path + ("of", j)))
+            node.children.append(_shape_node(s, path + ("of", j), dim))
     elif shape.get("type") in M.SHAPES_SWEPT and isinstance(shape.get("profile"), dict):
-        child = _shape_node(shape["profile"], path + ("profile",))
+        child = _shape_node(shape["profile"], path + ("profile",), 2)
         child.label = f"Profile: {child.label}"
         node.children.append(child)
     elif shape.get("type") == "polygon":
@@ -448,7 +448,8 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
         src = g.get("source", {})
         gn = Node(("geometries", i), f"{g.get('name', '?')} ({src.get('type', '?')})", "geometry")
         if src.get("type") in ("csg", "surface") and isinstance(src.get("shape"), dict):
-            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"))
+            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"),
+                               2 if src["type"] == "surface" else geometry_dim(model, i))
             if src["type"] == "surface":
                 node.label = f"Flat domain: {node.label}"
             gn.children.append(node)
@@ -582,7 +583,8 @@ def _shape_fields(model, path, dim) -> list[Field]:
     if t in M.SHAPES_TRANSFORM:
         return _transform_fields(path, shape, dim)
     types = primitives_of_dim(dim) + M.SHAPES_BOOLEAN
-    out = [Field(path + ("type",), "Type", "choice", tuple((x, x) for x in types), op="shape_type")]
+    out = [Field(path + ("type",), "Type", "choice", tuple((x, M.shape_word(x, dim)) for x in types),
+                 op="shape_type")]
     if path[-1] == "profile":
         out.append(Field(path, "", "info", help="2D profile: (x, y) for an extrusion, (r, z) for a "
                                                 "revolution (the part with r < 0 is ignored)."))
@@ -2097,7 +2099,9 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         shape = get_at(model, path, {})
         if isinstance(shape, dict) and shape.get("type"):
             if shape.get("type") in M.SHAPES_BOOLEAN:
-                out += [(f"add_shape:{t}", f"Add {_a(t)} {t}") for t in primitives_of_dim(shape_dim(model, path))]
+                d = shape_dim(model, path)
+                out += [(f"add_shape:{t}", f"Add {_a(M.shape_word(t, d))} {M.shape_word(t, d)}")
+                        for t in primitives_of_dim(d)]
                 out += [(f"add_shape:{t}", f"Add {_a(t)} {t} (of shapes to add)") for t in M.SHAPES_BOOLEAN]
             if shape.get("type") in M.SHAPES_BOOLEAN and shape_dim(model, path) == 3 \
                     and "profile" not in path[4:] and shape.get("of"):

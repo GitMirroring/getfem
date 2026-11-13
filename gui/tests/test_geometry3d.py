@@ -182,3 +182,27 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             f()
             print(name, "ok")
+
+
+def test_shape_names_by_dimension():
+    """The names shown for the types of shapes: a "rectangle" is a box in 3D
+    (a segment in 1D), a "ball" a disk in 2D; in the tree, the actions and
+    the choice of the type; the files keep the types."""
+    import json
+    from pathlib import Path
+    m = json.loads((Path(__file__).parent.parent / "examples" / "block_with_hole_3d.json").read_text())
+    root = ("geometries", 0, "source", "shape")
+    labels = [label for _, label in E.actions(m, root)]
+    assert "Add a box" in labels and "Add a rectangle" not in labels and "Add a ball" in labels
+    choices = dict(next(f for f in E.fields(m, root + ("of", 0)) if f.key[-1] == "type").choices)
+    assert choices["rectangle"] == "box" and choices["ball"] == "ball"
+    names = []
+
+    def walk(node):
+        names.append(node.label)
+        for c in node.children:
+            walk(c)
+    walk(E.tree(m))
+    assert "Box" in names and "Rectangle" not in names
+    assert M.shape_word("ball", 2) == "disk" and M.shape_word("rectangle", 1) == "segment"
+    assert M.shape_word("rectangle", 2) == "rectangle" and M.shape_word("cylinder", 3) == "cylinder"

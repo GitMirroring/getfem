@@ -210,6 +210,16 @@ SHAPES_BOOLEAN = ("union", "intersection", "difference")
 SHAPES_SWEPT = ("extrusion", "revolution")        # 3D shapes made of a 2D profile
 SHAPES_TRANSFORM = ("transform", "array")          # a shape moved, or copied (transforms.py)
 
+# The names shown for the types of shapes, by dimension: the type "rectangle"
+# (GetFEM's mesher object, any dimension) is a segment in 1D and a box in 3D,
+# the type "ball" a disk in 2D. The model files keep the types.
+SHAPE_WORDS = {("rectangle", 1): "segment", ("rectangle", 3): "box", ("ball", 2): "disk"}
+
+
+def shape_word(t: str, dim: int | None) -> str:
+    """The name shown for a type of shape in a space of dimension dim."""
+    return SHAPE_WORDS.get((t, dim), t)
+
 SCALAR = "scalar"
 VECTOR = "vector"
 MATRIX = "matrix"          # dim x dim: a number stands for itself times the identity

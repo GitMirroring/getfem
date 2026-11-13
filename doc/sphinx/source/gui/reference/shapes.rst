@@ -22,7 +22,7 @@ rectangle (2D)
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Lower corner
      - ``min``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -46,7 +46,7 @@ ball (2D): disk
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -70,7 +70,7 @@ ellipse
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -97,7 +97,7 @@ polygon
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
    * - Vertices
      - ``points``
      - table of the vertices: x, y. Vertices in order (either direction); values or expressions. In the view, drag a vertex, the middle of a side (adds a vertex) or the center.
@@ -160,7 +160,7 @@ rectangle (3D): box
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Lower corner
      - ``min``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -184,7 +184,7 @@ ball (3D)
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -208,7 +208,7 @@ cylinder
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Origin
      - ``origin``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -238,7 +238,7 @@ extrusion
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - From z to z
      - ``z``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -264,7 +264,7 @@ revolution
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Work plane
      - ``placement``
      - one of ``xy`` (the (x, y) plane at the origin), ``custom`` (an origin and two axes). The plane of the profile: its x and y axes (r and z for a revolution); z is their cross product
@@ -287,7 +287,7 @@ union
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
 
 The first shape is combined with the following ones.
 
@@ -305,7 +305,7 @@ intersection
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
 
 The first shape is combined with the following ones.
 
@@ -323,7 +323,7 @@ difference
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle``, ``ball``, ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle``, ``ball`` (disk), ``ellipse``, ``polygon``, ``union``, ``intersection``, ``difference``
 
 The first shape is combined with the following ones.
 

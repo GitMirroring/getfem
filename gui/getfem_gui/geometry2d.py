@@ -1231,13 +1231,14 @@ def region_level(shape: dict, regions: list) -> callable:
 
 
 def region_label(shape: dict, region: list) -> str:
-    """'rectangle 1 + ball 2': the primitives containing the region."""
+    """'rectangle 1 + disk 2': the primitives containing the region."""
+    from .model import shape_word
     names = _paths(shape)
     parts = []
     for p in region:
         prim = primitive_at(shape, p)
         if tuple(p) in names and prim is not None:
-            parts.append(f"{prim['type']} {names.index(tuple(p)) + 1}")
+            parts.append(f"{shape_word(prim['type'], 2)} {names.index(tuple(p)) + 1}")
         else:
             parts.append("a missing shape")
     return " + ".join(parts) or "no shape"
