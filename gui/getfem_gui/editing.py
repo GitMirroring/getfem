@@ -45,7 +45,7 @@ from . import model as M, parameters as P, sketch as SK, transforms as T
 Path = tuple
 
 PRIMITIVES_2D = ("rectangle", "ball", "ellipse", "polygon")
-PRIMITIVES = ("rectangle", "ball", "cylinder") + M.SHAPES_SWEPT
+PRIMITIVES = ("rectangle", "ball", "ellipsoid", "cylinder") + M.SHAPES_SWEPT
 
 
 def primitives_of_dim(dim: int) -> tuple:
@@ -607,6 +607,10 @@ def _shape_fields(model, path, dim) -> list[Field]:
             out.append(Field(path, "", "info", help="With constraints (below in the tree): the vertices are "
                                                     "moved as little as possible for them to hold; a "
                                                     "coordinate given by an expression stays."))
+    elif t == "ellipsoid":
+        out += [_vec_field(path + ("center",), "Center", "numbers", 3),
+                _vec_field(path + ("radii",), "Semi-axes", "numbers", 3,
+                           help="along x, y and z (to turn it: Transform)")]
     elif t == "cylinder":
         out += [_vec_field(path + ("origin",), "Origin", "numbers", dim),
                 _vec_field(path + ("axis",), "Axis", "numbers", dim),
@@ -1122,6 +1126,8 @@ def _default_shape(t: str, dim: int) -> dict:
         return {"type": "polygon", "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 0.6], [0.5, 1.0], [0.0, 0.6]]}
     if t == "ellipse":
         return {"type": "ellipse", "center": [0.0, 0.0], "radii": [0.6, 0.3], "angle": 0.0}
+    if t == "ellipsoid":
+        return {"type": "ellipsoid", "center": [0.0] * dim, "radii": [0.6, 0.4, 0.3]}
     if t == "cylinder":
         return {"type": "cylinder", "origin": [0.0] * dim, "axis": [0.0] * (dim - 1) + [1.0],
                 "length": 1.0, "radius": 0.5}
@@ -1229,6 +1235,21 @@ def _map_side_refs(model: dict, path: Path, mapping) -> None:
                 if not any(list(r.get("shape", [])) == prim and r.get("side") == new for r in out):
                     out.append({"shape": prim, "side": new})
         crit["edges"] = out
+
+
+def _rename_face(model: dict, path: Path, old: str, new: str) -> None:
+    """The face old of the 3D primitive at path is now named new: in the face
+    references of the selections."""
+    if path[:4] != ("geometries", path[1], "source", "shape") or "profile" in path[4:] \
+            or any(not isinstance(k, int) for k in path[5::2]):
+        return
+    prim = list(path[5::2])
+    for sel in model["geometries"][path[1]].get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "faces":
+            for ref in crit.get("faces", []):
+                if list(ref.get("shape", [])) == prim and ref.get("face") == old:
+                    ref["face"] = new
 
 
 def _side_number(name) -> int | None:
@@ -1964,6 +1985,14 @@ def apply(model: dict, f: Field, value) -> Path | None:
             set_at(model, path, {"type": "ball", "center": copy.deepcopy(shape.get("center", [0.0, 0.0])),
                                  "radius": copy.deepcopy((shape.get("radii") or [0.5])[0])})
             _map_side_refs(model, path, lambda name: ["circle" if name == "ellipse" else name])
+        elif value == "ellipsoid" and old == "ball":     # same center, the three semi-axes the radius
+            set_at(model, path, {"type": "ellipsoid", "center": copy.deepcopy(shape.get("center", [0.0] * 3)),
+                                 "radii": [copy.deepcopy(shape.get("radius", 0.5))] * 3})
+            _rename_face(model, path, "sphere", "surface")
+        elif value == "ball" and old == "ellipsoid":
+            set_at(model, path, {"type": "ball", "center": copy.deepcopy(shape.get("center", [0.0] * 3)),
+                                 "radius": copy.deepcopy((shape.get("radii") or [0.5])[0])})
+            _rename_face(model, path, "surface", "sphere")
         elif value == "polygon" and old in ("rectangle", "ball", "ellipse"):
             poly = _polygon_from(model, path, shape)
             set_at(model, path, poly)

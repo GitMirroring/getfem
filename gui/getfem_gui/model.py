@@ -82,6 +82,8 @@ Geometry sources
                        the boundary tangent at these vertices)
                     | {"type": "ellipse", "center": [x, y], "radii": [r1, r2], "angle": a}
                       (2D; the semi-axis r1 at a degrees from the x axis)
+                    | {"type": "ellipsoid", "center": [x, y, z], "radii": [a, b, c]}  (3D; the
+                      semi-axes along x, y and z: turned by a transform)
                     | {"type": "cylinder", "origin": [...], "axis": [...], "length": l, "radius": r}  (3D)
                     | {"type": "extrusion", "profile": <2D shape>, "z": [z0, z1]}  (3D, along z)
                     | {"type": "revolution", "profile": <2D shape>}  (3D, about the z axis; the
@@ -823,6 +825,13 @@ def _check_shape(shape, dim, where, errors):
             errors.append(f"{where}.constraints: a list of constraints expected")
         _check_fillets(shape, where, errors)
         _check_splines(shape, where, errors)
+    elif t == "ellipsoid":
+        if dim != 3:
+            errors.append(f"{where}: ellipsoid only exists in 3D (an ellipse in 2D)")
+        _check_vec(shape.get("center"), 3, f"{where}.center", errors)
+        if _check_vec(shape.get("radii"), 3, f"{where}.radii", errors):
+            for k, r in enumerate(shape["radii"]):
+                _check_positive(r, f"{where}.radii[{k}]", errors)
     elif t == "cylinder":
         if dim != 3:
             errors.append(f"{where}: cylinder only exists in 3D")
@@ -868,7 +877,8 @@ def _check_shape(shape, dim, where, errors):
             _check_shape(parts[0], dim, f"{where}.of[0]", errors)
     else:
         errors.append(f"{where}.type: unknown shape {t!r} "
-                      "(rectangle, ball, ellipse, polygon, cylinder, extrusion, revolution, union, intersection, "
+                      "(rectangle, ball, ellipse, polygon, ellipsoid, cylinder, extrusion, revolution, union, "
+                      "intersection, "
                       "difference, transform, array)")
 
 
@@ -1276,6 +1286,8 @@ def _validate_mesh(model, mesh, where, errors):
                           "(an extrusion or a revolution)")
     if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipse"):
         errors.append(f"{where}.mesher: ellipses are not meshed by Netgen yet (use Gmsh)")
+    if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipsoid"):
+        errors.append(f"{where}.mesher: ellipsoids are not meshed by Netgen yet (use Gmsh)")
 
 
 

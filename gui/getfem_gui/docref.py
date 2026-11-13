@@ -181,7 +181,7 @@ def shapes() -> str:
             "The flat domain of a ``surface`` and the profile of an extrusion or a "
             "revolution are 2D trees of the same kind. The sides (2D) and faces (3D) are "
             "the names used by the ``edges`` and ``faces`` selections.\n\n")
-    cases = [(t, 2) for t in E.PRIMITIVES_2D] + [("rectangle", 3), ("ball", 3), ("cylinder", 3),
+    cases = [(t, 2) for t in E.PRIMITIVES_2D] + [("rectangle", 3), ("ball", 3), ("ellipsoid", 3), ("cylinder", 3),
                                                  ("extrusion", 3), ("revolution", 3)] \
         + [(t, 2) for t in M.SHAPES_BOOLEAN] + [("transform", 2), ("transform", 3), ("array", 2), ("array", 3)]
     for t, dim in cases:

@@ -28,7 +28,7 @@ listed in :ref:`gui-ref-meshers`.
    geometries.
 ``netgen``
    Netgen with its own OpenCASCADE (``pip install netgen-mesher``): element
-   size, order 1 or 2. It does not mesh ellipses yet.
+   size, order 1 or 2. It does not mesh ellipses and ellipsoids yet.
 ``import``
    a ``.msh`` file used as it is.
 

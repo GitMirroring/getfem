@@ -196,18 +196,12 @@ def polygon_sdf(V: np.ndarray, P: np.ndarray) -> np.ndarray:
     return np.where(inside, -dist, dist)
 
 
-def ellipse_sdf(center, radii, angle_deg: float, P: np.ndarray) -> np.ndarray:
-    """Signed euclidean distance to an ellipse (semi-axes radii, the first
-    one at angle_deg degrees from the x axis), negative inside; the nearest
-    point is found as in D. Eberly, "Distance from a point to an ellipse"."""
-    th = math.radians(angle_deg)
-    D = np.asarray(P, float) - np.asarray(center, float)
-    a = D[:, 0] * math.cos(th) + D[:, 1] * math.sin(th)
-    b = -D[:, 0] * math.sin(th) + D[:, 1] * math.cos(th)
-    r1, r2 = float(radii[0]), float(radii[1])
-    swap = r1 < r2
-    e0, e1 = max(r1, r2), min(r1, r2)
-    y0, y1 = (np.abs(b), np.abs(a)) if swap else (np.abs(a), np.abs(b))
+def ellipse_nearest(e0: float, e1: float, y0: np.ndarray, y1: np.ndarray):
+    """The nearest points (q0, q1) of the ellipse of semi-axes e0 >= e1 > 0
+    (along the two axes) to the points (y0, y1), y0, y1 >= 0, as in D.
+    Eberly, "Distance from a point to an ellipse, an ellipsoid, or a
+    hyperellipsoid" (also for the planes of symmetry of an ellipsoid)."""
+    y0, y1 = np.asarray(y0, float), np.asarray(y1, float)
     q0, q1 = np.empty_like(y0), np.empty_like(y1)
     # y1 > 0 and y0 > 0: the root of F(s) by bisection
     gen = (y0 > 0) & (y1 > 0)
@@ -231,6 +225,22 @@ def ellipse_sdf(center, radii, angle_deg: float, P: np.ndarray) -> np.ndarray:
     inner = x < 1
     q0[m] = np.where(inner, e0 * np.minimum(x, 1), e0)
     q1[m] = np.where(inner, e1 * np.sqrt(np.maximum(0.0, 1 - np.minimum(x, 1) ** 2)), 0.0)
+    return q0, q1
+
+
+def ellipse_sdf(center, radii, angle_deg: float, P: np.ndarray) -> np.ndarray:
+    """Signed euclidean distance to an ellipse (semi-axes radii, the first
+    one at angle_deg degrees from the x axis), negative inside; the nearest
+    point is found as in D. Eberly, "Distance from a point to an ellipse"."""
+    th = math.radians(angle_deg)
+    D = np.asarray(P, float) - np.asarray(center, float)
+    a = D[:, 0] * math.cos(th) + D[:, 1] * math.sin(th)
+    b = -D[:, 0] * math.sin(th) + D[:, 1] * math.cos(th)
+    r1, r2 = float(radii[0]), float(radii[1])
+    swap = r1 < r2
+    e0, e1 = max(r1, r2), min(r1, r2)
+    y0, y1 = (np.abs(b), np.abs(a)) if swap else (np.abs(a), np.abs(b))
+    q0, q1 = ellipse_nearest(e0, e1, y0, y1)
     d = np.hypot(y0 - q0, y1 - q1)
     inside = (a / r1) ** 2 + (b / r2) ** 2 < 1
     return np.where(inside, -d, d)

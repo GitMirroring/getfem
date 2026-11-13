@@ -299,8 +299,10 @@ Geometries in 3D
    :alt: The preview of an extruded heat sink
 
 The 3D primitives are the ``rectangle`` (shown as a *box*), the ``ball``, the
-``cylinder`` (origin, axis, length, radius), and two shapes made of a 2D
-profile, itself a 2D constructive tree edited under the shape:
+``ellipsoid`` (center, and its three semi-axes along x, y and z: turned by
+a *Transform*; a ball becomes an ellipsoid of the same center, and back),
+the ``cylinder`` (origin, axis, length, radius), and two shapes made of a
+2D profile, itself a 2D constructive tree edited under the shape:
 
 * ``extrusion``: the profile, in the (x, y) plane, extruded along z between
   two values of z;

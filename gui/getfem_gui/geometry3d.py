@@ -66,6 +66,8 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
         return np.where(np.all(q <= 0, axis=1), np.max(q, axis=1), outside)
     if t == "ball":
         return np.linalg.norm(P - np.asarray(shape["center"], float), axis=1) - float(shape["radius"])
+    if t == "ellipsoid":
+        return ellipsoid_sdf(shape["center"], shape["radii"], P)
     if t == "cylinder":
         o = np.asarray(shape["origin"], float)
         a = np.asarray(shape["axis"], float)
@@ -94,6 +96,66 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "difference":
         return parts[0] if len(parts) == 1 else np.maximum(parts[0], -np.min(parts[1:], axis=0))
     raise ValueError(f"shape {t!r} is not 3D")
+
+
+def ellipsoid_nearest(e, Y: np.ndarray) -> np.ndarray:
+    """The nearest points of the ellipsoid of semi-axes e[0] >= e[1] >= e[2]
+    > 0 (along x, y, z) to the points Y (n x 3) of nonnegative coordinates,
+    as in D. Eberly, "Distance from a point to an ellipse, an ellipsoid, or
+    a hyperellipsoid" (2013): the root of a function of one variable by
+    bisection, the ellipses of the planes of symmetry for the points on
+    them."""
+    e0, e1, e2 = (float(x) for x in e)
+    y0, y1, y2 = Y[:, 0], Y[:, 1], Y[:, 2]
+    Q = np.zeros_like(Y)
+    gen = (y0 > 0) & (y1 > 0) & (y2 > 0)
+    if gen.any():
+        z0, z1, z2 = y0[gen] / e0, y1[gen] / e1, y2[gen] / e2
+        g = z0 ** 2 + z1 ** 2 + z2 ** 2 - 1
+        r0, r1 = (e0 / e2) ** 2, (e1 / e2) ** 2
+        n0, n1 = r0 * z0, r1 * z1
+        s0, s1 = z2 - 1, np.where(g < 0, 0.0, np.sqrt(n0 ** 2 + n1 ** 2 + z2 ** 2) - 1)
+        for _ in range(110):
+            sm = (s0 + s1) / 2
+            gs = (n0 / (sm + r0)) ** 2 + (n1 / (sm + r1)) ** 2 + (z2 / (sm + 1)) ** 2 - 1
+            s0, s1 = np.where(gs > 0, sm, s0), np.where(gs > 0, s1, sm)
+        sm = (s0 + s1) / 2
+        Q[gen] = np.column_stack([r0 * y0[gen] / (sm + r0), r1 * y1[gen] / (sm + r1), y2[gen] / (sm + 1)])
+    m = (y2 > 0) & (y1 > 0) & (y0 <= 0)          # in the plane x = 0
+    if m.any():
+        Q[m, 1], Q[m, 2] = G2.ellipse_nearest(e1, e2, y1[m], y2[m])
+    m = (y2 > 0) & (y1 <= 0) & (y0 > 0)          # y = 0
+    if m.any():
+        Q[m, 0], Q[m, 2] = G2.ellipse_nearest(e0, e2, y0[m], y2[m])
+    m = (y2 > 0) & (y1 <= 0) & (y0 <= 0)         # on the z axis
+    Q[m, 2] = e2
+    m = np.flatnonzero(y2 <= 0)                  # z = 0: inside, maybe off the plane
+    if len(m):
+        d0, d1 = e0 * e0 - e2 * e2, e1 * e1 - e2 * e2
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x0 = np.where(d0 > 0, e0 * y0[m] / d0, np.inf)
+            x1 = np.where(d1 > 0, e1 * y1[m] / d1, np.inf)
+        discr = 1 - x0 ** 2 - x1 ** 2
+        off = (x0 < 1) & (x1 < 1) & (discr > 0)
+        k = m[off]
+        Q[k] = np.column_stack([e0 * x0[off], e1 * x1[off], e2 * np.sqrt(discr[off])])
+        k = m[~off]
+        if len(k):
+            Q[k, 0], Q[k, 1] = G2.ellipse_nearest(e0, e1, y0[k], y1[k])
+    return Q
+
+
+def ellipsoid_sdf(center, radii, P: np.ndarray) -> np.ndarray:
+    """Signed euclidean distance to an ellipsoid of semi-axes radii along
+    x, y and z, negative inside."""
+    D = np.asarray(P, float) - np.asarray(center, float)
+    r = np.asarray(radii, float)
+    order = np.argsort(-r, kind="stable")        # the axes, from the largest semi-axis
+    Y = np.abs(D[:, order])
+    Q = ellipsoid_nearest(r[order], Y)
+    d = np.linalg.norm(Y - Q, axis=1)
+    inside = np.sum((D / r) ** 2, axis=1) < 1
+    return np.where(inside, -d, d)
 
 
 def frame(shape: dict):
@@ -225,6 +287,9 @@ def _local_bounds(shape: dict) -> tuple[np.ndarray, np.ndarray]:
         return np.asarray(shape["min"], float), np.asarray(shape["max"], float)
     if t == "ball":
         c, r = np.asarray(shape["center"], float), float(shape["radius"])
+        return c - r, c + r
+    if t == "ellipsoid":
+        c, r = np.asarray(shape["center"], float), np.asarray(shape["radii"], float)
         return c - r, c + r
     if t == "cylinder":
         o = np.asarray(shape["origin"], float)
@@ -390,7 +455,7 @@ def _match(crit, C, N, table, size, cell_faces=None):
 
 # A face of a 3D CSG shape is a face of one of its primitives, referenced as
 # {"shape": [path], "face": name}: xmin... zmax of a box (rectangle), "sphere"
-# of a ball, "side", "start" and "end" of a cylinder, "bottom" and "top" of
+# of a ball, "surface" of an ellipsoid, "side", "start" and "end" of a cylinder, "bottom" and "top" of
 # an extrusion; the side of an extrusion or of a revolution swept by a side
 # of the profile is {"shape": [path], "face": "side", "profile": <side
 # reference in the profile, as in geometry2d>}.
@@ -442,6 +507,8 @@ def primitive_faces(prim: dict) -> list[dict]:
         return [{"face": f} for f in BOX_FACES]
     if t == "ball":
         return [{"face": "sphere"}]
+    if t == "ellipsoid":
+        return [{"face": "surface"}]
     if t == "cylinder":
         return [{"face": f} for f in ("side", "start", "end")]
     if t in ("extrusion", "revolution"):
@@ -506,6 +573,9 @@ def _face_spec(prim: dict, ref: dict) -> dict:
     if t == "ball":
         return dict({"kind": "sphere", "center": [float(x) for x in prim["center"]],
                      "radius": float(prim["radius"])}, **place)
+    if t == "ellipsoid":
+        return dict({"kind": "ellipsoid", "center": [float(x) for x in prim["center"]],
+                     "radii": [float(x) for x in prim["radii"]]}, **place)
     if t == "cylinder":
         a = np.asarray(prim["axis"], float)
         a = (a / (np.linalg.norm(a) or 1.0)).tolist()
@@ -672,6 +742,15 @@ def on_face(spec, Q, N, tol):
             return False
         n = (C - c) / (np.linalg.norm(C - c) or 1.0)
         return bool(abs(n @ N) > 0.5)
+    if k == "ellipsoid":                  # (the distance to first order: the level over its gradient)
+        c, r = np.asarray(spec["center"], float), np.asarray(spec["radii"], float)
+        D = (Q - c) / r
+        G = 2 * D / r
+        level = (np.sum(D * D, axis=1) - 1) / np.maximum(np.linalg.norm(G, axis=1), 1e-300)
+        if not np.all(np.abs(level) < tol):
+            return False
+        n = 2 * (C - c) / r ** 2
+        return bool(abs(n @ N) > 0.5 * (np.linalg.norm(n) or 1.0))
     if k in ("cylinder_side", "disk"):
         a = np.asarray(spec["axis" if k == "cylinder_side" else "normal"], float)
         o = np.asarray(spec["origin" if k == "cylinder_side" else "center"], float)

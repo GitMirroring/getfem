@@ -860,6 +860,12 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
         nt = max(48, int(np.ceil(2 * np.pi * r / h)))
         surf = _tagged(pv.Sphere(radius=r, center=prim["center"], theta_resolution=nt,
                                  phi_resolution=max(24, nt // 2)), 0)
+    elif t == "ellipsoid":                    # a sphere stretched along the axes
+        r = np.asarray(prim["radii"], float)
+        nt = max(48, int(np.ceil(2 * np.pi * float(r.max()) / h)))
+        sphere = pv.Sphere(radius=1.0, theta_resolution=nt, phi_resolution=max(24, nt // 2))
+        sphere.points = np.asarray(sphere.points) * r + np.asarray(prim["center"], float)
+        surf = _tagged(sphere, 0)
     elif t == "cylinder":
         o = np.asarray(prim["origin"], float)
         a = np.asarray(prim["axis"], float)

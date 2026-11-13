@@ -160,7 +160,7 @@ rectangle (3D): box
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``ellipsoid``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Lower corner
      - ``min``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -184,7 +184,7 @@ ball (3D)
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``ellipsoid``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Center
      - ``center``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -193,6 +193,30 @@ ball (3D)
      - number or expression of parameters
 
 Faces: ``sphere``.
+
+.. _gui-ref-shape-ellipsoid-3d:
+
+ellipsoid
+---------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Type
+     - ``type``
+     - one of ``rectangle`` (box), ``ball``, ``ellipsoid``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+   * - Center
+     - ``center``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Semi-axes
+     - ``radii``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter. along x, y and z (to turn it: Transform)
+
+Faces: ``surface``.
 
 .. _gui-ref-shape-cylinder-3d:
 
@@ -208,7 +232,7 @@ cylinder
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``ellipsoid``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Origin
      - ``origin``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -238,7 +262,7 @@ extrusion
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``ellipsoid``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - From z to z
      - ``z``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
@@ -264,7 +288,7 @@ revolution
      - Value
    * - Type
      - ``type``
-     - one of ``rectangle`` (box), ``ball``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
+     - one of ``rectangle`` (box), ``ball``, ``ellipsoid``, ``cylinder``, ``extrusion``, ``revolution``, ``union``, ``intersection``, ``difference``
    * - Work plane
      - ``placement``
      - one of ``xy`` (the (x, y) plane at the origin), ``custom`` (an origin and two axes). The plane of the profile: its x and y axes (r and z for a revolution); z is their cross product

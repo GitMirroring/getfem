@@ -130,6 +130,8 @@ def _gf_shape(shape, w) -> str:
         r1, r2 = _floats(shape["radii"])
         w(f"{v} = gf.MesherObject('ellipse', {_floats(shape['center'])}, {r1!r}, {r2!r}, "
           f"{math.radians(float(shape.get('angle', 0.0)))!r})")
+    elif t == "ellipsoid":
+        w(f"{v} = gf.MesherObject('ellipsoid', {_floats(shape['center'])}, {_floats(shape['radii'])})")
     elif t == "cylinder":
         w(f"{v} = gf.MesherObject('cylinder', {_floats(shape['origin'])}, {_floats(shape['axis'])}, "
           f"{float(shape['length'])!r}, {float(shape['radius'])!r})")
@@ -311,6 +313,10 @@ def _occ_shape(shape, dim, w) -> str:
             w(f"{v} = [(2, {occ}.addDisk({c[0]!r}, {c[1]!r}, 0.0, {r!r}, {r!r}))]")
         else:
             w(f"{v} = [(3, {occ}.addSphere({c[0]!r}, {c[1]!r}, {c[2]!r}, {r!r}))]")
+    elif t == "ellipsoid":                 # a unit sphere, stretched along the axes
+        c, r = _floats(shape["center"]), _floats(shape["radii"])
+        w(f"{v} = [(3, {occ}.addSphere({c[0]!r}, {c[1]!r}, {c[2]!r}, 1.0))]")
+        w(f"{occ}.dilate({v}, {c[0]!r}, {c[1]!r}, {c[2]!r}, {r[0]!r}, {r[1]!r}, {r[2]!r})")
     elif t == "ellipse":
         (cx, cy), (r1, r2) = _floats(shape["center"]), _floats(shape["radii"])
         th = math.radians(float(shape.get("angle", 0.0)))
@@ -1079,6 +1085,7 @@ RECENT_MESHER_OBJECTS = {
     "revolution": "mesher: extrusion and revolution of 2D objects",
     "polygon": "mesher: polygons (not necessarily convex)",
     "ellipse": "mesher: a working ellipse",
+    "ellipsoid": "mesher: an ellipsoid",
 }
 _MISSING_OBJECT = re.compile(r"Bad command name: (\w+)")
 

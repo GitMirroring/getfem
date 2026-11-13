@@ -31,6 +31,7 @@ GUI_TESTS =                                     \
     tests/test_editing.py                       \
     tests/test_elasticity.py                    \
     tests/test_ellipse.py                       \
+    tests/test_ellipsoid.py                     \
     tests/test_export.py                        \
     tests/test_faces3d.py                       \
     tests/test_fillets.py                       \
