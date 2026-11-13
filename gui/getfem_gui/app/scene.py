@@ -23,6 +23,7 @@ tested) off screen as well as in the Qt window.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -152,6 +153,18 @@ def is_curved(ds: pv.DataSet) -> bool:
     return types is not None and len(types) > 0 and bool(np.isin(types, list(_QUADRATIC_EDGES)).any())
 
 
+def extract_surface(ds, **kw):
+    """ds.extract_surface(**kw) with the same algorithm for every PyVista
+    (the recent ones warn when it is not given, its default to change)."""
+    method = type(ds).extract_surface
+    if _takes_algorithm.setdefault(type(ds), "algorithm" in inspect.signature(method).parameters):
+        kw.setdefault("algorithm", "dataset_surface")
+    return ds.extract_surface(**kw)
+
+
+_takes_algorithm: dict = {}
+
+
 def surface(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     """What is drawn of a dataset: for quadratic cells, their outer surface,
     each face subdivided `level` times (its points placed by the quadratic
@@ -159,7 +172,7 @@ def surface(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     color maps); level 0, the faces through their corners."""
     if not is_curved(ds):
         return ds
-    return ds.extract_surface(nonlinear_subdivision=max(0, int(level)))
+    return extract_surface(ds, nonlinear_subdivision=max(0, int(level)))
 
 
 _VOLUME_TYPES = {10, 11, 12, 13, 14, 24, 25, 26, 27, 29, 32, 33}   # VTK cells of dimension 3
@@ -212,7 +225,7 @@ def _boundary_pairs(ds: pv.DataSet):
     elif types & {24, 25, 26, 27, 29, 32, 33}:   # other quadratic solids: all the edges
         return None, None
     else:                                        # linear solids: the surface of VTK
-        surf = ds.extract_surface(pass_pointid=True)
+        surf = extract_surface(ds, pass_pointid=True)
         edges = surf.extract_all_edges()         # (the point data follows: the indices in ds)
         ids = np.asarray(edges.point_data["vtkOriginalPointIds"])
         lines = np.asarray(edges.lines).reshape(-1, 3)[:, 1:]
@@ -332,7 +345,7 @@ def facing_wire(ds: pv.DataSet, level: int = CURVED) -> pv.PolyData | None:
     wire = _wire(ds, level)
     if not wire.n_points or not getattr(wire, "n_lines", 0):
         return None
-    surf = ds.extract_surface(nonlinear_subdivision=max(0, int(level)) if is_curved(ds) else 0).triangulate()
+    surf = extract_surface(ds, nonlinear_subdivision=max(0, int(level)) if is_curved(ds) else 0).triangulate()
     if not surf.n_cells:
         return None
     # the triangles seen from outside: made consistent along their edges, then
@@ -460,7 +473,7 @@ def add_edges(plotter, ds: pv.DataSet, level: int = CURVED, name: str = "edges",
 
 def _outline(ds: pv.DataSet, level: int = CURVED) -> pv.DataSet:
     """Contour of the domain: boundary edges in 2D, feature edges in 3D."""
-    surf = ds.extract_surface(nonlinear_subdivision=level if is_curved(ds) else 0)
+    surf = extract_surface(ds, nonlinear_subdivision=level if is_curved(ds) else 0)
     if is_planar(ds):
         return surf.extract_feature_edges(boundary_edges=True, feature_edges=False,
                                           manifold_edges=False, non_manifold_edges=False)
@@ -698,7 +711,7 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
         add_edges(plotter, shown, level, color=EDGES, line_width=1, name="edges")
     levels = isoline_levels(*clim, isolines)
     if levels.size:
-        surf = drawn.extract_surface(nonlinear_subdivision=0)
+        surf = extract_surface(drawn, nonlinear_subdivision=0)
         lines = surf.contour(isosurfaces=levels, scalars="_shown")
         if lines.n_points:
             plotter.add_mesh(lines, color="#1a1a1a", line_width=1.5, lighting=False, name="isolines")
@@ -914,7 +927,7 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
                 X = [None, None, None]
                 X[i], X[j], X[axis] = U, V, np.full_like(U, value)
                 grid = pv.StructuredGrid(X[0][:, :, None], X[1][:, :, None], X[2][:, :, None])
-                faces.append(_tagged(grid.extract_surface(), len(faces)))     # xmin, xmax, ymin...
+                faces.append(_tagged(extract_surface(grid), len(faces)))     # xmin, xmax, ymin...
         surf = faces[0].merge(faces[1:])
     elif t == "ball":
         r = float(prim["radius"])
@@ -933,8 +946,9 @@ def _primitive_surface(prim: dict, h: float) -> pv.PolyData:
         a = a / (np.linalg.norm(a) or 1.0)
         L, r = float(prim["length"]), float(prim["radius"])
         nt = max(48, int(np.ceil(2 * np.pi * r / h)))
-        side = pv.CylinderStructured(radius=r, height=L, center=o + L / 2 * a, direction=a,
-                                     theta_resolution=nt, z_resolution=max(2, int(np.ceil(L / h)))).extract_surface()
+        side = extract_surface(pv.CylinderStructured(radius=r, height=L, center=o + L / 2 * a, direction=a,
+                                                     theta_resolution=nt,
+                                                     z_resolution=max(2, int(np.ceil(L / h)))))
         nr = max(2, int(np.ceil(r / h)))
         caps = [_tagged(pv.Disc(center=o, inner=0.0, outer=r, normal=-a, r_res=nr, c_res=nt), 1),
                 _tagged(pv.Disc(center=o + L * a, inner=0.0, outer=r, normal=a, r_res=nr, c_res=nt), 2)]
@@ -981,7 +995,7 @@ def _profile_face(profile: dict, curves, h: float) -> pv.PolyData:
         return face
     C = np.asarray(face.cell_centers().points)[:, :2]
     inside = np.flatnonzero(G2.sdf(profile, C) < 0)
-    return face.extract_cells(inside).extract_surface().triangulate()
+    return extract_surface(face.extract_cells(inside)).triangulate()
 
 
 def _swept_surface(prim: dict, h: float) -> pv.PolyData:
@@ -1002,7 +1016,7 @@ def _swept_surface(prim: dict, h: float) -> pv.PolyData:
             X = np.repeat(c[:, 0:1], len(z), axis=1)
             Y = np.repeat(c[:, 1:2], len(z), axis=1)
             Z = np.repeat(z[None, :], len(c), axis=0)
-            parts.append(_tagged(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface(),
+            parts.append(_tagged(extract_surface(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None])),
                                  tag))
         face = _profile_face(G3.effective_profile(prim), curves, h)
         for tag, value in enumerate((z0, z1)):                 # bottom, top
@@ -1017,7 +1031,7 @@ def _swept_surface(prim: dict, h: float) -> pv.PolyData:
             r = np.maximum(c[:, 0], 0.0)[:, None]
             X, Y = r * np.cos(th)[None, :], r * np.sin(th)[None, :]
             Z = np.repeat(c[:, 1:2], len(th), axis=1)
-            parts.append(_tagged(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None]).extract_surface(),
+            parts.append(_tagged(extract_surface(pv.StructuredGrid(X[:, :, None], Y[:, :, None], Z[:, :, None])),
                                  tag))
     surf = parts[0].merge(parts[1:]) if len(parts) > 1 else parts[0]
     surf = surf.triangulate().clean()
@@ -1051,7 +1065,7 @@ def _surface_3d(shape: dict, n: int) -> pv.PolyData:
         part = surf.clip_scalar(scalars="c", value=0.0, invert=True)
         if part.n_cells == 0:
             continue
-        part = part.extract_surface().triangulate()
+        part = extract_surface(part).triangulate()
         if G3.orientation(shape, path) < 0:          # a hole: its normals point inwards
             tri = np.array(part.faces).reshape(-1, 4)[:, [0, 1, 3, 2]]
             ids = np.asarray(part.cell_data["face_id"])
@@ -1216,7 +1230,7 @@ def manifold_preview(src: dict, values: dict, n: int = 120) -> pv.PolyData:
     T = np.repeat(t_[None, :], len(X), axis=0)
     Q = manifold.map_swept(np.vstack([A.ravel(), B.ravel(), T.ravel()]), src)
     grid = pv.StructuredGrid(*(Q[k].reshape(A.shape)[:, :, None] for k in range(3)))
-    return grid.extract_surface()
+    return extract_surface(grid)
 
 
 def show_manifold(plotter, src: dict, values: dict, title: str = "", reset: bool = True) -> None:

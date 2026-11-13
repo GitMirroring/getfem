@@ -33,6 +33,11 @@ import numpy as np
 _SKIP_PREFIX = ("handle", "rubber", "draw", "grid", "axes", "title", "cut_ends", "hover")
 
 
+
+def _surface(ds):
+    from .scene import extract_surface
+    return extract_surface(ds)
+
 def _rgb(prop) -> tuple:
     return tuple(float(c) for c in prop.GetColor())
 
@@ -87,7 +92,7 @@ def planar_parts(plotter) -> list:
         if np.ptp(P[:, 2]) > 1e-9 * max(np.ptp(P[:, :2]), 1e-300):
             raise ValueError("not a 2D view")
         prop = actor.GetProperty()
-        poly = ds if isinstance(ds, pv.PolyData) else ds.extract_surface()
+        poly = ds if isinstance(ds, pv.PolyData) else _surface(ds)
         if poly.GetNumberOfPolys() or poly.GetNumberOfStrips():
             tri = poly.triangulate()
             rows = [r for r in cell_rows(tri.GetPolys()) if len(r) == 3]
@@ -243,7 +248,7 @@ def view_items(plotter) -> dict:
         ds = pv.wrap(data)
         if not getattr(ds, "n_points", 0):
             continue
-        poly = ds if isinstance(ds, pv.PolyData) else ds.extract_surface()
+        poly = ds if isinstance(ds, pv.PolyData) else _surface(ds)
         M = _matrix(actor.GetMatrix())
         prop = actor.GetProperty()
         rgb = np.array(prop.GetColor(), float)

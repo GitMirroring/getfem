@@ -268,7 +268,7 @@ class Viewer(QWidget):
                                 ("XY", "View the XY plane (pan and zoom; Ctrl + drag to rotate)", lambda: self._view("view_xy")),
                                 ("3D", "Isometric view, free rotation (a profile: drawn on its plane, in the "
                                        "3D geometry)", lambda: self._view("view_isometric")),
-                                ("Edges", "Show or hide the element edges (on a result field: a setting of its graphic)",
+                                ("Edges", "Show or hide the element edges on a result field (a setting of its graphic)",
                                  self.toggle_edges),
                                 ("Export", "Export the view: PDF, SVG, EPS (vector) or an image (PNG...)",
                                  self.exportRequested.emit)):
@@ -278,6 +278,8 @@ class Viewer(QWidget):
             b.clicked.connect(slot)
             bar.addWidget(b)
             self._buttons.append(b)
+        self.edges_button = self._buttons[3]       # on a result field only (a mesh: always its edges)
+        self.edges_button.setVisible(False)
         # the display of quadratic elements (meshes of geometric order 2): subdivisions
         self.curved_label = QLabel("Curved:")
         self.curved_box = QSpinBox()
@@ -367,6 +369,7 @@ class Viewer(QWidget):
             self.cut_button.setChecked(False)
         self.result_bar.hide()
         self._show_quality_controls(False)
+        self.edges_button.setVisible(False)
         if self.cut_panel is not None:
             self.cut_panel.hide()
         self._cut = None
@@ -1236,6 +1239,7 @@ class Viewer(QWidget):
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status, view)
         self._show_quality_controls(False)       # (for a mesh only)
+        self.edges_button.setVisible(self.plotter is not None)
         self._snap_points = None
         self._pieces, self._regions_of = [], None
         self._faces = None

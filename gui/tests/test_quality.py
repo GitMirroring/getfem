@@ -165,8 +165,10 @@ def test_viewer():
             ds = pv.read(str(f2))
             ds.point_data["u"] = ds.points[:, 0]
             ds.save(str(field))
+            assert v.edges_button.isHidden()                      # a mesh: always its edges
             v.show_field(field, "u")
             assert v.quality_button.isHidden() and v.quality_box.isHidden()
+            assert not v.edges_button.isHidden()                  # a field: edges or not
         finally:
             v.close_plotter()
 
