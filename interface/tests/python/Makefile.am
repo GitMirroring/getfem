@@ -39,6 +39,7 @@ EXTRA_DIST=                                       \
     check_asm.py                                  \
     check_mumps_ctx.py          		  \
     check_bspline_mesh_fem.py                     \
+    check_import_gmsh_high_order.py               \
     check_secondary_domain.py                     \
     check_mixed_mesh.py                           \
     check_plot.py                                 \
@@ -83,6 +84,7 @@ TESTS =                         \
     check_global_functions.py   \
     check_asm.py                \
     check_bspline_mesh_fem.py   \
+    check_import_gmsh_high_order.py \
     check_secondary_domain.py   \
     check_mixed_mesh.py         \
     check_plot.py               \
