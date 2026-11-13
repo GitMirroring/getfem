@@ -73,6 +73,19 @@ def references(c: dict) -> list[tuple[str, int]]:
     return [("vertex", c.get("vertex"))]
 
 
+def _open_check(c: dict, poly: dict) -> str | None:
+    """An open polygon (a curve): no closing side, no angle at its ends."""
+    if not poly.get("open"):
+        return None
+    n = len(poly.get("points") or [])
+    for kind, k in references(c):
+        if kind == "side" and k == n:
+            return f"side {n} does not exist (the polygon is open: {n - 1} sides)"
+        if kind == "vertex" and c.get("type") == "angle" and k in (1, n):
+            return f"no angle at an end (vertex {k}) of an open polygon"
+    return None
+
+
 def check(c: dict, n: int, tree: dict | None = None) -> str | None:
     """What is wrong with a constraint of a polygon of n vertices (None if
     nothing); tree: the 2D tree, for a coincidence."""
@@ -278,10 +291,11 @@ def solve_tree(tree: dict, weights: dict | None = None) -> list[str]:
         if not cons:
             continue
         pts = poly.get("points") or []
-        if len(pts) < 3 or any(not isinstance(v, (int, float)) or isinstance(v, bool) for p in pts for v in p):
+        if len(pts) < (2 if poly.get("open") else 3) \
+                or any(not isinstance(v, (int, float)) or isinstance(v, bool) for p in pts for v in p):
             continue
         bad = [f"{_where(path)}.constraints[{j}]: {msg}" for j, c in enumerate(cons)
-               if (msg := check(c, len(pts), tree)) is not None]
+               if (msg := check(c, len(pts), tree) or _open_check(c, poly)) is not None]
         if bad:
             errors += bad
             continue

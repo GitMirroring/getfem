@@ -155,14 +155,8 @@ Meshers: ``getfem``.
    * - Dimension of the space
      - ``dim``
      - one of ``2`` (2D), ``3`` (3D)
-   * - Points
-     - ``points``
-     - table of the points: coordinates, and the point an arc goes through. The curve goes through the points in order: a segment to the next one, or an arc of circle through the point given in the last column ("x, y" or "x, y, z"; empty: a segment).
-   * - Closed
-     - ``closed``
-     - one of ``false`` (no), ``true`` (yes). Closed: the last point is joined to the first one.
 
-The ends of an open curve are the built-in selections start and end.
+The curve is the polygon below, drawn and edited in the view as the polygons of a 2D geometry (vertices, fillets, curved sides, constraints, dimensions), open or closed. The ends of an open curve are the built-in selections start and end.
 
 Built-in selections: ``all``, ``boundary``, ``start``, ``end``.
 

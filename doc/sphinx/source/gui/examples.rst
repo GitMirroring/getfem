@@ -112,6 +112,18 @@ temperatures on the hole and on the rim (``edges`` selections of the flat
 domain). The temperature is solved on the surface (tangential gradients);
 the ``area`` output gives the area of the paraboloid.
 
+.. _gui-example-heated_wire:
+
+Heated wire (``heated_wire.json``)
+----------------------------------
+
+A ``curve`` drawn as an open polygon with four fillets: a wire bent three
+times, heated along its length (Joule effect, ``power`` per meter), its ends
+(the built-in selections ``start`` and ``end``) held at 20 °C. The
+conductivity is that of copper times the section of the wire. The ``length``
+output gives the length of the wire, arcs included; ``heat_out``, the heat
+that leaves it by its ends, balances the heat generated.
+
 .. _gui-example-anisotropic_plate:
 
 Fibre composite plate (``anisotropic_plate.json``)

@@ -19,6 +19,18 @@
 
 Sources:
 
+- {"type": "curve", "dim": 2, "shape": <polygon>}: a 2D curve drawn as a
+  polygon, open ("open": true: from its first vertex to its last one) or
+  closed, with its fillets (arcs of circle), splines (cubic Bezier curves)
+  and constraints, as the polygons of the 2D geometries.
+- {"type": "curve", "dim": 3, "shape": <polygon>, "origin": [x, y, z],
+  "axes": [e1, e2], "height": h}: a curve drawn as a polygon in local
+  coordinates (x, y), placed in 3D as the flat domain of a surface: at
+  origin + x e1 + y e2 + h(x, y) n (a plane curve for a constant height).
+- {"type": "curve", "dim": 2 or 3, "parametric": {"x": ..., "y": ...[, "z":
+  ...]}, "t": [t0, t1]}: a parametric curve, its coordinates expressions of
+  t and the parameters (a helix: "cos(t)", "sin(t)", "0.1*t"); closed when
+  its two ends meet.
 - {"type": "curve", "dim": 2 or 3, "points": [[...], ...], "through": [...],
   "closed": false}: a chain of segments and arcs of circle; through[i] is
   null (the segment from points[i] to points[i+1]) or a point the arc goes
@@ -71,9 +83,98 @@ def chain_dim(src: dict) -> int:
 
 # ------------------------------------------------------------- the chain
 
+def curve_polygon(src: dict) -> dict | None:
+    """The polygon of a 2D curve drawn as a polygon (None for a chain of
+    points)."""
+    shape = src.get("shape")
+    return shape if src.get("type") == "curve" and isinstance(shape, dict) else None
+
+
+def is_placed(src: dict) -> bool:
+    """A 3D curve drawn as a polygon in its plane (origin, axes, height)."""
+    return curve_polygon(src) is not None and src.get("dim") == 3
+
+
+def is_parametric(src: dict) -> bool:
+    return src.get("type") == "curve" and isinstance(src.get("parametric"), dict)
+
+
+AXES = ("x", "y", "z")
+
+
+def param_code(expr, values: dict, var: str = "t") -> str:
+    """Python (numpy) expression of a coordinate of a parametric curve, an
+    array function of t (the parameters replaced by their values)."""
+    code = height_code(expr, values, (var,))
+    return code.replace("0 * x)", f"0 * {var})")
+
+
+def param_points(src: dict, values: dict, t) -> np.ndarray:
+    """Points (dim x n) of a parametric curve at the values t."""
+    t = np.asarray(t, float)
+    par = src["parametric"]
+    out = []
+    for k in AXES[:int(src.get("dim", 3))]:
+        out.append(eval(param_code(par.get(k, 0.0), values), {"np": np, "__builtins__": {}},  # noqa: S307
+                        {"t": t}) + 0.0 * t)
+    return np.vstack(out)
+
+
+def _param_samples(src: dict, values: dict, n: int = 2001):
+    t0, t1 = (float(v) for v in src.get("t", [0.0, 1.0]))
+    t = np.linspace(t0, t1, n)
+    return t, param_points(src, values, t)
+
+
+def param_closed(src: dict, values: dict) -> bool:
+    _, X = _param_samples(src, values, 401)
+    scale = float(np.ptp(X, axis=1).max()) or 1.0
+    return float(np.linalg.norm(X[:, -1] - X[:, 0])) <= 1e-9 * scale
+
+
+def is_closed(src: dict, values: dict | None = None) -> bool:
+    poly = curve_polygon(src)
+    if poly is not None:
+        return not poly.get("open")
+    if is_parametric(src):
+        try:
+            return param_closed(src, values or {})
+        except (ValueError, TypeError, KeyError, SyntaxError, ZeroDivisionError):
+            return False
+    return bool(src.get("closed"))
+
+
+def map_curve(P2: np.ndarray, src: dict, values: dict | None = None) -> np.ndarray:
+    """Points of a placed curve (3 x n) for points of its polygon (2 x n)."""
+    return map_surface(P2, src, values or {})
+
+
+def _polygon_pieces(poly: dict) -> list:
+    """The pieces of the polygon of a curve: its sides (segments, splines as
+    ["bezier", P0, P1, P2, P3] each), its fillets (arcs)."""
+    from . import geometry2d as G
+    out = []
+    for part in G.outline_parts(poly):
+        if part[0] == "line":
+            out.append(["segment", list(map(float, part[1])), list(map(float, part[2]))])
+        elif part[0] == "arc":                        # the smaller arc from a to b about c: through its middle
+            a, b, c = (np.asarray(x, float) for x in part[1:4])
+            m = 0.5 * (a + b) - c
+            r = float(np.linalg.norm(a - c))
+            t = c + r * m / (np.linalg.norm(m) or 1.0)
+            out.append(["arc", a.tolist(), t.tolist(), b.tolist()])
+        else:
+            out.append(["bezier"] + [list(map(float, q)) for q in part[1]])
+    return out
+
+
 def chain_pieces(src: dict) -> list:
-    """The pieces of a chain: ["segment", A, B] or ["arc", A, T, B] (the arc
-    from A to B through T); numbers, as lists."""
+    """The pieces of a chain: ["segment", A, B], ["arc", A, T, B] (the arc
+    from A to B through T) or ["bezier", A, C1, C2, B] (a cubic Bezier
+    curve); numbers, as lists."""
+    poly = curve_polygon(src)
+    if poly is not None:
+        return _polygon_pieces(poly)
     pts = [list(map(float, p)) for p in src.get("points", [])]
     through = list(src.get("through") or [])
     n = len(pts) if src.get("closed") else len(pts) - 1
@@ -87,6 +188,10 @@ def chain_pieces(src: dict) -> list:
 
 def chain_problem(src: dict) -> str | None:
     """Why the chain of a curve or a swept surface is not valid (None if it is)."""
+    poly = curve_polygon(src)
+    if poly is not None:                         # (its vertices checked as those of a polygon)
+        from . import geometry2d as G
+        return G.fillet_problem(poly) or G.spline_problem(poly)
     pts = np.asarray(src.get("points", []), float)
     if len(pts) < 2:
         return "at least two points expected"
@@ -127,10 +232,41 @@ def arc_frame(a, t, b):
     return C[:d], r, e1[:d], e2[:d], angle
 
 
+def bezier_by_length(C, h, order):
+    """Points of the cubic Bezier curve of control points C (4 x dim) at
+    lengths along it equally spaced, about h apart (order + 1 points per
+    element): dim x (n order + 1) (marked: copied into the scripts)."""
+    C = np.asarray(C, float)
+    u = np.linspace(0.0, 1.0, 2049)
+    w = np.stack([(1 - u) ** 3, 3 * u * (1 - u) ** 2, 3 * u ** 2 * (1 - u), u ** 3])
+    P = w.T @ C
+    s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+    n = max(1, int(math.ceil(s[-1] / h)))
+    t = np.interp(np.linspace(0.0, s[-1], n * order + 1), s, u)
+    w = np.stack([(1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t ** 2 * (1 - t), t ** 3])
+    return (w.T @ C).T, n
+
+
+def curve_elements(f, t0, t1, h, order, closed):
+    """Nodes of the elements of the parametric curve t -> f(t) (dim x n for
+    an array t), from t0 to t1, equally spaced along its length, about h
+    apart: dim x (order + 1) x number of elements (marked: copied into the
+    scripts)."""
+    t = np.linspace(t0, t1, 8001)
+    P = f(t)
+    s = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P, axis=1), axis=0))])
+    n = max(3 if closed else 1, int(math.ceil(s[-1] / h)))
+    X = f(np.interp(np.linspace(0.0, s[-1], n * order + 1), s, t))
+    if closed:
+        X[:, -1] = X[:, 0]                      # the same node: the curve closed
+    return np.stack([X[:, k * order:k * order + order + 1] for k in range(n)], axis=2)
+
+
 def chain_elements(pieces, h, order):
     """Nodes of the elements of a chain (GetFEM order of GT_PK(1, order):
-    equally spaced from the first to the last one): an array (dim x
-    (order + 1) x number of elements) (marked: copied into the scripts)."""
+    equally spaced from the first to the last one; along a Bezier curve, by
+    its length): an array (dim x (order + 1) x number of elements) (marked:
+    copied into the scripts)."""
     out = []
     for piece in pieces:
         if piece[0] == "segment":
@@ -138,6 +274,9 @@ def chain_elements(pieces, h, order):
             n = max(1, int(math.ceil(float(np.linalg.norm(B - A)) / h)))
             s = np.linspace(0.0, 1.0, n * order + 1)
             X = A[:, None] + (B - A)[:, None] * s[None, :]
+        elif piece[0] == "bezier":
+            X, n = bezier_by_length(piece[1:], h, order)
+            X[:, -1] = np.asarray(piece[4], float)
         else:
             C, r, e1, e2, angle = arc_frame(piece[1], piece[2], piece[3])
             n = max(1, int(math.ceil(r * angle / h)))
@@ -149,12 +288,23 @@ def chain_elements(pieces, h, order):
     return np.concatenate(out, axis=2)
 
 
-def chain_polyline(src: dict, n_arc: int = 64) -> np.ndarray:
-    """Points along the chain (for the preview): an array (number x dim)."""
+def chain_polyline(src: dict, n_arc: int = 64, values: dict | None = None) -> np.ndarray:
+    """Points along the chain (for the preview): an array (number x dim);
+    a placed curve, in 3D (values: those of the parameters, for its
+    height); a parametric curve, sampled."""
+    if is_parametric(src):
+        return _param_samples(src, values or {}, 401)[1].T
+    if is_placed(src):
+        P2 = chain_polyline(dict(src, dim=2), n_arc)
+        return map_curve(P2.T, src, values).T
     pts = []
     for piece in chain_pieces(src):
         if piece[0] == "segment":
             seg = np.array([piece[1], piece[2]], float)
+        elif piece[0] == "bezier":
+            C = np.asarray(piece[1:], float)
+            u = np.linspace(0.0, 1.0, 33)[:, None]
+            seg = (1 - u) ** 3 * C[0] + 3 * u * (1 - u) ** 2 * C[1] + 3 * u ** 2 * (1 - u) * C[2] + u ** 3 * C[3]
         else:
             C, r, e1, e2, angle = arc_frame(piece[1], piece[2], piece[3])
             s = np.linspace(0.0, angle, max(8, int(n_arc * angle / (2 * math.pi)) + 2))
@@ -163,11 +313,23 @@ def chain_polyline(src: dict, n_arc: int = 64) -> np.ndarray:
     return np.concatenate(pts) if pts else np.zeros((0, chain_dim(src)))
 
 
-def chain_ends(src: dict) -> list:
-    """The two ends of an open chain (no end for a closed one)."""
-    if src.get("closed") or len(src.get("points", [])) < 2:
+def chain_ends(src: dict, values: dict | None = None) -> list:
+    """The two ends of an open chain (no end for a closed one); in 3D for a
+    placed curve (values: those of the parameters, for its height)."""
+    if is_parametric(src):
+        if is_closed(src, values):
+            return []
+        t0, t1 = (float(v) for v in src.get("t", [0.0, 1.0]))
+        X = param_points(src, values or {}, [t0, t1])
+        return [X[:, 0].tolist(), X[:, 1].tolist()]
+    if is_placed(src):
+        ends = chain_ends(dict(src, dim=2))
+        return [] if not ends else map_curve(np.asarray(ends, float).T, src, values).T.tolist()
+    poly = curve_polygon(src)
+    pts = (poly or {}).get("points", []) if poly is not None else src.get("points", [])
+    if is_closed(src) or len(pts) < 2:
         return []
-    return [list(map(float, src["points"][0])), list(map(float, src["points"][-1]))]
+    return [list(map(float, pts[0])), list(map(float, pts[-1]))]
 
 
 # ------------------------------------------------------------- surfaces
@@ -180,16 +342,16 @@ NUMPY_FUNCTIONS = {
 }
 
 
-def height_code(height, values: dict) -> str:
+def height_code(height, values: dict, variables: tuple = ("x", "y")) -> str:
     """Python (numpy) expression of the height of a surface, a function of
-    the arrays x and y: the parameters replaced by their values, the
-    functions by those of numpy."""
+    the arrays x and y (variables): the parameters replaced by their values,
+    the functions by those of numpy."""
     if isinstance(height, (int, float)) and not isinstance(height, bool):
         return f"({float(height)!r} + 0 * x)"
 
     class Sub(ast.NodeTransformer):
         def visit_Name(self, node):
-            if node.id in ("x", "y"):
+            if node.id in variables:
                 return node
             if node.id == "pi":
                 return ast.copy_location(ast.Constant(math.pi), node)
@@ -197,7 +359,8 @@ def height_code(height, values: dict) -> str:
                 if np.shape(values[node.id]):
                     raise ValueError(f"{node.id} is not a number: use its components, {node.id}(1)...")
                 return ast.copy_location(ast.Constant(float(values[node.id])), node)
-            raise ValueError(f"unknown name {node.id!r} in the height")
+            raise ValueError(f"unknown name {node.id!r} in the "
+                             + ("height" if variables == ("x", "y") else "expression"))
 
         def visit_Call(self, node):
             if isinstance(node.func, ast.Name) and node.func.id in values:     # a component: C(1)
@@ -207,7 +370,8 @@ def height_code(height, values: dict) -> str:
                     raise ValueError(f"{ast.unparse(node)} is not a number")
                 return ast.copy_location(ast.Constant(float(value)), node)
             if not isinstance(node.func, ast.Name) or node.func.id not in NUMPY_FUNCTIONS:
-                raise ValueError("unknown function in the height")
+                raise ValueError(f"unknown function {ast.unparse(node.func)!r} in the "
+                                 + ("height" if variables == ("x", "y") else "expression"))
             node.args = [self.visit(a) for a in node.args]
             node.func = ast.parse(NUMPY_FUNCTIONS[node.func.id], mode="eval").body
             return node
@@ -272,7 +436,7 @@ def full_turn(src: dict) -> bool:
 
 # ------------------------------------------------------------- scripts
 
-SCRIPT_FUNCTIONS = (arc_frame, chain_elements)
+SCRIPT_FUNCTIONS = (arc_frame, bezier_by_length, chain_elements, curve_elements)
 
 
 def script_functions() -> list[str]:

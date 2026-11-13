@@ -128,6 +128,11 @@ def test_examples_quoted_results():
     f, r0, r1 = 0.4, 0.2, 0.5                                           # area of the paraboloid
     area = 2 * math.pi * (2 * f) ** 2 / 3 * ((1 + (r1 / (2 * f)) ** 2) ** 1.5 - (1 + (r0 / (2 * f)) ** 2) ** 1.5)
     assert _close(q["area"], area, 1e-3), (q["area"], area)
+    q = _solve("heated_wire.json")["heat"]
+    L, R = 0.3, 0.05                                                    # the wire: its sides less the
+    length = 4 * L - 4 * (2 * R - math.pi * R / 2)                      # corners, plus its four arcs
+    assert _close(q["length"], length, 1e-6), (q["length"], length)
+    assert _close(q["heat_out"], 2000 * length, 1e-6)                  # the heat generated leaves by the ends
     q = _solve("anisotropic_plate.json")["heat"]
     assert _close(q["injected_power"], q["outflow"], 1e-3)
     assert q["flux_along_fibres"] > 3 * q["flux_across_fibres"]

@@ -314,6 +314,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_faces3d.py` | faces of 3D geometries: references, selections, mesh, picking in the window |
 | `tests/test_refine.py` | refinements of the meshes: whole mesh by its mesher, selections by GetFEM |
 | `tests/test_sizes.py` | local sizes of the meshes: format, editing, scripts of the three meshers, meshes |
+| `tests/test_curves.py` | curves drawn as polygons (open or closed, in a plane in 3D), parametric curves |
 | `tests/test_curve_view.py` | view of the meshes of curves (lines, ends of the elements, fields) |
 | `tests/test_quality.py` | quality of the elements: measures, display in 2D and 3D, export |
 | `tests/test_ellipse.py` | ellipses: geometry, format, handles, drawing, mesh, solve |

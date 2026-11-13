@@ -400,7 +400,8 @@ def test_vector_parameters_for_vertices_and_curve_points():
     assert E.get_at(m, pts_path)[0] == [0.001, 0.5]
     # the points of a curve, and the point an arc goes through
     m = M.default_model()
-    m["geometries"][0]["source"] = E._default_source("curve", 2)
+    m["geometries"][0]["source"] = {"type": "curve", "dim": 2, "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                                    "through": [None, None], "closed": False}      # (given by points)
     m["parameters"] = [{"name": "P", "value": [1.0, 0.0]}, {"name": "Q", "value": "[1.2, 0.5]"}]
     E.apply(m, E.Field(("geometries", 0, "source", "points", 1, 0), "p", "value", size=2,
                        op="point_component"), "P")

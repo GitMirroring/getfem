@@ -30,7 +30,9 @@ the fields):
    polygons in 2D; boxes, balls, cylinders, extrusions and revolutions of 2D
    profiles in 3D) combined by unions, intersections and differences.
 ``curve``
-   a chain of segments and arcs of circle in 2D or 3D (beams, cables).
+   a curve in 2D or 3D (beams, cables): a polygon, open or closed, drawn as
+   those of the 2D geometries (in a plane in 3D), a parametric curve, or a
+   chain of segments and arcs of circle given by points.
 ``surface``
    a surface in 3D: a flat 2D domain placed in space, plus a height along
    its normal (shells, membranes).
@@ -459,12 +461,35 @@ Curves and surfaces
 Beams, cables, shells and membranes are geometries of a lower dimension
 than their space:
 
+.. image:: images/curve.png
+   :width: 100%
+   :alt: A wire drawn as an open polygon with fillets, its dimensions shown
+
 ``curve`` (2D or 3D)
-   The points of the curve are given in a table: from each point, a segment
-   goes to the next one, or an arc of circle if a point it goes through is
-   given in the last column. A closed curve joins its last point to the
-   first one. The ends of an open curve are the built-in selections
-   ``start`` and ``end``.
+   A curve is given in one of three ways, chosen by the menu of its
+   geometry node (a right click):
+
+   - *a polygon* (a new curve): its node under the geometry is drawn and
+     edited in the view as the polygons of a 2D geometry: vertices dragged
+     or inserted, fillets, curved sides (splines), constraints and
+     dimensions. *Ends* makes it open (from its first vertex to its last
+     one: no fillet, no smooth vertex at its ends, no closing side) or
+     closed. Drawn with the polygon tool, a curve ends with Enter or a
+     double click on its last vertex (open), or with a click on its first
+     vertex (closed); the right click on an end of an open curve extends
+     it. In 3D, the polygon is in the local coordinates (x, y) of a plane,
+     an origin and two axes, plus a height along the normal, as a surface
+     (0: a plane curve; an expression of x and y: a curve on that surface);
+   - *parametric equations*: x(t), y(t) (and z(t) in 3D), expressions of t
+     and of the parameters, from t0 to t1 (a helix: ``cos(t)``,
+     ``sin(t)``, ``0.1*t``); the curve is closed when its two ends meet;
+   - *points and arcs*, in a table: from each point, a segment goes to the
+     next one, or an arc of circle if a point it goes through is given in
+     the last column; a closed curve joins its last point to the first one.
+
+   The elements follow the curve: its sides, the arcs of its fillets, its
+   splines (by their length), a parametric curve by its length. The ends of
+   an open curve are the built-in selections ``start`` and ``end``.
 ``surface`` (3D)
    A flat domain, a 2D constructive tree drawn and edited as a 2D geometry
    (the *Flat domain* node), placed by an origin and two axes, plus a height
@@ -479,7 +504,8 @@ than their space:
 
 Their meshes are built by the meshing script (see :ref:`gui-meshes`) and
 the models use them as any mesh, the gradients being then tangential. The
-modules for beams and shells are to come. See ``examples/heated_dish.json``.
+modules for beams and shells are to come. See ``examples/heated_wire.json``
+and ``examples/heated_dish.json``.
 
 CAD files and meshes
 --------------------

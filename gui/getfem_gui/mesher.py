@@ -684,14 +684,34 @@ def _build_layered(model, geom, mesh, w, basename):
 
 
 def _build_curve(model, geom, mesh, w):
-    """A curve: its chain divided into elements of the element size."""
+    """A curve: its chain divided into elements of the element size (a
+    placed curve: in its plane, then mapped to 3D; a parametric curve: along
+    its length)."""
     from . import manifold
     src = geom["source"]
-    K = int(mesh.get("order", 1))
+    K, h = int(mesh.get("order", 1)), float(mesh["h"])
+    vals, _ = P.values(model)
     for line in manifold.script_functions():
         w(line)
-    w(f"pieces = {manifold.chain_pieces(src)!r}")
-    w(f"X = chain_elements(pieces, {float(mesh['h'])!r}, {K})")
+    if manifold.is_parametric(src):
+        dim = int(src.get("dim", 3))
+        codes = [manifold.param_code(src["parametric"].get(k, 0.0), vals) for k in manifold.AXES[:dim]]
+        t0, t1 = (float(v) for v in src.get("t", [0.0, 1.0]))
+        w("# The parametric curve (its coordinates, functions of t)")
+        w("def f(t):")
+        w(f"    return np.vstack([{', '.join(codes)}])")
+        w(f"X = curve_elements(f, {t0!r}, {t1!r}, {h!r}, {K}, {manifold.is_closed(src, vals)!r})")
+    else:
+        w(f"pieces = {manifold.chain_pieces(src)!r}")
+        w(f"X = chain_elements(pieces, {h!r}, {K})")
+        if manifold.is_placed(src):
+            o, e1, e2, n = manifold.frame(src)
+            w("# The curve drawn in its plane (local x, y) placed in 3D: origin + x e1 + y e2 + height(x, y) n")
+            w("x, y = X[0], X[1]")
+            w(f"height = {manifold.height_code(src.get('height', 0.0), vals)}")
+            w(f"o, e1, e2, n = (np.array(v)[:, None, None] for v in ({o.tolist()!r}, {e1.tolist()!r}, "
+              f"{e2.tolist()!r}, {n.tolist()!r}))")
+            w("X = o + e1 * x + e2 * y + n * height")
     w(f"m = gf.Mesh('empty', {int(src['dim'])})")
     w(f"m.add_convex(gf.GeoTrans('GT_PK(1,{K})'), X)")
 

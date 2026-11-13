@@ -583,8 +583,8 @@ class Viewer(QWidget):
         near = [q for q in (self._poly[:1] + self._poly[-1:]) if np.hypot(p[0] - q[0], p[1] - q[1]) < tol]
         if not near:
             self._poly.append(p)
-        if len(self._poly) >= 3:
-            self.polygon_close()
+        if len(self._poly) >= (2 if self.curve_mode else 3):
+            self.polygon_close(closed=bool(near and near[0] is self._poly[0] and len(self._poly) >= 3))
         else:
             self._polygon_rubber()
             self.status_message("A polygon needs at least three vertices")
@@ -606,8 +606,11 @@ class Viewer(QWidget):
                 out.append((f"Remove this vertex ({j + 1})", lambda j=j: self._polygon_remove(j)))
             if self._poly:
                 out.append(("Remove the last vertex (Backspace)", self.polygon_back))
+            if self.curve_mode and len(self._poly) >= 2:
+                out.append(("Finish the curve, open (Enter)", lambda: self.polygon_close(closed=False)))
             if len(self._poly) >= 3:
-                out.append(("Close the polygon (Enter, middle click)", self.polygon_close))
+                out.append(("Close the polygon (Enter, middle click)" if not self.curve_mode else
+                            "Finish the curve, closed", lambda: self.polygon_close(closed=True)))
             if self._poly:
                 out.append(("Start the polygon again", lambda: self._polygon_remove(None)))
             return out
@@ -760,6 +763,7 @@ class Viewer(QWidget):
         self.dims_button.toggled.connect(self._dimensions_toggled)
         row.addWidget(self.dims_button)
         self._dims, self._dim_labels, self._dim_editor = [], [], None
+        self.curve_mode, self.entered_open = False, False
         self._grid_fixed = None           # a step chosen by the user (None: it follows the zoom)
         self._grid_timer = QTimer(self)
         self._grid_timer.setSingleShot(True)
@@ -929,10 +933,21 @@ class Viewer(QWidget):
             return
         self.handleMoved.emit(name, point)
 
-    def set_drawing(self, enabled: bool) -> None:
-        """Show the drawing tools (a 2D geometry is selected) or hide them."""
+    def set_drawing(self, enabled: bool, curve: bool = False) -> None:
+        """Show the drawing tools (a 2D geometry is selected) or hide them.
+        curve: a 2D curve, drawn as a polygon only (Enter or a double click
+        on the last vertex: open; a click on the first vertex: closed)."""
         if not enabled:
             self.stop_drawing()
+        self.curve_mode = bool(enabled and curve)
+        for kind, b in self.draw_buttons.items():
+            b.setVisible(kind == "polygon" or not self.curve_mode)
+        self.draw_op.setVisible(not self.curve_mode)
+        self.draw_buttons["polygon"].setToolTip(
+            "Draw the curve: a click per vertex; Enter or a double click on the last vertex: an open curve; "
+            "a click on the first vertex: a closed one" if self.curve_mode else
+            "Draw a polygon: a click per vertex; a click on the first vertex, a double click, Enter or a "
+            "middle click closes it")
         self.draw_bar.setVisible(enabled and self.plotter is not None)
 
     def _escape(self) -> None:
@@ -1137,26 +1152,29 @@ class Viewer(QWidget):
         p = self._snapped(world)
         tol = 8 * scene.pixel_size(self.plotter)
         if len(self._poly) >= 3 and np.hypot(p[0] - self._poly[0][0], p[1] - self._poly[0][1]) < tol:
-            self.polygon_close()
+            self.polygon_close(closed=True)
             return
         if self._poly and np.hypot(p[0] - self._poly[-1][0], p[1] - self._poly[-1][1]) < tol:
-            if len(self._poly) >= 3:       # a double click on the last vertex closes
-                self.polygon_close()
+            if len(self._poly) >= (2 if self.curve_mode else 3):   # a double click on the last vertex
+                self.polygon_close()           # closes (a curve: it ends there, open)
             return
         self._poly.append(p)
         self._polygon_rubber()
 
-    def polygon_close(self) -> None:
-        """Finish the polygon being drawn (at least three vertices)."""
-        if self._tool != "polygon" or len(self._poly) < 3:
+    def polygon_close(self, closed: bool | None = None) -> None:
+        """Finish the polygon being drawn (at least three vertices). A curve:
+        open (at least two vertices) unless closed is True."""
+        is_open = self.curve_mode and not closed
+        if self._tool != "polygon" or len(self._poly) < (2 if is_open else 3):
             return
         from .. import geometry2d as G
         pts, self._poly = self._poly, []
         self.draw_cancel()
-        problem = G.polygon_problem(pts)
+        problem = G.open_chain_problem(pts) if is_open else G.polygon_problem(pts)
         if problem:
             self.status_message(f"Polygon not added: {problem}")
             return
+        self.entered_open = is_open
         if self._entering:
             self._entering = False
             self.draw_buttons["polygon"].setChecked(False)
@@ -1164,7 +1182,10 @@ class Viewer(QWidget):
             return
         op = self.draw_op.currentData()
         self.draw_buttons["polygon"].setChecked(False)     # done: a click now grabs a handle
-        self.shapeDrawn.emit({"type": "polygon", "points": pts}, op)
+        shape = {"type": "polygon", "points": pts}
+        if self.curve_mode:
+            shape["open"] = is_open
+        self.shapeDrawn.emit(shape, op)
 
     def polygon_back(self) -> None:
         if self._tool == "polygon" and self._poly:

@@ -718,13 +718,14 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
     elif src.get("type") == "curve":
         from . import manifold
         try:
-            ends = manifold.chain_ends(P.resolved({"parameters": model.get("parameters", []),
-                                                   "geometries": [geom]})["geometries"][0]["source"])
-            pts = np.asarray([[float(x) for x in p] for p in P.resolved(
-                {"parameters": model.get("parameters", []), "geometries": [geom]})["geometries"][0]
-                ["source"]["points"]])
+            sub = {"parameters": model.get("parameters", []), "geometries": [geom]}
+            rsrc = P.resolved(sub)["geometries"][0]["source"]
+            vals, _ = P.values(sub)
+            ends = manifold.chain_ends(rsrc, vals)
+            pts = manifold.chain_polyline(rsrc, values=vals) if ends else np.zeros((1, 2))
             radius = 1e-6 * (float(np.ptp(pts, axis=0).max()) or 1.0)
-        except (KeyError, TypeError, ValueError, P.ParameterError):
+        except (KeyError, TypeError, ValueError, IndexError, SyntaxError, ZeroDivisionError, P.ParameterError,
+                np.linalg.LinAlgError):
             ends = []
         for name, point in zip(("start", "end"), ends):
             table[name] = {"kind": BOUNDARY, "builtin": True,
@@ -826,19 +827,10 @@ def _check_shape(shape, dim, where, errors):
     elif t == "polygon":
         if dim != 2:
             errors.append(f"{where}: polygon only exists in 2D (extrude or turn it in 3D)")
-        pts = shape.get("points")
-        if not isinstance(pts, list) or len(pts) < 3:
-            errors.append(f"{where}.points: at least three vertices expected")
-        elif all(_check_vec(v, 2, f"{where}.points[{i}]", errors) for i, v in enumerate(pts)):
-            from . import geometry2d as G
-            problem = G.polygon_problem(pts)
-            if problem and not (shape.get("splines") and "cross" in problem):   # (the curved sides: below)
-                errors.append(f"{where}.points: not a simple polygon ({problem})")
-        cons = shape.get("constraints", [])
-        if not isinstance(cons, list) or any(not isinstance(c, dict) for c in cons):
-            errors.append(f"{where}.constraints: a list of constraints expected")
-        _check_fillets(shape, where, errors)
-        _check_splines(shape, where, errors)
+        if shape.get("open"):
+            errors.append(f"{where}.open: an open polygon is a curve (a geometry of type curve), "
+                          "not a part of a domain")
+        _check_polygon(shape, where, errors)
     elif t == "ellipsoid":
         if dim != 3:
             errors.append(f"{where}: ellipsoid only exists in 3D (an ellipse in 2D)")
@@ -896,6 +888,48 @@ def _check_shape(shape, dim, where, errors):
                       "difference, transform, array)")
 
 
+def _check_polygon(shape, where, errors):
+    """A polygon: its vertices (a simple polygon; an open one, the polygon of
+    a 2D curve: a chain of at least two vertices), constraints, fillets and
+    splines (an open polygon: none at its ends, nor on a closing side)."""
+    from . import geometry2d as G
+    is_open = shape.get("open", False)
+    if not isinstance(is_open, bool):
+        errors.append(f"{where}.open: true or false expected")
+        is_open = False
+    pts = shape.get("points")
+    least = 2 if is_open else 3
+    if not isinstance(pts, list) or len(pts) < least:
+        errors.append(f"{where}.points: at least {'two' if is_open else 'three'} vertices expected")
+    elif all(_check_vec(v, 2, f"{where}.points[{i}]", errors) for i, v in enumerate(pts)):
+        if is_open:
+            problem = G.open_chain_problem(pts)
+            if problem:
+                errors.append(f"{where}.points: {problem}")
+        else:
+            problem = G.polygon_problem(pts)
+            if problem and not (shape.get("splines") and "cross" in problem):   # (the curved sides: below)
+                errors.append(f"{where}.points: not a simple polygon ({problem})")
+    cons = shape.get("constraints", [])
+    if not isinstance(cons, list) or any(not isinstance(c, dict) for c in cons):
+        errors.append(f"{where}.constraints: a list of constraints expected")
+    if is_open and isinstance(pts, list):
+        n = len(pts)
+        for f in shape.get("fillets") or []:
+            if isinstance(f, dict) and f.get("vertex") in (1, n):
+                errors.append(f"{where}.fillets: no fillet at an end (vertex {f['vertex']}) of an open polygon")
+        for sp in shape.get("splines") or []:
+            if isinstance(sp, dict) and sp.get("side") == n:
+                errors.append(f"{where}.splines: side {n} does not exist (the polygon is open: {n - 1} sides)")
+        for k in shape.get("smooth") or []:
+            if k in (1, n):
+                errors.append(f"{where}.smooth: no smooth vertex at an end (vertex {k}) of an open polygon")
+        if any(e.startswith(f"{where}.") for e in errors):
+            return
+    _check_fillets(shape, where, errors)
+    _check_splines(shape, where, errors)
+
+
 def _check_axis_fillets(profile, where, errors):
     """No fillet at a vertex of a profile of revolution on the axis: its arc
     would be tangent to the axis, a point of the solid where its surface
@@ -950,7 +984,8 @@ def _check_splines(shape, where, errors):
     if not isinstance(sm, list) or any(isinstance(k, bool) or not isinstance(k, int) or not 1 <= k <= max(n, 1)
                                        for k in sm):
         errors.append(f"{where}.smooth: a list of vertex numbers from 1 to {n} expected")
-    if n >= 3 and len(errors) == before and not any(e.startswith(f"{where}.points") for e in errors):
+    if n >= (2 if shape.get("open") else 3) and len(errors) == before \
+            and not any(e.startswith(f"{where}.points") for e in errors):
         from . import geometry2d as G
         try:
             problem = G.spline_problem(shape)
@@ -983,7 +1018,7 @@ def _check_fillets(shape, where, errors):
         seen.add(k)
         if isinstance(r, bool) or not isinstance(r, (int, float)) or r <= 0:
             errors.append(f"{w}.radius: a positive number expected")
-    if n >= 3 and not any(e.startswith(f"{where}.fillets") for e in errors):
+    if n >= (2 if shape.get("open") else 3) and not any(e.startswith(f"{where}.fillets") for e in errors):
         from . import geometry2d as G
         try:
             problem = G.fillet_problem(shape)
@@ -1040,6 +1075,55 @@ def _validate_geometry(model, geom, where, errors):
             errors.append(f"{where}.source.dim: 2 or 3 expected")
         else:
             _check_shape(src.get("shape"), dim, f"{where}.source.shape", errors)
+    elif t == "curve" and "parametric" in src:   # a parametric curve
+        from . import manifold
+        dim, par = src.get("dim"), src.get("parametric")
+        if dim not in (2, 3):
+            errors.append(f"{where}.source.dim: 2 or 3 expected")
+        elif not isinstance(par, dict):
+            errors.append(f"{where}.source.parametric: {{\"x\": ..., \"y\": ..., \"z\": ...}} expected")
+        else:
+            vals, _ = P.values(model)
+            for k in manifold.AXES[:dim]:
+                e = par.get(k, 0.0)
+                if isinstance(e, bool) or not isinstance(e, (int, float, str)):
+                    errors.append(f"{where}.source.parametric.{k}: a number or an expression of t expected")
+                    continue
+                try:
+                    manifold.param_code(e, vals)
+                except (ValueError, SyntaxError) as exc:
+                    errors.append(f"{where}.source.parametric.{k}: {exc}")
+            if _check_vec(src.get("t", [0.0, 1.0]), 2, f"{where}.source.t", errors):
+                t0, t1 = src.get("t", [0.0, 1.0])
+                if not t0 < t1:
+                    errors.append(f"{where}.source.t: t0 < t1 expected")
+                elif not any(e.startswith(f"{where}.source") for e in errors):
+                    try:
+                        X = manifold.chain_polyline(src, values=vals)
+                        if not np.all(np.isfinite(X)):
+                            errors.append(f"{where}.source.parametric: not finite for some t")
+                        elif float(np.ptp(X, axis=0).max()) == 0:
+                            errors.append(f"{where}.source.parametric: a single point (no length)")
+                    except (ValueError, TypeError, ZeroDivisionError, FloatingPointError) as exc:
+                        errors.append(f"{where}.source.parametric: {exc}")
+    elif t == "curve" and "shape" in src:        # a curve drawn as a polygon (in a plane in 3D)
+        from . import manifold
+        poly = src.get("shape")
+        if src.get("dim") not in (2, 3):
+            errors.append(f"{where}.source.dim: 2 or 3 expected")
+        elif src.get("dim") == 3:
+            _check_placement(model, src, where, errors)
+        if not isinstance(poly, dict) or poly.get("type") != "polygon":
+            errors.append(f"{where}.source.shape: a polygon expected (open or closed)")
+            return
+        _check_polygon(poly, f"{where}.source.shape", errors)
+        if not any(e.startswith(f"{where}.source") for e in errors):
+            try:
+                problem = manifold.chain_problem(src)
+            except (TypeError, ValueError, np.linalg.LinAlgError):
+                problem = "the curve cannot be made"
+            if problem:
+                errors.append(f"{where}.source.shape: {problem}")
     elif t in ("curve", "swept_surface"):
         from . import manifold
         dim = manifold.chain_dim(src)
@@ -1079,25 +1163,7 @@ def _validate_geometry(model, geom, where, errors):
             errors.append(f"{where}.source.closed: true or false expected")
     elif t == "surface":
         _check_shape(src.get("shape"), 2, f"{where}.source.shape", errors)
-        _check_vec(src.get("origin", [0.0, 0.0, 0.0]), 3, f"{where}.source.origin", errors)
-        axes = src.get("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-        if not (isinstance(axes, list) and len(axes) == 2
-                and all(_check_vec(a, 3, f"{where}.source.axes", errors) for a in axes)):
-            errors.append(f"{where}.source.axes: two 3D vectors expected")
-        elif np.linalg.norm(np.cross(np.asarray(axes[0], float), np.asarray(axes[1], float))) <= \
-                1e-12 * np.linalg.norm(axes[0]) * np.linalg.norm(axes[1]):
-            errors.append(f"{where}.source.axes: two independent vectors expected")
-        hgt = src.get("height", 0.0)
-        if isinstance(hgt, bool) or not isinstance(hgt, (int, float, str)):
-            errors.append(f"{where}.source.height: number or expression of x, y expected")
-        elif isinstance(hgt, str):
-            from . import manifold
-            try:
-                vals, _ = P.values(model)
-                manifold.height_code(hgt, vals)
-                P.scalar(hgt, dict(vals, x=0.1, y=0.2))
-            except (ValueError, SyntaxError) as exc:
-                errors.append(f"{where}.source.height: {exc}")
+        _check_placement(model, src, where, errors)
     elif t in ("cad", "mesh_file"):
         if "file" not in src:
             errors.append(f"{where}.source.file: missing file path")
@@ -1170,10 +1236,34 @@ def _validate_geometry(model, geom, where, errors):
                 errors.append(f"{w}.criteria.of: list of selections expected")
 
 
+def _check_placement(model, src, where, errors):
+    """The plane of a surface or of a curve drawn as a polygon in 3D: origin,
+    axes and height (along the normal)."""
+    _check_vec(src.get("origin", [0.0, 0.0, 0.0]), 3, f"{where}.source.origin", errors)
+    axes = src.get("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    if not (isinstance(axes, list) and len(axes) == 2
+            and all(_check_vec(a, 3, f"{where}.source.axes", errors) for a in axes)):
+        errors.append(f"{where}.source.axes: two 3D vectors expected")
+    elif np.linalg.norm(np.cross(np.asarray(axes[0], float), np.asarray(axes[1], float))) <= \
+            1e-12 * np.linalg.norm(axes[0]) * np.linalg.norm(axes[1]):
+        errors.append(f"{where}.source.axes: two independent vectors expected")
+    hgt = src.get("height", 0.0)
+    if isinstance(hgt, bool) or not isinstance(hgt, (int, float, str)):
+        errors.append(f"{where}.source.height: number or expression of x, y expected")
+    elif isinstance(hgt, str):
+        from . import manifold
+        try:
+            vals, _ = P.values(model)
+            manifold.height_code(hgt, vals)
+            P.scalar(hgt, dict(vals, x=0.1, y=0.2))
+        except (ValueError, SyntaxError) as exc:
+            errors.append(f"{where}.source.height: {exc}")
+
+
 def _check_edges(src, crit, where, errors):
     from . import geometry2d as G
     shape = G.shape_of(src)
-    if shape is None:
+    if shape is None or G.is_curve(shape):
         errors.append(f"{where}: criterion 'edges' requires a 2D box or csg geometry")
         return
     edges = crit.get("edges")
@@ -1218,7 +1308,7 @@ def _check_faces(src, crit, where, errors):
 def _check_regions(src, crit, where, errors):
     from . import geometry2d as G
     shape = G.shape_of(src)
-    if shape is None:
+    if shape is None or G.is_curve(shape):
         errors.append(f"{where}: criterion 'regions' requires a 2D box or csg geometry")
         return
     regions = crit.get("regions")

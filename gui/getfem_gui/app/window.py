@@ -779,6 +779,10 @@ class MainWindow(QMainWindow):
             return None
         title = f"Geometry {geom.get('name')!r}"
         highlighted, domain, pickable = [], False, False
+        if G.is_curve(shape):                 # a 2D curve: the polygon highlighted for its node
+            if E.is_curve_polygon(self.model, path):
+                return title + " — curve: drag the vertices", shape, pieces, pieces, False, False
+            return title + " (curve)", shape, pieces, [], False, False
         if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape"):
             csg = tuple(path[5::2])             # ("of", j, "of", k) -> (j, k)
             highlighted = [p for p in pieces if p.side.shape[:len(csg)] == csg]
@@ -817,13 +821,15 @@ class MainWindow(QMainWindow):
         model = P.resolved(self.model)
         geom = model["geometries"][path[1]]
         src = geom.get("source", {})
-        if src.get("type") not in manifold.SOURCES:
-            return False
+        if src.get("type") not in manifold.SOURCES or (manifold.curve_polygon(src) is not None
+                                                        and src.get("dim") == 2):
+            return False                       # (a 2D curve drawn as a polygon: the 2D preview)
         if any(e.startswith(f"geometries[{path[1]}]") or e.startswith("parameters") for e in self.errors):
             self.viewer.show_message("The geometry has errors: see the panel.")
             return True
         vals, _ = P.values(model)
-        what = {"curve": "curve", "surface": "surface (the flat domain below: its selections)",
+        what = {"curve": "curve" + (" (its polygon below: in its plane)" if manifold.is_placed(src) else ""),
+                "surface": "surface (the flat domain below: its selections)",
                 "swept_surface": "swept surface"}[src["type"]]
         try:
             self.viewer.show_manifold(src, vals, status=f"{geom['name']}: {what} (preview, no mesh)",
@@ -963,6 +969,8 @@ class MainWindow(QMainWindow):
             return
         before = copy.deepcopy(self.model)
         E.get_at(self.model, path)["points"] = [list(p) for p in points]
+        if E.is_curve_polygon(self.model, path):      # a curve: open or closed as it was drawn
+            E.get_at(self.model, path)["open"] = bool(self.viewer.entered_open)
         self._undo.append(before)
         self._redo.clear()
         self._update_undo()
@@ -1061,6 +1069,10 @@ class MainWindow(QMainWindow):
         self._update_undo()
         self._changed(select=E.profile_root(path) or ("geometries", gi))
         what = {"rectangle": "Rectangle", "ball": "Disk", "ellipse": "Ellipse", "polygon": "Polygon"}.get(shape["type"], "Shape")
+        if self.model["geometries"][gi]["source"].get("type") == "curve":
+            self.state.setText(f"Curve drawn ({'open' if shape.get('open') else 'closed'}, "
+                               f"{len(shape['points'])} vertices)")
+            return
         verb = {"union": "added", "difference": "subtracted", "intersection": "intersected"}[op]
         self.state.setText(f"{what} {verb}" + (": " + "; ".join(notes) if notes else ""))
         for n in notes:
@@ -1240,7 +1252,9 @@ class MainWindow(QMainWindow):
             self.viewer.set_drawing(False)
             self.viewer.set_handles([])
             return
-        self.viewer.set_drawing(preview is not None and E.can_draw(self.model, path) is not None)
+        gi = E.can_draw(self.model, path)
+        self.viewer.set_drawing(preview is not None and gi is not None,
+                                curve=gi is not None and self.model["geometries"][gi]["source"].get("type") == "curve")
         spath = E.constraint_owner(path) or path          # a constraint: the handles of its polygon
         handles = E.shape_handles(self.model, spath) if preview is not None else []
         self.viewer.set_handles([])

@@ -58,7 +58,14 @@ def shape_of(source: dict) -> dict | None:
     if (t == "csg" and source.get("dim") == 2) or t == "surface":     # surface: its flat domain
         shape = source.get("shape")
         return T.flatten(shape, 2) if isinstance(shape, dict) else shape
+    if t == "curve" and isinstance(source.get("shape"), dict):        # a 2D curve: its polygon (no inside)
+        return dict(source["shape"], _curve=True)
     return None
+
+
+def is_curve(shape: dict | None) -> bool:
+    """The shape is the polygon of a 2D curve (shape_of): lines, no domain."""
+    return isinstance(shape, dict) and bool(shape.get("_curve"))
 
 
 def primitive_at(shape: dict, path) -> dict | None:
@@ -99,8 +106,37 @@ def source_paths(shape: dict) -> list[tuple]:
 
 
 def incomplete(shape: dict) -> bool:
-    """A polygon being entered (fewer than three vertices): not a shape yet."""
-    return shape.get("type") == "polygon" and len(shape.get("points") or []) < 3
+    """A polygon being entered (fewer than three vertices, two for an open
+    one): not a shape yet."""
+    return shape.get("type") == "polygon" and len(shape.get("points") or []) < min_points(shape)
+
+
+def is_open(prim: dict) -> bool:
+    """An open polygon: a chain of sides from the first vertex to the last
+    one, not joined (the polygon of a 2D curve; no inside)."""
+    return prim.get("type") == "polygon" and bool(prim.get("open"))
+
+
+def min_points(prim: dict) -> int:
+    return 2 if is_open(prim) else 3
+
+
+def side_count(prim: dict) -> int:
+    """The number of sides of a polygon (n, n - 1 when open)."""
+    n = len(prim.get("points") or [])
+    return max(n - 1, 0) if is_open(prim) else n
+
+
+def open_chain_problem(points) -> str | None:
+    """Why the vertices of an open polygon are not a chain (None if they are)."""
+    V = np.asarray(points, float)
+    if len(V) < 2:
+        return "at least two vertices expected"
+    scale = float(np.ptp(V, axis=0).max()) or 1.0
+    for i in range(len(V) - 1):
+        if np.linalg.norm(V[i + 1] - V[i]) <= 1e-12 * scale:
+            return f"vertices {i + 1} and {i + 2} coincide"
+    return None
 
 
 def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
@@ -116,6 +152,9 @@ def sdf(shape: dict, P: np.ndarray) -> np.ndarray:
     if t == "polygon":
         if incomplete(shape):
             return np.full(len(P), np.inf)
+        if is_open(shape):                 # a curve: no inside, the distance to it
+            Q = boundary_polyline(shape)
+            return _soup_nearest(Q[:-1], Q[1:], np.asarray(P, float))[0]
         if spline_points(shape):
             return curved_polygon_sdf(shape, P)
         rounded = _fillets_of(shape)
@@ -430,6 +469,8 @@ def tangent_points(shape: dict) -> np.ndarray:
 def fillet_problem(prim: dict) -> str | None:
     pts = prim.get("points") or []
     radii = fillet_radii(prim, len(pts))
+    if is_open(prim) and {1, len(pts)} & set(radii):
+        return "no fillet at the ends of an open polygon (no corner there)"
     return fillets(pts, radii)[2] if radii and len(pts) >= 3 else None
 
 
@@ -629,7 +670,7 @@ def boundary_polyline(prim: dict, per_span: int = 24, per_arc: int = 16) -> np.n
     """The boundary of a polygon with its fillets and splines as a closed
     polyline (n x 2, the last point not repeated): the inside tests and the
     distances of the curved polygons (an approximation, close for these
-    counts)."""
+    counts); an open polygon: its chain, from the first vertex to the last."""
     V = np.asarray(prim["points"], float)
     n = len(V)
     controls = spline_controls(prim)
@@ -865,7 +906,7 @@ def outline_parts(prim: dict) -> list:
     rounded = _fillets_of(prim)
     by = {f.vertex - 1: f for f in rounded[1]} if rounded is not None else {}
     out = []
-    for i in range(n):
+    for i in range(side_count(prim)):    # (open: from the first vertex to the last one)
         f = by.get(i)
         if f is not None:
             out.append(("arc", list(f.t1), list(f.t2), list(f.center)))
@@ -893,7 +934,7 @@ def spline_problem(prim: dict) -> str | None:
     for k in sorted(smooth_vertices(prim)):
         if k not in through and (k - 1) % n not in through:
             return f"vertex {k + 1}: smooth between two straight sides (no spline there)"
-    if through:
+    if through and not is_open(prim):
         P = boundary_polyline(prim, per_span=12)
         problem = polygon_problem(P)
         if problem:
@@ -989,7 +1030,8 @@ def side_names(prim: dict) -> tuple:
         if prim.get("side_names"):            # a turned rectangle (transforms.flatten)
             return tuple(prim["side_names"])
         n = len(prim.get("points", []))
-        return tuple(f"side{i + 1}" for i in range(n)) + tuple(f"fillet{k}" for k in sorted(fillet_radii(prim, n)))
+        return tuple(f"side{i + 1}" for i in range(side_count(prim))) \
+            + tuple(f"fillet{k}" for k in sorted(fillet_radii(prim, n)))
     if t == "ellipse":
         return ("ellipse",)
     return ("circle",)
@@ -1016,10 +1058,11 @@ def sides(shape: dict) -> list[Side]:
             controls = spline_controls(p)
             if rounded is None:
                 out += [Side(path, names[i], "spline", tuple(map(tuple, controls[i].tolist())), ()) if i in controls
-                        else Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)]) for i in range(len(V))]
+                        else Side(path, names[i], "segment", V[i], V[(i + 1) % len(V)])
+                        for i in range(side_count(p))]
                 continue
             n, by = len(V), {f.vertex: f for f in rounded[1]}
-            for i in range(n):                 # the sides, between the tangent points of the fillets
+            for i in range(side_count(p)):     # the sides, between the tangent points of the fillets
                 if i in controls:
                     out.append(Side(path, names[i], "spline", tuple(map(tuple, controls[i].tolist())), ()))
                     continue

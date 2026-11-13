@@ -62,7 +62,7 @@ def test_every_action_keeps_a_valid_model():
         assert M.validate(base) == [], ex.name
         for node in E.tree(base).walk():
             for action, _ in E.actions(base, node.path):
-                if action in ("remove", "clear_shape", "add_import", "unfold", "add_from_library") \
+                if action in ("remove", "clear_shape", "clear_curve", "add_import", "unfold", "add_from_library") \
                         or action.startswith(("cmd:", "pick_plane:")):      # (pick_plane: a click in the view)
                     continue
                 model = copy.deepcopy(base)

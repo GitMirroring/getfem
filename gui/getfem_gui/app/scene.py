@@ -902,6 +902,20 @@ def show_geometry_2d(plotter, shape: dict, pieces: list, highlighted=(), domain:
             plotter.reset_camera()
         return
     whole = domain is True
+    if G.is_curve(shape):                    # a 2D curve: its sides only, thicker, and its vertices
+        for i, p in enumerate(pieces):
+            plotter.add_mesh(_polyline(p.points()), color=CURVE, line_width=3, lighting=False, name=f"piece{i}")
+        for i, p in enumerate(highlighted):
+            plotter.add_mesh(_polyline(p.points()), color=HIGHLIGHT, line_width=5, lighting=False,
+                             name=f"selected{i}")
+        if title:
+            plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
+        if reset:
+            plotter.view_xy()
+            plotter.enable_parallel_projection()
+            set_style(plotter, True)
+            plotter.reset_camera()
+        return
     plotter.add_mesh(_fill(shape), color=HIGHLIGHT if whole else FILL, opacity=0.55 if whole else 1.0,
                      lighting=False, name="fill")
     if callable(domain):
@@ -1264,7 +1278,7 @@ def manifold_preview(src: dict, values: dict, n: int = 120) -> pv.PolyData:
     from .. import geometry3d as G3, manifold
     t = src["type"]
     if t == "curve":
-        X = manifold.chain_polyline(src)
+        X = manifold.chain_polyline(src, values=values)
         X = np.column_stack([X, np.zeros((len(X), 3 - X.shape[1]))]) if X.shape[1] < 3 else X
         return pv.lines_from_points(X)
     if t == "surface":
@@ -1296,7 +1310,7 @@ def show_manifold(plotter, src: dict, values: dict, title: str = "", reset: bool
     if src["type"] == "curve":
         plotter.add_mesh(surf, color=OUTLINE, line_width=4, lighting=False, name="surface")
         from .. import manifold
-        ends = np.asarray([list(p) + [0.0] * (3 - len(p)) for p in manifold.chain_ends(src)])
+        ends = np.asarray([list(p) + [0.0] * (3 - len(p)) for p in manifold.chain_ends(src, values)])
         if len(ends):
             plotter.add_mesh(pv.PolyData(ends), color=HIGHLIGHT, point_size=12, style="points",
                              render_points_as_spheres=True, lighting=False, name="ends")

@@ -34,6 +34,11 @@
      - surface
      - getfem
      - heat_conduction
+   * - :ref:`heated_wire.json <gui-example-heated_wire>`
+     - Heated wire: a bent wire, its ends held at fixed temperatures (curve geometry)
+     - curve 2D
+     - getfem
+     - heat_conduction
    * - :ref:`l_bracket.json <gui-example-l_bracket>`
      - L-shaped bracket: polygon with a hole and a fillet, loaded at its end
      - csg 2D

@@ -28,6 +28,7 @@ GUI_TESTS =                                     \
     tests/test_coupling.py                      \
     tests/test_curved.py                        \
     tests/test_curve_view.py                    \
+    tests/test_curves.py                        \
     tests/test_doc.py                           \
     tests/test_editing.py                       \
     tests/test_elasticity.py                    \

@@ -1,0 +1,54 @@
+{
+  "format_version": 3,
+  "name": "Heated wire: a bent wire, its ends held at fixed temperatures (curve geometry)",
+  "parameters": [
+    {"name": "L", "value": 0.3, "description": "length of the straight parts (m)"},
+    {"name": "R", "value": 0.05, "description": "radius of the bends (m)"},
+    {"name": "d", "value": 0.002, "description": "diameter of the wire (m)"},
+    {"name": "power", "value": 2000, "description": "heat generated (Joule effect, W/m)"}
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "wire",
+      "source": {
+        "type": "curve",
+        "dim": 2,
+        "shape": {
+          "type": "polygon",
+          "open": true,
+          "points": [[0, 0], ["L", 0], ["L", "L/2"], [0, "L/2"], [0, "L"], ["L", "L"]],
+          "fillets": [
+            {"vertex": 2, "radius": "R"}, {"vertex": 3, "radius": "R"},
+            {"vertex": 4, "radius": "R"}, {"vertex": 5, "radius": "R"}
+          ]
+        }
+      },
+      "selections": {}
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "wire", "mesher": "getfem", "h": 0.005, "order": 2}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "value": "401*pi*sqr(d)/4"}]},
+          "sources": [{"selection": "all", "value": "power"}],
+          "conditions": [
+            {"type": "temperature", "selection": "start", "value": 20},
+            {"type": "temperature", "selection": "end", "value": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "length", "expr": "1", "selection": "all"},
+        {"name": "heat_out", "expr": "-k*Grad_T.Normal", "selection": "boundary"}
+      ],
+      "vtu": "wire.vtu"
+    }
+  ]
+}

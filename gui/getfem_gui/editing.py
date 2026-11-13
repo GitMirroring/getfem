@@ -453,6 +453,12 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
             if src["type"] == "surface":
                 node.label = f"Flat domain: {node.label}"
             gn.children.append(node)
+        elif src.get("type") == "curve" and isinstance(src.get("shape"), dict):   # drawn as a polygon
+            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"), 2)
+            n = len(src["shape"].get("points") or [])
+            node.label = f"Curve: {'open' if src['shape'].get('open') else 'closed'} polygon" \
+                + (f" ({n} vertices)" if n else " (to draw)") + (" in its plane" if src.get("dim") == 3 else "")
+            gn.children.append(node)
         sels = Node(("geometries", i, "selections"), "Selections", "selections")
         for name, s in M.selection_table(model, g).items():
             kind = "selection" if not s["builtin"] else "builtin_selection"
@@ -584,11 +590,135 @@ def _transform_fields(path, shape, dim) -> list[Field]:
     return out
 
 
+def _plane_of(points3) -> tuple[list, list, list]:
+    """(origin, axes, local 2D points) of points of 3D that are about in a
+    plane (that of their first three points not aligned, else z = 0)."""
+    P = np.asarray(points3, float).reshape(-1, 3)
+    o, axes = [0.0, 0.0, 0.0], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    for k in range(2, len(P)):
+        nrm = np.cross(P[1] - P[0], P[k] - P[0])
+        if np.linalg.norm(nrm) > 1e-9 * max(float(np.ptp(P, axis=0).max()), 1e-300) ** 2:
+            o, axes = work_plane(P[0], nrm)
+            break
+    e1, e2 = np.asarray(axes[0], float), np.asarray(axes[1], float)
+    Q = [[float(f"{(p - o) @ e1:.10g}"), float(f"{(p - o) @ e2:.10g}")] for p in P]
+    return list(o), axes, Q
+
+
+def curve_as_polygon(model: dict, gi: int) -> dict:
+    """The source of the curve gi given by points and arcs, as a polygon:
+    its points the vertices, each arc a curved side through its point (a
+    spline); in 3D, in the plane of its first points (the height: 0). A
+    parametric curve: through points along it."""
+    src = model["geometries"][gi]["source"]
+    if isinstance(src.get("parametric"), dict):
+        src = curve_as_points(model, gi)
+    dim = 3 if src.get("dim") == 3 else 2
+    pts = [list(p) for p in src.get("points", [])]
+    through = [list(t) if t is not None else None for t in src.get("through") or []]
+    out = {"type": "curve", "dim": dim}
+    if dim == 3:
+        o, axes, Q = _plane_of(pts + [t for t in through if t is not None])
+        pts, through = Q[:len(pts)], [Q[len(pts) + sum(1 for x in through[:i] if x is not None)]
+                                      if t is not None else None for i, t in enumerate(through)]
+        out.update(origin=o, axes=axes, height=0.0)
+    poly = {"type": "polygon", "points": pts, "open": not src.get("closed")}
+    sp = [{"side": i + 1, "points": [list(t)]} for i, t in enumerate(through) if t is not None]
+    if sp:
+        poly["splines"] = sp
+    out["shape"] = poly
+    return out
+
+
+def curve_as_parametric(model: dict, gi: int) -> dict:
+    """The curve gi given by parametric equations: a circle of the size of
+    the curve, about its center (to edit); an arc of three quarters of it
+    for an open curve (its ends stay)."""
+    from . import manifold
+    r = P.resolved(model)["geometries"][gi]["source"]
+    vals, _ = P.values(model)
+    closed = manifold.is_closed(r, vals)
+    dim = 3 if r.get("dim") == 3 else 2
+    try:
+        X = manifold.chain_polyline(r, values=vals)
+        c = (X.min(axis=0) + X.max(axis=0)) / 2
+        rad = float(f"{max(float(np.ptp(X, axis=0).max()) / 2, 1e-12):.3g}")
+    except (KeyError, TypeError, ValueError, IndexError, np.linalg.LinAlgError):
+        c, rad = np.zeros(dim), 1.0
+    f = lambda v: float(f"{v:.6g}")                       # noqa: E731
+    par = {"x": f"{f(c[0])} + {rad}*cos(t)", "y": f"{f(c[1])} + {rad}*sin(t)"}
+    if dim == 3:
+        par["z"] = f"{f(c[2])} + 0.1*t"
+    return {"type": "curve", "dim": dim, "parametric": par, "t": [0.0, "2*pi" if closed else "1.5*pi"]}
+
+
+def curve_as_points(model: dict, gi: int) -> dict:
+    """The source of the curve gi drawn as a polygon, given by points and
+    arcs: its sides and fillets exactly, its curved sides by points along
+    them (segments); in 3D, placed in its plane (its height left out). A
+    parametric curve: points along it."""
+    from . import manifold
+    src = P.resolved(model)["geometries"][gi]["source"]
+    vals, _ = P.values(model)
+    if manifold.is_parametric(src):
+        closed = manifold.is_closed(src, vals)
+        X = manifold.chain_polyline(src, values=vals)[::10]
+        X = X[:-1] if closed else X
+        pts = [[float(f"{x:.10g}") for x in p] for p in X]
+        return {"type": "curve", "dim": int(src.get("dim", 3)), "points": pts,
+                "through": [None] * (len(pts) - (0 if closed else 1)), "closed": closed}
+    if manifold.is_placed(src):
+        flat = curve_as_points({"parameters": model.get("parameters", []),
+                                "geometries": [{"name": "g", "source": dict(src, dim=2)}]}, 0)
+        o, e1, e2, _ = manifold.frame(src)
+        put = lambda q: [float(f"{x:.10g}") for x in o + q[0] * e1 + q[1] * e2]      # noqa: E731
+        flat["points"] = [put(q) for q in flat["points"]]
+        flat["through"] = [put(q) if q is not None else None for q in flat["through"]]
+        flat["dim"] = 3
+        return flat
+    pts, through = [], []
+    for piece in manifold.chain_pieces(src):
+        r = lambda q: [float(f"{x:.10g}") for x in q]        # noqa: E731
+        if piece[0] == "bezier":
+            C = np.asarray(piece[1:], float)
+            for u in np.linspace(0.0, 1.0, 9)[:-1]:
+                pts.append(r((1 - u) ** 3 * C[0] + 3 * u * (1 - u) ** 2 * C[1] + 3 * u ** 2 * (1 - u) * C[2]
+                             + u ** 3 * C[3]))
+                through.append(None)
+            continue
+        pts.append(r(piece[1]))
+        through.append(r(piece[2]) if piece[0] == "arc" else None)
+    closed = manifold.is_closed(src)
+    if not closed and manifold.chain_pieces(src):
+        pts.append([float(f"{x:.10g}") for x in manifold.chain_pieces(src)[-1][-1]])
+    return {"type": "curve", "dim": 2, "points": pts, "through": through if any(through) else
+            [None] * (len(pts) - (0 if closed else 1)), "closed": closed}
+
+
+def is_curve_polygon(model: dict, path: Path) -> bool:
+    """The node is the polygon of a 2D curve (its only shape)."""
+    return path[:1] == ("geometries",) and len(path) == 4 and path[2:4] == ("source", "shape") \
+        and get_at(model, path[:3], {}).get("type") == "curve"
+
+
 def _shape_fields(model, path, dim) -> list[Field]:
     shape = get_at(model, path, {})
     t = shape.get("type")
     if t in M.SHAPES_TRANSFORM:
         return _transform_fields(path, shape, dim)
+    if is_curve_polygon(model, path):
+        out = [Field(path + ("open",), "Ends", "choice",
+                     ((True, "open: from the first vertex to the last one"),
+                      (False, "closed: the last vertex joined to the first one"))),
+               Field(path + ("points",), "Vertices", "vertex_table",
+                     help="Vertices in order; values or expressions. In the view, drag a vertex or the middle "
+                          "of a side (adds a vertex); right click on them: fillets, curved sides, an end "
+                          "extended.")]
+        if shape.get("constraints"):
+            out.append(Field(path, "", "info", help="With constraints (below in the tree): the vertices are "
+                                                    "moved as little as possible for them to hold; a "
+                                                    "coordinate given by an expression stays."))
+        return out
     types = primitives_of_dim(dim) + M.SHAPES_BOOLEAN
     out = [Field(path + ("type",), "Type", "choice", tuple((x, M.shape_word(x, dim)) for x in types),
                  op="shape_type")]
@@ -655,7 +785,8 @@ def _criteria_fields(model, gi, name, dim) -> list[Field]:
     ct = crit.get("type")
     c = base + ("criteria",)
     from . import geometry2d as G
-    planar = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
+    flat = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+    planar = flat is not None and not G.is_curve(flat)          # (a curve: no edges, no regions)
     from . import geometry3d as G3
     solid = G3.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
     possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds
@@ -979,6 +1110,35 @@ def fields(model: dict, path: Path) -> list[Field]:
             elif t == "csg":
                 out.append(Field(base + ("dim",), "Dimension", "choice", ((2, "2D"), (3, "3D")),
                                  op="csg_dim"))
+            elif t == "curve" and isinstance(src.get("shape"), dict):
+                out.append(Field(base + ("dim",), "Dimension of the space", "choice",
+                                 ((2, "2D"), (3, "3D")), op="curve_dim"))
+                if src.get("dim") == 3:
+                    out += [_vec_field(base + ("origin",), "Origin", "numbers", 3),
+                            _vec_field(base + ("axes", 0), "Axis x", "numbers", 3),
+                            _vec_field(base + ("axes", 1), "Axis y", "numbers", 3),
+                            Field(base + ("height",), "Height", "value",
+                                  help="Along the normal of the plane: a number or an expression of the local "
+                                       "coordinates x, y and the parameters (0: a plane curve).")]
+                out.append(Field(base, "", "info", help="The curve is the polygon below, drawn and edited in "
+                                                        "the view as the polygons of a 2D geometry (vertices, "
+                                                        "fillets, curved sides, constraints, dimensions), "
+                                                        "open or closed"
+                                                        + (", in the local coordinates (x, y) of its plane"
+                                                           if src.get("dim") == 3 else "")
+                                                        + ". The ends of an open curve are the built-in "
+                                                          "selections start and end."))
+            elif t == "curve" and isinstance(src.get("parametric"), dict):
+                dim = 3 if src.get("dim") == 3 else 2
+                out.append(Field(base + ("dim",), "Dimension of the space", "choice",
+                                 ((2, "2D"), (3, "3D")), op="curve_dim"))
+                out += [Field(base + ("parametric", k), f"{k}(t)", "value",
+                              help="An expression of t and the parameters (cos, sin, exp, sqrt, pow...)")
+                        for k in "xyz"[:dim]]
+                out += [_vec_field(base + ("t",), "From t to t", "numbers", 2),
+                        Field(base, "", "info", help="The curve t -> (x(t), y(t)" + (", z(t)" if dim == 3 else "")
+                              + "), divided into elements along its length; closed when its two ends meet "
+                                "(else they are the built-in selections start and end).")]
             elif t in ("curve", "swept_surface"):
                 if t == "curve":
                     out.append(Field(base + ("dim",), "Dimension of the space", "choice",
@@ -1412,7 +1572,10 @@ def handle_actions(model: dict, path: Path, handle: str) -> list[tuple[str, str]
     i = int(handle[1:])
     n = len(shape.get("points") or [])
     if handle[0] == "v":
-        out = [(f"Remove vertex {i + 1}", f"remove_vertex:{i}")] if n > 3 else []
+        least = 2 if shape.get("open") else 3
+        out = [(f"Remove vertex {i + 1}", f"remove_vertex:{i}")] if n > least else []
+        if shape.get("open") and i in (0, n - 1):           # an end of a curve: no corner there
+            return out + [("Extend the curve from this end", f"extend:{i}")]
         if near_spline(model, path, i + 1):
             out.append((f"Make vertex {i + 1} a corner", f"smooth:{i + 1}") if i + 1 in (shape.get("smooth") or [])
                        else (f"Make vertex {i + 1} smooth (tangent)", f"smooth:{i + 1}"))
@@ -1635,6 +1798,9 @@ def _default_source(t: str, dim: int) -> dict:
         return {"type": "box", "origin": [0.0] * dim, "size": [1.0] * dim}
     if t == "csg":
         return {"type": "csg", "dim": max(dim, 2), "shape": _default_shape("difference", max(dim, 2))}
+    if t == "curve" and dim != 3:              # a 2D curve: an open polygon, edited in the view
+        return {"type": "curve", "dim": 2, "shape": {"type": "polygon", "open": True,
+                                                     "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}}
     if t == "curve":
         d = 3 if dim == 3 else 2
         return {"type": "curve", "dim": d, "points": [[0.0] * d, [1.0] + [0.0] * (d - 1), [1.0] * d],
@@ -2059,6 +2225,20 @@ def apply(model: dict, f: Field, value) -> Path | None:
     elif f.op == "curve_dim":
         dim = int(value)
         src = get_at(model, key[:-1])
+        if src.get("dim") != dim and isinstance(src.get("shape"), dict):   # a polygon: in its plane in 3D
+            src["dim"] = dim
+            for k in ("origin", "axes", "height"):
+                src.pop(k, None)
+            if dim == 3:
+                src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
+            _fit_dimension(model, key[1], dim)
+        elif src.get("dim") != dim and isinstance(src.get("parametric"), dict):
+            src["dim"] = dim
+            if dim == 3:
+                src["parametric"].setdefault("z", 0.0)
+            else:
+                src["parametric"].pop("z", None)
+            _fit_dimension(model, key[1], dim)
         if src.get("dim") != dim:
             src["dim"] = dim
             fit = lambda p: (list(p) + [0.0] * dim)[:dim]          # noqa: E731
@@ -2262,10 +2442,34 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out.append(("add_geometry", "Add a geometry"))
     elif path[:1] == ("geometries",) and n == 2:
         out += [("add_selection", "Add a selection"), ("add_mesh", "Add a mesh of this geometry")]
+        src = get_at(model, path + ("source",), {})
+        if src.get("type") == "curve":
+            in_plane = " in a plane" if src.get("dim") == 3 else ""
+            if not isinstance(src.get("shape"), dict):
+                out.append(("curve:polygon", f"Draw the curve as a polygon{in_plane} (in the view)"))
+            if isinstance(src.get("shape"), dict) or isinstance(src.get("parametric"), dict):
+                out.append(("curve:points", "Give the curve by points and arcs (a table)"))
+            if not isinstance(src.get("parametric"), dict):
+                out.append(("curve:parametric", "Give the curve by parametric equations"))
         if len(model.get("geometries", [])) > 1:
             out.append(("remove", "Remove"))
     elif path[:1] == ("geometries",) and n > 3 and path[2] == "source" and constraint_owner(path) is not None:
         out.append(("remove", "Remove"))
+    elif is_curve_polygon(model, path):
+        from . import geometry2d as G
+        shape = get_at(model, path, {})
+        if len(shape.get("points") or []) >= G.min_points(shape):
+            two = G.side_count(shape) >= 2               # an angle, a pair of sides
+            out += [(f"constrain:{t}", f"Constrain: {SK.LABELS[t]}") for t in SK.TYPES if t != "coincident"
+                    and (two or (t != "angle" and t not in SK.PAIR_TYPES))]
+            if len(shape["points"]) >= 3:
+                out.append(("fillet:all", "Fillets: round all the corners"))
+            if shape.get("fillets"):
+                out.append(("fillet:remove", "Fillets: remove them"))
+            if shape.get("splines"):
+                out.append(("spline:remove_all", "Curved sides: make them all straight"))
+        if shape.get("points"):
+            out.append(("clear_curve", "Clear (draw it again in the view)"))
     elif path[:1] == ("geometries",) and n > 3 and path[2] == "source":
         shape = get_at(model, path, {})
         if isinstance(shape, dict) and shape.get("type"):
@@ -2427,6 +2631,28 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         n = len(pts) if src.get("closed") else len(pts) - 1
         src["through"] = through[:n]
         return path
+    if action in ("curve:polygon", "curve:points", "curve:parametric"):
+        conv = {"curve:polygon": curve_as_polygon, "curve:points": curve_as_points,
+                "curve:parametric": curve_as_parametric}[action]
+        model["geometries"][path[1]]["source"] = conv(model, path[1])
+        return path + ("source", "shape") if action == "curve:polygon" else path
+    if action == "clear_curve":
+        shape = get_at(model, path)
+        set_at(model, path, {"type": "polygon", "points": [], "open": bool(shape.get("open", True))})
+        return path
+    if action.startswith("extend:"):          # an end of an open polygon: one more side, along the last one
+        i = int(action.split(":")[1])
+        pts = get_at(model, path + ("points",))
+        r = get_at(P.resolved(model), path + ("points",))
+        j = 1 if i == 0 else len(r) - 2
+        a, b = np.asarray(r[i], float), np.asarray(r[j], float)
+        new = [float(f"{x:.6g}") for x in a + (a - b) / 2]
+        if i == 0:
+            pts.insert(0, new)
+            _vertex_inserted(model, path, -1)
+        else:
+            pts.append(new)
+        return path
     if action == "add_vertex":                # a vertex after the last one (a polygon being typed)
         pts = get_at(model, path + ("points",))
         r = [v for v in (get_at(P.resolved(model), path + ("points",)) or []) if isinstance(v, list)]
@@ -2452,8 +2678,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         verb, i = action.split(":")
         pts, i = get_at(model, path + ("points",)), int(i)
         if verb == "remove_vertex":
-            if len(pts) <= 3:
-                raise ValueError("a polygon keeps at least three vertices")
+            if len(pts) <= (2 if get_at(model, path).get("open") else 3):
+                raise ValueError("a polygon keeps at least three vertices (an open one, two)")
             n, v = len(pts), i + 1          # the vertex v (1-based): its sides v - 1 and v merged
             sides = spline_sides(model, path)
             before, after = (v - 2) % n + 1, v
@@ -2502,8 +2728,13 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
             if isinstance(swept, dict) and swept.get("type") == "revolution" and V is not None:
                 scale = float(np.max(np.abs(V))) or 1.0
                 on_axis = {k for k in range(len(V)) if abs(V[k, 0]) <= 1e-9 * scale}
+        npts = len(get_at(model, path)["points"])
+        if get_at(model, path).get("open"):        # an open polygon (a curve): no corner at its ends
+            on_axis |= {0, npts - 1}
+            L = L[:-1] if len(L) > 1 else L
+            radius = float(f"{0.2 * float(np.min(L)):.2g}")
         get_at(model, path)["fillets"] = [{"vertex": k + 1, "radius": radius}
-                                          for k in range(len(get_at(model, path)["points"])) if k not in on_axis]
+                                          for k in range(npts) if k not in on_axis]
         return path
     if action.startswith("fillet:vertex:"):    # one vertex rounded: its sides shortened by a quarter
         k = int(action.rsplit(":", 1)[1])
@@ -3211,6 +3442,9 @@ def can_draw(model: dict, path: Path) -> int | None:
         return gi
     if src.get("type") == "csg" and src.get("dim") == 2:
         return gi
+    if src.get("type") == "curve" and isinstance(src.get("shape"), dict) and len(path) <= 4 \
+            and (src.get("dim") == 2 or len(path) == 4):
+        return gi                             # a curve: its polygon (in 3D, in its plane: from its node)
     return None
 
 
@@ -3418,6 +3652,12 @@ def add_shape_2d(model: dict, gi: int, shape: dict, op: str, root: Path | None =
     notes: list[str] = []
     geom = model["geometries"][gi]
     base = tuple(root) if root is not None else ("geometries", gi, "source", "shape")
+    if geom["source"].get("type") == "curve":     # a curve: the polygon drawn replaces it
+        if shape.get("type") != "polygon":
+            raise ValueError("a curve is drawn as a polygon (the polygon tool)")
+        set_at(model, base, {"type": "polygon", "points": [list(p) for p in shape["points"]],
+                             "open": bool(shape.get("open", True))})
+        return base, notes
     if geom["source"].get("type") == "box" and base == ("geometries", gi, "source", "shape"):
         notes += _box_to_csg(model, gi)
     tree = get_at(model, base)
@@ -3480,6 +3720,9 @@ def _default_constraint(model: dict, path: Path, t: str) -> dict:
         V = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
     D = np.roll(V, -1, axis=0) - V                             # side k + 1: from vertex k to k + 1
     L = np.linalg.norm(D, axis=1)
+    if get_at(model, path).get("open"):        # an open polygon (a curve): no closing side
+        n = max(n - 1, 1)
+        D, L = D[:n], L[:n]
     if t in ("horizontal", "vertical"):
         a = 1 if t == "horizontal" else 0                      # the component that must vanish
         free = [k for k in range(n) if ("horizontal", k + 1) not in used and ("vertical", k + 1) not in used]
@@ -3489,7 +3732,7 @@ def _default_constraint(model: dict, path: Path, t: str) -> dict:
         free = [k for k in range(n) if ("length", k + 1) not in used] or list(range(n))
         return {"type": t, "side": free[0] + 1, "value": r(L[free[0]])}
     if t == "angle":
-        c = {"type": t, "vertex": 1}
+        c = {"type": t, "vertex": 2 if get_at(model, path).get("open") else 1}
         return dict(c, value=r(SK.measure(dict(c, value=0), V)))
     if t in SK.PAIR_TYPES:
         pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
@@ -3665,7 +3908,7 @@ def constraint_marks(model: dict, path: Path, lengths: bool = True) -> list[tupl
     if not isinstance(shape, dict) or shape.get("type") != "polygon" or not shape.get("constraints"):
         return []
     V = _resolved_points(model, poly)
-    if V is None or len(V) < 3:
+    if V is None or len(V) < (2 if shape.get("open") else 3):
         return []
     A, b = handle_frame(model, poly)
     V = V @ A.T + b
@@ -3674,7 +3917,7 @@ def constraint_marks(model: dict, path: Path, lengths: bool = True) -> list[tupl
     out: dict[tuple, list] = {}
     resolved = (get_at(P.resolved(model), poly) or {}).get("constraints") or []
     for c, rc in zip(shape["constraints"], resolved):
-        if SK.check(rc, n) is not None:
+        if SK.check(rc, n) is not None or SK._open_check(rc, shape) is not None:
             continue
         t = c["type"]
         if t == "length" and not lengths:
@@ -3700,7 +3943,8 @@ def _dimension_text(given, measured: float, prefix: str = "") -> tuple[str, str]
     """The label of an imposed dimension and the text to edit: its value,
     or its expression with what it gives."""
     if isinstance(given, str):
-        return f"{prefix}{given} = {measured:.4g}", given
+        return f"{prefix}{given} = {measured:.4g}" if given.strip() != prefix.strip() \
+            else f"{prefix}= {measured:.4g}", given
     return f"{prefix}{format_value(given)}", format_value(given)
 
 
@@ -3717,23 +3961,26 @@ def polygon_dimensions(model: dict, path: Path) -> list[dict]:
     its length in parentheses (a reference dimension)."""
     poly = constraint_owner(path) or path
     shape = get_at(model, poly)
-    if not isinstance(shape, dict) or shape.get("type") != "polygon" or len(shape.get("points") or []) < 3:
+    least = 2 if isinstance(shape, dict) and shape.get("open") else 3
+    if not isinstance(shape, dict) or shape.get("type") != "polygon" or len(shape.get("points") or []) < least:
         return []
     V = _resolved_points(model, poly)
-    if V is None or V.ndim != 2 or len(V) < 3:
+    if V is None or V.ndim != 2 or len(V) < least:
         return []
     A, b = handle_frame(model, poly)
     W = V @ A.T + b
     n = len(V)
     area = float(np.sum(W[:, 0] * np.roll(W[:, 1], -1) - np.roll(W[:, 0], -1) * W[:, 1]))
     sign = 1.0 if area >= 0 else -1.0               # counterclockwise: the outer normal on the right
+    if shape.get("open"):                           # a curve: on the left of its direction
+        sign = -1.0
     given = {}
     for c in shape.get("constraints") or []:
         if isinstance(c, dict) and c.get("type") == "length" and isinstance(c.get("side"), int):
             given.setdefault(c["side"], c.get("value"))
     curved = spline_sides(model, poly)
     out = []
-    for i in range(n):
+    for i in range(n - 1 if shape.get("open") else n):
         if i + 1 in curved:
             continue
         a, e = W[i], W[(i + 1) % n]
@@ -3876,14 +4123,14 @@ def _local_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
                 ("axis1", [cx + r1 * math.cos(th), cy + r1 * math.sin(th)]),
                 ("axis2", [cx - r2 * math.sin(th), cy + r2 * math.cos(th)])]
     if s["type"] == "polygon":
-        if len(s["points"]) < 3:             # being entered
+        from . import geometry2d as G
+        if len(s["points"]) < G.min_points(s):          # being entered
             return []
         V = [[float(x), float(y)] for x, y in s["points"]]
         n = len(V)
-        from . import geometry2d as G
         curved = G.spline_points(s)                         # the points of the splines (side i, 0-based)
         mids = [(f"m{i}", [(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2])
-                for i in range(n) if i not in curved]
+                for i in range(G.side_count(s)) if i not in curved]
         through = [(f"s{i}_{p}", q.tolist()) for i in sorted(curved) for p, q in enumerate(curved[i])]
         center = [sum(v[0] for v in V) / n, sum(v[1] for v in V) / n]
         rounded = G._fillets_of(s)                          # the middles of the arcs: their radii
@@ -3970,9 +4217,13 @@ def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, 
 
 
 def _check_polygon(prim: dict) -> None:
-    """A polygon moved by a handle: still simple (its curved sides too)."""
+    """A polygon moved by a handle: still simple (its curved sides too; an
+    open one: its vertices apart)."""
     from . import geometry2d as G
-    problem = G.spline_problem(prim) if prim.get("splines") else G.polygon_problem(prim["points"])
+    if G.is_open(prim):
+        problem = G.open_chain_problem(prim["points"]) or G.spline_problem(prim)
+    else:
+        problem = G.spline_problem(prim) if prim.get("splines") else G.polygon_problem(prim["points"])
     if problem:
         raise ValueError(f"not a simple polygon ({problem})")
 
@@ -4071,7 +4322,7 @@ def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
                 i = int(handle[1:])
                 V.insert(i + 1, [x, y])
                 from . import geometry2d as G
-                problem = G.polygon_problem(V)
+                problem = G.open_chain_problem(V) if G.is_open(r) else G.polygon_problem(V)
                 if problem:
                     raise ValueError(f"not a simple polygon ({problem})")
                 shape["points"].insert(i + 1, [x, y])

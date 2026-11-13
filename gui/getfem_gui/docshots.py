@@ -166,6 +166,12 @@ def mesh_layers(win):
     win.select(("meshes", 0))
 
 
+def curve(win):
+    """The wire of heated_wire.json, its polygon selected, with its dimensions."""
+    win.select(("geometries", 0, "source", "shape"))
+    win.viewer.dims_button.setChecked(True)
+
+
 def mesh_sizes(win):
     """The plate with a hole meshed finer around the hole and in a band."""
     geom = win.model["geometries"][0]
@@ -291,6 +297,7 @@ SHOTS = {
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
     "mesh_quality.png": ("block_with_hole_3d.json", mesh_quality),
     "mesh_sizes.png": ("plate_with_hole.json", mesh_sizes),
+    "curve.png": ("heated_wire.json", curve),
     "results.png": ("plate_hole_tension.json", results),
     "anisotropic.png": ("anisotropic_plate.json", anisotropic),
 }

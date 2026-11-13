@@ -331,7 +331,7 @@ class PropertiesPanel(QScrollArea):
             for j in range(dim + 1):
                 item = QTableWidgetItem(E.format_value(r[j]) if j < dim else r[j])
                 item.setFont(_mono())
-                if 0 < j < dim and isinstance(r[0], str):          # the point is a vector parameter
+                if 0 < j < dim and isinstance(r[0], str) and r[1] == "":   # the point is a vector parameter
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     item.setToolTip(f"given by {r[0]}: type numbers in the first column to edit it")
                 key = base + (("points", i, j) if j < dim else ("through", i))
@@ -411,18 +411,19 @@ class PropertiesPanel(QScrollArea):
         for row, e in enumerate(rows):
             r = e[-1]
             key = f.key + (e[1],) if e[0] == "vertex" else poly + ("splines", sides[e[1]], "points", e[2])
+            whole = isinstance(r[0], str) and isinstance(r[1], str) and r[1] == ""   # a vector parameter
             for j in range(2):
                 item = QTableWidgetItem(E.format_value(r[j]))
                 item.setFont(_mono())
                 msgs = E.errors_at(errors, key + (j,)) or E.errors_at(errors, key)
-                if j == 1 and isinstance(r[0], str):            # the point is a vector parameter
+                if j == 1 and whole:                             # the point is a vector parameter
                     item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     item.setText("")
                 if msgs:
                     item.setBackground(Qt.GlobalColor.yellow)
                     item.setToolTip("\n".join(msgs))
                 elif isinstance(r[j], str) and r[j + 2] is not None:
-                    tip = f"= {E.format_number(float(r[j + 2]))}" if j == 1 or not isinstance(r[0], str) or \
+                    tip = f"= {E.format_number(float(r[j + 2]))}" if j == 1 or not whole or \
                         r[3] is None else f"= [{E.format_number(float(r[2]))}, {E.format_number(float(r[3]))}]"
                     item.setToolTip(tip)
                 if e[0] == "spline":
