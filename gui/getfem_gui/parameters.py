@@ -474,6 +474,10 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
     for i, mesh in enumerate(meshes):
         _resolve(mesh, MESH_KEYS, f"{prefix}meshes[{i}]", vals, errors, scalars=MESH_KEYS)
         _resolve(mesh, INTEGER_KEYS, f"{prefix}meshes[{i}]", vals, errors, integer=True)
+        _resolve(mesh, ("growth",), f"{prefix}meshes[{i}]", vals, errors, scalars=("growth",))
+        for j, rule in enumerate(mesh.get("sizes") or []):        # the local sizes
+            if isinstance(rule, dict):
+                _resolve(rule, ("size",), f"{prefix}meshes[{i}].sizes[{j}]", vals, errors, scalars=("size",))
 
 
 def resolve(model: dict) -> tuple[dict, list[str]]:

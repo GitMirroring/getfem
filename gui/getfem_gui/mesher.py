@@ -45,7 +45,7 @@ import numpy as np
 from . import geometry2d as G, geometry3d as G3, model as M, parameters as P, transforms as T
 
 # To be incremented whenever the generated script changes, to invalidate caches.
-SCRIPT_VERSION = 14
+SCRIPT_VERSION = 15
 
 # Subdirectory of the working directory where meshes are stored.
 MESH_DIR = "meshes"
@@ -265,33 +265,55 @@ def _source_shape(src):
     return T.flatten(src["shape"], src.get("dim", 2))
 
 
-def _build_getfem(model, geom, mesh, w):
+def _build_getfem(model, geom, mesh, w, between=None):
+    """The GetFEM mesher; between(w): the local sizes, located on a first
+    mesh of the global size (then meshed again with them)."""
     src = geom["source"]
     shape = _source_shape(src)
     w("# Implicit description of the geometry (MesherObject)")
     w.h = float(mesh["h"])                   # (the fillers of the reflex fillets)
     top = _gf_shape(shape, w)
     h, K = float(mesh['h']), int(mesh.get('order', 1))
-    V = G.interface_points(shape, h) if src["type"] == "csg" and src.get("dim") == 2 else np.zeros((2, 0))
-    if src["type"] == "csg" and src.get("dim") == 2:     # the ends of the fillets and splines: vertices,
-        J = G.tangent_points(shape)                       # so that each face is on a side or on a curve
-        if len(J):
-            V = np.hstack([V, np.array([p for p in J if all(np.linalg.norm(p - q) > 1e-9 * h for q in V.T)],
-                                       float).T.reshape(2, -1)])
+    dim = src["dim"] if src["type"] == "csg" else len(src["size"])
+    hmin = min([h] + [float(r["size"]) for r in mesh.get("sizes") or []]) if between else h
+    plane = src["type"] == "csg" and src.get("dim") == 2
+    V = G.interface_points(shape, h) if plane else np.zeros((dim, 0))
+    J = np.zeros((dim, 0))
+    if plane:                                          # the ends of the fillets and splines: vertices,
+        J = G.tangent_points(shape)                    # so that each face is on a side or on a curve
+        J = np.array([p for p in J if all(np.linalg.norm(p - q) > 1e-9 * h for q in V.T)], float).T.reshape(2, -1)
     elif src["type"] == "csg" and src.get("dim") == 3:
-        V = _fillet_lines_3d(shape, h)
+        J = _fillet_lines_3d(shape, h)
+    fixed = V.shape[1] + J.shape[1] > 0
     w("# GetFEM experimental mesher: element size h, geometric degree K")
-    if V.shape[1] == 0:
+    if not fixed:
         w(f"m = gf.Mesh('generate', {top}, {h!r}, {K})")
-        w("m.optimize_structure()   # the points numbered without holes (some removed by the mesher)")
-        return
-    w("# Fixed vertices along the interfaces between regions (sides of shapes")
-    w("# inside the domain), and at the ends of the fillets and splines: the elements follow")
-    w("# them, each one is in one region, each boundary face on one side")
-    rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in V)
-    w(f"interface_vertices = np.array([{rows}])")
-    w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices)")
+    else:
+        w("# Fixed vertices along the interfaces between regions (sides of shapes")
+        w("# inside the domain), and at the ends of the fillets and splines: the elements follow")
+        w("# them, each one is in one region, each boundary face on one side")
+        rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in np.hstack([V, J]))
+        w(f"interface_vertices = np.array([{rows}])")
+        w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices)")
     w("m.optimize_structure()   # the points numbered without holes (some removed by the mesher)")
+    if between is None:
+        return
+    between(w)
+    w.section("The final mesh, with the local sizes")
+    if not fixed:
+        w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, np.zeros(({dim}, 0)), SIZE_POINTS, SIZE_VALUES, GROWTH)")
+    else:
+        if V.shape[1]:
+            V2 = G.interface_points(shape, hmin)
+            w("# the vertices along the interfaces, at the local size")
+            rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in V2)
+            w(f"along = thin_out(np.array([{rows}]))")
+        else:
+            w(f"along = np.zeros(({dim}, 0))")
+        rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in J)
+        w(f"interface_vertices = np.hstack([along, np.array([{rows}]).reshape({dim}, -1)])")
+        w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices, SIZE_POINTS, SIZE_VALUES, GROWTH)")
+    w("m.optimize_structure()")
 
 
 def _occ_shape(shape, dim, w) -> str:
@@ -427,7 +449,7 @@ def _ng_place(shape, v, w):
     w(f"{v} = {v}.Move(Vec({O[0]!r}, {O[1]!r}, {O[2]!r}))")
 
 
-def _build_gmsh(model, geom, mesh, w, msh_name):
+def _build_gmsh(model, geom, mesh, w, msh_name, between=None):
     src = geom["source"]
     w("import math")
     w("import gmsh")
@@ -453,19 +475,33 @@ def _build_gmsh(model, geom, mesh, w, msh_name):
         w("gmsh.option.setNumber('Mesh.RecombinationAlgorithm', 1)")
         w("gmsh.option.setNumber('Mesh.RecombineAll', 1)")
         w("gmsh.option.setNumber('Mesh.SubdivisionAlgorithm', 1)")
-    size = float(mesh["size"]) * (2.0 if mesh.get("element") == "quad" else 1.0)
+    factor = 2.0 if mesh.get("element") == "quad" else 1.0
+    size = float(mesh["size"]) * factor
     w("# A single physical group (the domain): Gmsh then only writes elements of")
     w("# maximal dimension; boundaries come from the selections, further down.")
     w("gmsh.model.addPhysicalGroup(dim, [t for _, t in gmsh.model.getEntities(dim)], 1)")
     w(f"gmsh.option.setNumber('Mesh.MeshSizeMin', {size!r})")
     w(f"gmsh.option.setNumber('Mesh.MeshSizeMax', {size!r})")
     w("gmsh.option.setNumber('Mesh.MshFileVersion', 2.2)")
-    w("gmsh.model.mesh.generate(dim)")
-    w(f"gmsh.model.mesh.setOrder({int(mesh.get('order', 1))})")
-    w(f"gmsh.write({msh_name!r})")
+
+    def generate():
+        w("gmsh.model.mesh.generate(dim)")
+        w(f"gmsh.model.mesh.setOrder({int(mesh.get('order', 1))})")
+        w(f"gmsh.write({msh_name!r})")
+        w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
+        _drop_z(w)
+    generate()
+    if between is not None:
+        between(w)
+        w.section("The final mesh, with the local sizes (a size callback)")
+        w("gmsh.model.mesh.clear()")
+        w(f"gmsh.option.setNumber('Mesh.MeshSizeMin', {factor!r} * float(SIZE_VALUES.min()))")
+        w("for option in ('MeshSizeExtendFromBoundary', 'MeshSizeFromPoints', 'MeshSizeFromCurvature'):")
+        w("    gmsh.option.setNumber('Mesh.' + option, 0)")
+        w("gmsh.model.mesh.setSizeCallback(")
+        w(f"    lambda dim, tag, x, y, z, lc: {factor!r} * float(local_size(np.array([[x, y, z][:DIM]]))[0]))")
+        generate()
     w("gmsh.finalize()")
-    w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
-    _drop_z(w)
 
 
 def _ng_shape(shape, dim, w) -> str:
@@ -552,7 +588,7 @@ def _ng_shape(shape, dim, w) -> str:
     return v
 
 
-def _build_netgen(model, geom, mesh, w, msh_name):
+def _build_netgen(model, geom, mesh, w, msh_name, between=None):
     src = geom["source"]
     w("from netgen.occ import *")
     if src["type"] == "cad":
@@ -565,11 +601,25 @@ def _build_netgen(model, geom, mesh, w, msh_name):
     quad = mesh.get("element") == "quad"
     w("# Netgen: element size, quadrangles (quad dominated) if asked")
     w(f"ngmesh = geo.GenerateMesh(maxh={float(mesh['size'])!r}" + (", quad_dominated=True)" if quad else ")"))
-    if int(mesh.get("order", 1)) == 2:
-        w("ngmesh.SecondOrder()")
-    w(f"ngmesh.Export({msh_name!r}, 'Gmsh2 Format')")
-    w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
-    _drop_z(w)
+
+    def export():
+        if int(mesh.get("order", 1)) == 2:
+            w("ngmesh.SecondOrder()")
+        w(f"ngmesh.Export({msh_name!r}, 'Gmsh2 Format')")
+        w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
+        _drop_z(w)
+    export()
+    if between is not None:
+        between(w)
+        w.section("The final mesh, with the local sizes (restricted at the points of the selections)")
+        w("from netgen.meshing import MeshingParameters")
+        w(f"mp = MeshingParameters(maxh={float(mesh['size'])!r}, grading=min(0.9, max(0.1, GROWTH - 1))"
+          + (", quad_dominated=True)" if quad else ")"))
+        w("for P, s in SIZE_SETS:")
+        w("    for p in P.T:")
+        w("        mp.RestrictH(float(p[0]), float(p[1]), float(p[2]) if len(p) > 2 else 0.0, float(s))")
+        w("ngmesh = geo.GenerateMesh(mp)")
+        export()
 
 
 def _build_layered(model, geom, mesh, w, basename):
@@ -775,6 +825,109 @@ def _selection_code(name, sel, w, shape=None):
             w(f"SEL[{name!r}] = ('domain', np.unique(np.hstack([{parts}])))")
 
 
+def _selections_code(geom, table, names, w) -> None:
+    """The selections of the names (and those they are the union of), on the
+    mesh m: SEL[name] = (kind, faces or elements)."""
+    from . import manifold
+    tdim = manifold.TOPOLOGICAL_DIM.get(geom.get("source", {}).get("type"))
+    w("TDIM = " + (f"{tdim}   # the dimension of the elements (lower than that of the space)"
+                   if tdim and geom["source"]["type"] != "surface" else "m.dim()"))
+    w("# Regions possibly present after an import (physical groups)")
+    w("imported = {int(rg): m.region(int(rg)) for rg in np.atleast_1d(m.regions())}")
+    w("SEL = {}")
+    needed, todo = set(), list(names)
+    while todo:
+        n = todo.pop()
+        if n in needed or n not in table:
+            continue
+        needed.add(n)
+        crit = table[n].get("criteria", {})
+        if crit.get("type") == "union":
+            todo += list(crit.get("of", []))
+    ordered = [n for n, s in table.items() if n in needed and s.get("criteria", {}).get("type") != "union"]
+    ordered += [n for n, s in table.items() if n in needed and s.get("criteria", {}).get("type") == "union"]
+    shape = G.shape_of(geom.get("source", {}))
+    solid = G3.shape_of(geom.get("source", {}))
+    for name in ordered:
+        if table[name].get("criteria", {}).get("type") == "faces":
+            _faces_code(name, table[name]["criteria"], w, solid)
+        else:
+            _selection_code(name, table[name], w, shape)
+
+
+def sized(model: dict, mesh: dict) -> bool:
+    """Whether the mesh has local sizes (meshed twice)."""
+    geom = M.geometry_of(model, mesh) or {}
+    return bool(mesh.get("sizes")) and mesh.get("mesher") in M.FREE_MESHERS and not mesh.get("layers") \
+        and geom.get("source", {}).get("type") in M.SIZED_SOURCES
+
+
+def _locate_sizes(model, geom, mesh, table, w) -> None:
+    """The selections of the local sizes on the first mesh m, sampled about
+    their size apart, and the size function local_size."""
+    rules = [r for r in mesh["sizes"] if isinstance(r, dict)]
+    h = float(mesh["h" if mesh["mesher"] == "getfem" else "size"])
+    growth = float(mesh.get("growth", 1.3))
+    w.section("Local sizes: their selections on the first mesh, sampled")
+    _selections_code(geom, table, [r["selection"] for r in rules], w)
+    w(f"H_GLOBAL, GROWTH = {h!r}, {growth!r}")
+    w("DIM = m.dim()")
+    w("")
+    w("def size_points(name, size):")
+    w("    \"\"\"Points of a selection of the first mesh, about `size` apart (its faces or")
+    w("    elements subdivided), dim x n.\"\"\"")
+    w("    kind, ids = SEL[name]")
+    w("    if ids.size == 0:")
+    w("        raise RuntimeError(f\"selection '{name}' of a local size is empty on the first mesh\")")
+    w("    ids = ids if kind == 'boundary' else np.atleast_2d(ids)")
+    w("    n = max(1, min(32, int(np.ceil(1.5 * H_GLOBAL / size))))")
+    w("    return np.unique(np.round(gf.Slice(('none',), m, n, ids).pts(), 12), axis=1)")
+    w("")
+    w("try:")
+    w("    from scipy.spatial import cKDTree")
+    w("except ImportError:")
+    w("    cKDTree = None")
+    w("")
+    w("def nearest(P):")
+    w("    \"\"\"The distance from points X (n x dim) to the points P (dim x k).\"\"\"")
+    w("    if cKDTree is not None:")
+    w("        tree = cKDTree(P.T)")
+    w("        return lambda X: tree.query(X)[0]")
+    w("    def distance(X):")
+    w("        out = np.empty(len(X))")
+    w("        for i in range(0, len(X), 256):")
+    w("            D = X[i:i + 256, None, :] - P.T[None, :, :]")
+    w("            out[i:i + 256] = np.sqrt(np.min(np.sum(D * D, axis=2), axis=1))")
+    w("        return out")
+    w("    return distance")
+    w("")
+    w("SIZE_SETS = [   # (points of the selection, their size)")
+    for r in rules:
+        w(f"    (size_points({r['selection']!r}, {float(r['size'])!r}), {float(r['size'])!r}),")
+    w("]")
+    w("SIZE_POINTS = np.hstack([P for P, _ in SIZE_SETS])")
+    w("SIZE_VALUES = np.concatenate([np.full(P.shape[1], s) for P, s in SIZE_SETS])")
+    w("FINDERS = [(nearest(P), s) for P, s in SIZE_SETS]")
+    w("")
+    w("def local_size(X):")
+    w("    \"\"\"The size of the elements at the points X (n x dim): the smallest of the")
+    w("    global size and of s + (GROWTH - 1) d, d the distance to the points of size s.\"\"\"")
+    w("    out = np.full(len(X), H_GLOBAL)")
+    w("    for distance, s in FINDERS:")
+    w("        out = np.minimum(out, s + (GROWTH - 1) * distance(X))")
+    w("    return out")
+    w("")
+    w("def thin_out(V):")
+    w("    \"\"\"Of the points V (dim x n), along lines, those about the local size apart.\"\"\"")
+    w("    size = local_size(V.T)")
+    w("    kept = []")
+    w("    for j in range(V.shape[1]):")
+    w("        if all(np.linalg.norm(V[:, j] - V[:, k]) > 0.7 * min(size[j], size[k]) for k in kept):")
+    w("            kept.append(j)")
+    w("    return V[:, kept]")
+    w(f"print(f'local sizes: {{SIZE_POINTS.shape[1]}} points on {len(rules)} selection(s)')")
+
+
 def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = None,
                 reuse_raw: bool = False, standalone: bool = False) -> str:
     """Text of the meshing script; it writes <basename>.mesh and <basename>.json.
@@ -928,12 +1081,17 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
             _build_layered(model, geom, mesh, w, basename)
         elif mesher == "structured":
             _build_structured(model, geom, mesh, w)
-        elif mesher == "getfem":
-            _build_getfem(model, geom, mesh, w)
-        elif mesher == "gmsh":
-            _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh")
-        elif mesher == "netgen":
-            _build_netgen(model, geom, mesh, w, f"{basename}_netgen.msh")
+        elif mesher in M.FREE_MESHERS:
+            between = None
+            if sized(model, mesh):
+                w("# With local sizes: a first mesh of the global size locates their selections")
+                between = lambda w: _locate_sizes(model, geom, mesh, table, w)   # noqa: E731
+            if mesher == "getfem":
+                _build_getfem(model, geom, mesh, w, between)
+            elif mesher == "gmsh":
+                _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh", between)
+            else:
+                _build_netgen(model, geom, mesh, w, f"{basename}_netgen.msh", between)
         else:
             _build_import(model, geom, mesh, w)
         if raw_key is not None:
@@ -943,22 +1101,7 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
             w(f"    json.dump({{'key': {raw_key!r}}}, f)")
 
     w.section("Selections -> regions")
-    from . import manifold
-    tdim = manifold.TOPOLOGICAL_DIM.get(geom.get("source", {}).get("type"))
-    w("TDIM = " + (f"{tdim}   # the dimension of the elements (lower than that of the space)"
-                   if tdim and geom["source"]["type"] != "surface" else "m.dim()"))
-    w("# Regions possibly present after an import (physical groups)")
-    w("imported = {int(rg): m.region(int(rg)) for rg in np.atleast_1d(m.regions())}")
-    w("SEL = {}")
-    ordered = [n for n, s in table.items() if s.get("criteria", {}).get("type") != "union"]
-    ordered += [n for n, s in table.items() if s.get("criteria", {}).get("type") == "union"]
-    shape = G.shape_of(geom.get("source", {}))
-    solid = G3.shape_of(geom.get("source", {}))
-    for name in ordered:
-        if table[name].get("criteria", {}).get("type") == "faces":
-            _faces_code(name, table[name]["criteria"], w, solid)
-        else:
-            _selection_code(name, table[name], w, shape)
+    _selections_code(geom, table, list(table), w)
     user = [n for n, s in table.items() if not s["builtin"]]
     if geom.get("source", {}).get("type") == "surface":
         _map_flat(model, geom, w)
@@ -1029,6 +1172,10 @@ def raw_key(model: dict, mesh: dict) -> str:
     geom.pop("name", None)
     m = {k: v for k, v in mesh.items() if k not in ("name", "geometry")}
     payload = {"version": SCRIPT_VERSION, "source": geom, "mesh": m}
+    if mesh.get("sizes"):                     # located by selections: they matter
+        full = M.geometry_of(model, mesh)
+        payload["size_selections"] = {n: s for n, s in M.selection_table(model, full).items()
+                                      if not s.get("builtin")}
     src = geom.get("source", {})
     if "file" in src:
         path = M.resolve_file(model, src["file"])

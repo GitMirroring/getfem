@@ -166,6 +166,21 @@ def mesh_layers(win):
     win.select(("meshes", 0))
 
 
+def mesh_sizes(win):
+    """The plate with a hole meshed finer around the hole and in a band."""
+    geom = win.model["geometries"][0]
+    geom["selections"]["band"] = {"kind": "domain", "criteria": {"type": "in_box", "min": [0.14, 0.0],
+                                                                 "max": [0.17, 0.1]}}
+    mesh = win.model["meshes"][0]
+    mesh["order"] = 1
+    mesh["sizes"] = [{"selection": "hole", "size": 0.002}, {"selection": "band", "size": 0.004}]
+    win._changed(select=("meshes", 0, "sizes", 0))
+    win.build_mesh()
+    _wait(lambda: not win.jobs.running and win.viewer is not None)
+    _settle(1.0)
+    win.select(("meshes", 0, "sizes", 0))
+
+
 def mesh_quality(win):
     """The worst tetrahedra of a 3D mesh, in the mesh made transparent."""
     mesh_layers(win)
@@ -275,6 +290,7 @@ SHOTS = {
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),
     "mesh_quality.png": ("block_with_hole_3d.json", mesh_quality),
+    "mesh_sizes.png": ("plate_with_hole.json", mesh_sizes),
     "results.png": ("plate_hole_tension.json", results),
     "anisotropic.png": ("anisotropic_plate.json", anisotropic),
 }

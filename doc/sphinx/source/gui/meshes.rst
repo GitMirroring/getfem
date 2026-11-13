@@ -52,6 +52,36 @@ The geometric order 3 (``getfem`` and ``gmsh`` meshers) follows the curved
 boundaries more closely still; its elements are drawn by the same
 quadratic interpolation.
 
+.. _gui-meshes-sizes:
+
+Local sizes
+-----------
+
+.. image:: images/mesh_sizes.png
+   :width: 100%
+   :alt: A plate with a hole meshed finer around the hole and in a band of the plate
+
+A mesh by the ``getfem``, ``gmsh`` or ``netgen`` mesher of a box, a
+constructive geometry or a CAD file may be finer on parts of the domain:
+*Add a local size* on the mesh gives a size to a selection (its edges, faces
+or elements; any kind of selection), shown under the mesh in the tree::
+
+   "sizes": [{"selection": "hole", "size": "h/5"}, {"selection": "band", "size": "h/2"}],
+   "growth": 1.3
+
+Away from a selection, the elements grow by the rate *Growth* (1.3: each
+one at most 30 % larger than its neighbor): the size at a point is the
+smallest of the size of the mesh *h* and of *s* + (growth − 1) *d* for each
+local size *s*, *d* being the distance to its selection. The selections are
+evaluated on a mesh, so the meshing script makes a first mesh of the global
+size, locates the selections of the local sizes on it and samples them
+(their faces or elements subdivided, about *s* apart), then makes the final
+mesh with this size function: the GetFEM mesher with the sizes at these
+points (``gf.Mesh('generate', ..., size_points, sizes, growth)``), Gmsh
+with a size callback, Netgen with the sizes restricted at these points (its
+grading follows the growth). The interfaces between regions followed by the
+GetFEM mesher take the local sizes too.
+
 Quadrangles and hexahedra
 -------------------------
 

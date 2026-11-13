@@ -104,6 +104,12 @@ Meshers and compatible sources
 - getfem     : box, csg          {"h": size, "order": 1}   (GetFEM experimental mesher)
 - gmsh       : box, csg, cad     {"size": size, "order": 1}
 - import     : mesh_file         (no parameter)
+getfem, gmsh and netgen (box, csg, cad; not in layers): local sizes
+               {"sizes": [{"selection": name, "size": s}, ...], "growth": 1.3}
+               the elements of size s on the selection (edges, faces or
+               elements), growing away from it by the rate growth: the size
+               at a point is min(h, s + (growth - 1) d), d its distance to
+               the selection (located on a first mesh of size h)
 
 Selections
 ----------
@@ -1284,11 +1290,51 @@ def _validate_mesh(model, mesh, where, errors):
         elif dim != 2 and not layers:
             errors.append(f"{where}.element: quadrangles in 2D; in 3D, hexahedra by layers only "
                           "(an extrusion or a revolution)")
+    _validate_sizes(model, geom, mesh, where, errors, layers)
     if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipse"):
         errors.append(f"{where}.mesher: ellipses are not meshed by Netgen yet (use Gmsh)")
     if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipsoid"):
         errors.append(f"{where}.mesher: ellipsoids are not meshed by Netgen yet (use Gmsh)")
 
+
+
+SIZED_SOURCES = ("box", "csg", "cad")      # geometries whose meshes may have local sizes
+
+
+def _validate_sizes(model, geom, mesh, where, errors, layers) -> None:
+    """The local sizes of a mesh: on selections of its geometry (not "all"),
+    each one smaller than the global size; the rate of growth above 1."""
+    sizes = mesh.get("sizes")
+    if sizes is None and "growth" not in mesh:
+        return
+    if not isinstance(sizes, list):
+        errors.append(f"{where}.sizes: a list of {{'selection', 'size'}} expected")
+        return
+    if sizes and (geom.get("source", {}).get("type") not in SIZED_SOURCES or layers):
+        errors.append(f"{where}.sizes: local sizes only for a mesh of a box, a constructive geometry or "
+                      "a CAD file (not in layers)")
+        return
+    h = mesh.get("h") if mesh.get("mesher") == "getfem" else mesh.get("size")
+    table = selection_table(model, geom)
+    for j, rule in enumerate(sizes):
+        w = f"{where}.sizes[{j}]"
+        if not isinstance(rule, dict):
+            errors.append(f"{w}: {{'selection', 'size'}} expected")
+            continue
+        name = rule.get("selection")
+        if name == ALL:
+            errors.append(f"{w}.selection: a part of the domain expected (the size of 'all' is that of the "
+                          "mesh)")
+        elif name not in table:
+            errors.append(f"{w}.selection: unknown selection {name!r}")
+        _check_positive(rule.get("size"), f"{w}.size", errors)
+        if isinstance(rule.get("size"), (int, float)) and isinstance(h, (int, float)) and h > 0 \
+                and rule["size"] >= h:
+            errors.append(f"{w}.size: smaller than the size of the mesh ({h:g}) expected")
+    g = mesh.get("growth", 1.3)
+    if isinstance(g, bool) or not isinstance(g, (int, float)) or not g > 1:
+        errors.append(f"{where}.growth: a rate above 1 expected (1.3: each element 30% larger than its "
+                      "neighbor)")
 
 
 def _has_type(shape, t) -> bool:

@@ -467,7 +467,11 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
         users = [md.get("name") for md in model.get("models", [])
                  if any(v.get("mesh") == m.get("name") for v in md.get("variables", []))]
         label = f"{m.get('name', '?')} ({m.get('mesher', '?')})" + (f" — {', '.join(users)}" if users else "")
-        meshes.children.append(Node(("meshes", i), label, "mesh"))
+        node = Node(("meshes", i), label, "mesh")
+        for j, rule in enumerate(m.get("sizes") or []):
+            if isinstance(rule, dict):
+                node.children.append(Node(("meshes", i, "sizes", j), size_label(rule), "mesh_size"))
+        meshes.children.append(node)
     root.children.append(meshes)
 
     root.children.append(_fields_node(("fields",), model.get("fields", [])))
@@ -1059,6 +1063,18 @@ def fields(model: dict, path: Path) -> list[Field]:
     if path == ("meshes",):
         return [Field(path, "", "info", help="Several meshes may be defined for one geometry; "
                                              "the variables of the models say which one they use.")]
+    if path[0] == "meshes" and n == 4 and path[2] == "sizes":
+        mesh = get_at(model, path[:2], {})
+        geom = M.geometry_of(model, mesh) or {}
+        names = [x for x in M.selection_table(model, geom) if x != M.ALL] if geom else []
+        return [Field(path + ("selection",), "Selection", "choice", _choices(names),
+                      help="Its edges, faces or elements get the size below"),
+                Field(path + ("size",), "Size", "number",
+                      help="Smaller than the size of the mesh; the elements grow away from the selection by "
+                           "the rate of growth of the mesh"),
+                Field(path, "", "info", help="A first mesh of the global size locates the selection; the "
+                                             "final mesh has the size s on it, min(h, s + (growth - 1) d) at "
+                                             "a distance d from it.")]
     if path[0] == "meshes" and n == 2:
         mesh = get_at(model, path, {})
         geom = M.geometry_of(model, mesh) or {}
@@ -1088,6 +1104,10 @@ def fields(model: dict, path: Path) -> list[Field]:
                                       + ("turned about the axis in this number of layers"
                                          if around else "extruded in this number of layers")
                                       + ": prisms, or hexahedra with quadrangles."))
+            if mesh.get("sizes"):
+                out.append(Field(path + ("growth",), "Growth of the local sizes", "number",
+                                 help="Away from the selections of the local sizes, each element is at most "
+                                      "this factor larger than its neighbor (1.3 by default)"))
             if mesher != "getfem" and (dim == 2 or stype == "surface" or (swept and mesh.get("layers"))):
                 out.append(Field(path + ("element",), "Elements", "choice",
                                  (("simplex", "triangles" + (" (prisms)" if dim == 3 else "")),
@@ -1657,6 +1677,43 @@ def _fit_meshes(model: dict, gi: int) -> list[str]:
     return notes
 
 
+def size_label(rule: dict) -> str:
+    """The label of a local size of a mesh in the tree."""
+    return f"Size {format_value(rule.get('size'))} on {rule.get('selection', '?')}"
+
+
+def can_size(model: dict, mesh: dict) -> bool:
+    """Whether a mesh may have local sizes: an unstructured mesher (not in
+    layers) of a box, a constructive geometry or a CAD file."""
+    geom = M.geometry_of(model, mesh) or {}
+    return mesh.get("mesher") in M.FREE_MESHERS and not mesh.get("layers") \
+        and geom.get("source", {}).get("type") in M.SIZED_SOURCES
+
+
+def add_size(model: dict, path: Path) -> Path:
+    """A new local size for the mesh at path: on its first selection of
+    edges or faces made by the user (else the whole boundary), a quarter of
+    its size."""
+    mesh = get_at(model, path)
+    if not can_size(model, mesh):
+        raise ValueError("local sizes are for a mesh by GetFEM, Gmsh or Netgen of a box, a constructive "
+                         "geometry or a CAD file (not in layers)")
+    geom = M.geometry_of(model, mesh)
+    table = M.selection_table(model, geom)
+    used = {r.get("selection") for r in mesh.get("sizes") or [] if isinstance(r, dict)}
+    user = [n for n, sel in table.items() if not sel["builtin"] and n not in used]
+    name = next((n for n in user if sel_kind(table[n]) == M.BOUNDARY), user[0] if user else M.BOUNDARY)
+    rmesh = M.find_mesh(P.resolved(model), mesh.get("name")) or {}
+    h = rmesh.get(_size_key(mesh["mesher"]))
+    size = float(f"{h / 4:.2g}") if isinstance(h, (int, float)) and h > 0 else 0.01
+    mesh.setdefault("sizes", []).append({"selection": name, "size": size})
+    return path + ("sizes", len(mesh["sizes"]) - 1)
+
+
+def sel_kind(sel: dict) -> str:
+    return sel.get("kind", M.DOMAIN)
+
+
 def _size_key(mesher: str) -> str:
     """The key of the element size of an unstructured mesher."""
     return "h" if mesher == "getfem" else "size"
@@ -1771,6 +1828,9 @@ def _items_with_selection(model: dict, geom: dict) -> list[dict]:
     for f in model.get("fields", []):
         if M.by_name(geoms, f.get("geometry", geoms[0].get("name") if len(geoms) == 1 else None)) is geom:
             collect(f)
+    for mesh, _ in M.all_meshes(model):              # the local sizes of its meshes
+        if M.geometry_of(model, mesh) is geom:
+            collect(mesh.get("sizes") or [])
     return out
 
 
@@ -2053,7 +2113,7 @@ def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
     dim = (M.geometry_dim(model, geom) if geom else None) or 2
     old = mesh.get("mesher")
     size = mesh.get(_size_key(old)) if old in M.FREE_MESHERS else None
-    keep = {k: mesh[k] for k in ("layers", "element") if k in mesh and old in M.FREE_MESHERS}
+    keep = {k: mesh[k] for k in ("layers", "element", "sizes", "growth") if k in mesh and old in M.FREE_MESHERS}
     order = mesh.get("order", 1)
     rmesh = M.find_mesh(P.resolved(model), mesh.get("name")) or {}
     rgeom = M.geometry_of(P.resolved(model), rmesh) or {}
@@ -2065,7 +2125,7 @@ def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
         div = rmesh.get("divisions", [])
         if len(div) == len(lengths) and all(isinstance(d, int) and d > 0 for d in div):
             size = float(f"{min(l / d for l, d in zip(lengths, div)):.6g}")
-    for k in ("divisions", "element", "h", "size", "order", "layers"):
+    for k in ("divisions", "element", "h", "size", "order", "layers", "sizes", "growth"):
         mesh.pop(k, None)
     mesh["mesher"] = mesher
     mesh.update(_default_mesh_params(mesher, dim))
@@ -2075,6 +2135,9 @@ def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
         mesh["order"] = min(order, 2) if mesher == "netgen" else order
         if "layers" in keep:
             mesh["layers"] = keep["layers"]
+        for k in ("sizes", "growth"):              # the local sizes: the same for another free mesher
+            if k in keep:
+                mesh[k] = keep[k]
         if keep.get("element") == "quad" and mesher != "getfem":
             mesh["element"] = "quad"
     elif mesher == "structured" and lengths:
@@ -2196,8 +2259,12 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif path == ("meshes",):
         out.append(("add_mesh", "Add a mesh"))
     elif path[:1] == ("meshes",) and n == 2:
+        if can_size(model, get_at(model, path, {})):
+            out.append(("add_size", "Add a local size"))
         if len(model.get("meshes", [])) > 1:
             out.append(("remove", "Remove"))
+    elif path[:1] == ("meshes",) and n == 4 and path[2] == "sizes":
+        out.append(("remove", "Remove"))
     elif path == ("models",):
         out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
                 if "requires" not in s]
@@ -2435,6 +2502,16 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         if path[-2] != "of":                  # the root (or a profile) was a transform
             return do_action(model, path, "clear_shape")
         return _remove_shape(model, path)
+    if action == "add_size":
+        return add_size(model, path)
+    if action == "remove" and path[:1] == ("meshes",) and len(path) == 4 and path[2] == "sizes":
+        mesh = get_at(model, path[:2])
+        del mesh["sizes"][path[3]]
+        if mesh["sizes"]:
+            return path[:3] + (min(path[3], len(mesh["sizes"]) - 1),)
+        mesh.pop("sizes")
+        mesh.pop("growth", None)
+        return path[:2]
     if action == "remove":
         parent = get_at(model, path[:-1])
         if isinstance(parent, list):
@@ -2782,6 +2859,9 @@ def highlighted_selection(model: dict, path: Path) -> tuple[str | None, str | No
     if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
         mesh = geometry_mesh(model, model["geometries"][path[1]]) or {}
         return mesh.get("name"), path[3]
+    if path[:1] == ("meshes",) and len(path) == 4 and path[2] == "sizes":     # a local size: on its mesh
+        rule = get_at(model, path, {}) or {}
+        return get_at(model, path[:2] + ("name",)), rule.get("selection")
     md = owner(model, path)
     item = get_at(model, path)
     if md is not None and isinstance(item, dict) and "selection" in item and len(path) > 2:
@@ -2791,8 +2871,8 @@ def highlighted_selection(model: dict, path: Path) -> tuple[str | None, str | No
 
 def mesh_to_show(model: dict, path: Path) -> str | None:
     """Name of the mesh the viewer should show for a node."""
-    if path[:1] == ("meshes",) and len(path) == 2:
-        return get_at(model, path + ("name",))
+    if path[:1] == ("meshes",) and len(path) in (2, 4):
+        return get_at(model, path[:2] + ("name",))
     if path[:1] == ("geometries",) and len(path) >= 2:
         return (geometry_mesh(model, model["geometries"][path[1]]) or {}).get("name")
     md = owner(model, path) or main_model(model)
