@@ -107,7 +107,11 @@ def _gf_polygon(shape) -> str:
 
 def _build_structured(model, geom, mesh, w):
     src = geom["source"]
-    axes = [f"np.linspace({float(o)!r}, {float(o) + float(s)!r}, {int(n) + 1})"
+    n = uniform_refinements(mesh)
+    k = 2 ** n                                    # refined: the divisions doubled
+    if n:
+        w(f"# Refined {n} time(s): the divisions multiplied by {k}")
+    axes = [f"np.linspace({float(o)!r}, {float(o) + float(s)!r}, {k * int(n) + 1})"
             for o, s, n in zip(src["origin"], src["size"], mesh["divisions"])]
     kind = "regular_simplices" if mesh.get("element", "simplex") == "simplex" else "cartesian"
     w(f"m = gf.Mesh({kind!r}, {', '.join(axes)})")
@@ -273,6 +277,7 @@ def _build_getfem(model, geom, mesh, w, between=None):
     w("# Implicit description of the geometry (MesherObject)")
     w.h = float(mesh["h"])                   # (the fillers of the reflex fillets)
     top = _gf_shape(shape, w)
+    w.top = top                              # (the boundary nodes of a refined mesh projected on it)
     h, K = float(mesh['h']), int(mesh.get('order', 1))
     dim = src["dim"] if src["type"] == "csg" else len(src["size"])
     hmin = min([h] + [float(r["size"]) for r in mesh.get("sizes") or []]) if between else h
@@ -486,6 +491,9 @@ def _build_gmsh(model, geom, mesh, w, msh_name, between=None):
 
     def generate():
         w("gmsh.model.mesh.generate(dim)")
+        if uniform_refinements(mesh):
+            w(f"for _ in range({uniform_refinements(mesh)}):   # refined: the elements split, following the geometry")
+            w("    gmsh.model.mesh.refine()")
         w(f"gmsh.model.mesh.setOrder({int(mesh.get('order', 1))})")
         w(f"gmsh.write({msh_name!r})")
         w(f"m = gf.Mesh('import', 'gmsh', {msh_name!r})")
@@ -603,6 +611,9 @@ def _build_netgen(model, geom, mesh, w, msh_name, between=None):
     w(f"ngmesh = geo.GenerateMesh(maxh={float(mesh['size'])!r}" + (", quad_dominated=True)" if quad else ")"))
 
     def export():
+        if uniform_refinements(mesh):
+            w(f"for _ in range({uniform_refinements(mesh)}):   # refined: the elements split, following the geometry")
+            w("    ngmesh.Refine()")
         if int(mesh.get("order", 1)) == 2:
             w("ngmesh.SecondOrder()")
         w(f"ngmesh.Export({msh_name!r}, 'Gmsh2 Format')")
@@ -855,6 +866,64 @@ def _selections_code(geom, table, names, w) -> None:
             _selection_code(name, table[name], w, shape)
 
 
+def uniform_refinements(mesh: dict) -> int:
+    """How many times the whole mesh is refined (by its mesher)."""
+    return sum(int(r.get("times", 1)) for r in mesh.get("refine") or []
+               if isinstance(r, dict) and r.get("selection", M.ALL) == M.ALL)
+
+
+def _refinements(model, geom, mesh, table, w) -> None:
+    """The refinements of the mesh m done by GetFEM: of the whole mesh when
+    its mesher does not do it (the GetFEM mesher: the new boundary nodes
+    projected on the geometry; an imported mesh), then of the elements of
+    the selections (along the faces of a boundary selection), each time
+    located again."""
+    n = uniform_refinements(mesh)
+    local = [(r["selection"], int(r.get("times", 1))) for r in mesh.get("refine") or []
+             if isinstance(r, dict) and r.get("selection", M.ALL) != M.ALL]
+    by_getfem = n and mesh.get("mesher") in ("getfem", "import")
+    if not by_getfem and not local:
+        return
+    w.section("Refinements (GetFEM: Bank refinement, conforming)")
+    if by_getfem:
+        w(f"for _ in range({n}):   # the whole mesh, each element split")
+        w("    m.refine()")
+    if local:
+        w("")
+        w("# The selections located on the mesh before its local refinements: kept as")
+        w("# regions, which GetFEM refines with the mesh (their criteria may not hold")
+        w("# any more on the refined mesh: its new boundary nodes are on chords)")
+        _selections_code(geom, table, list(table), w)
+        w(f"STORED = {_stored_regions(table)!r}   # name: (kind, region)")
+        w("for name, (kind, rg) in STORED.items():")
+        w("    m.set_region(rg, SEL[name][1])")
+        w(f"REFINE = {local!r}   # (selection, times)")
+        w("for name, times in REFINE:")
+        w("    for _ in range(times):")
+        w("        cv = cvs(m.region(STORED[name][1]))")
+        w("        if cv.size == 0:")
+        w("            raise RuntimeError(f\"selection '{name}' of a refinement is empty on the mesh\")")
+        w("        m.refine(cv)   # its elements (and enough of their neighbors to stay conforming)")
+    top = getattr(w, "top", None)
+    if top is not None:
+        w("# The new nodes of the boundary on the geometry (they are on the chords of its curves)")
+        w("_B = m.pid_in_faces(m.outer_faces())")
+        w("_P = m.pts()")
+        w(f"_P[:, _B] = {top}.project(_P[:, _B])")
+        w("m.set_pts(_P)")
+
+
+STORED_REGION = 100000                    # the selections kept as regions through local refinements
+
+
+def _stored_regions(table) -> dict:
+    return {n: (sel["kind"], STORED_REGION + i) for i, (n, sel) in enumerate(table.items()) if n != M.ALL}
+
+
+def local_refinements(mesh: dict) -> bool:
+    return any(isinstance(r, dict) and r.get("selection", M.ALL) != M.ALL for r in mesh.get("refine") or [])
+
+
 def sized(model: dict, mesh: dict) -> bool:
     """Whether the mesh has local sizes (meshed twice)."""
     geom = M.geometry_of(model, mesh) or {}
@@ -1094,6 +1163,7 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
                 _build_netgen(model, geom, mesh, w, f"{basename}_netgen.msh", between)
         else:
             _build_import(model, geom, mesh, w)
+        _refinements(model, geom, mesh, table, w)
         if raw_key is not None:
             w("# Kept to evaluate other selections without meshing again")
             w(f"m.save({raw!r})")
@@ -1101,7 +1171,18 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
             w(f"    json.dump({{'key': {raw_key!r}}}, f)")
 
     w.section("Selections -> regions")
-    _selections_code(geom, table, list(table), w)
+    if local_refinements(mesh):
+        w("# located before the local refinements, refined with the mesh")
+        w(f"STORED = {_stored_regions(table)!r}   # name: (kind, region)")
+        w("kept = {rg for _, rg in STORED.values()}")
+        w("imported = {int(rg): None for rg in np.atleast_1d(m.regions()) if int(rg) not in kept}")
+        w("SEL = {}")
+        w("for name, (kind, rg) in STORED.items():")
+        w("    ids = m.region(rg)")
+        w("    SEL[name] = (kind, ids if kind == 'boundary' else cvs(ids))")
+        w("    m.delete_region(rg)")
+    else:
+        _selections_code(geom, table, list(table), w)
     user = [n for n, s in table.items() if not s["builtin"]]
     if geom.get("source", {}).get("type") == "surface":
         _map_flat(model, geom, w)
@@ -1172,7 +1253,8 @@ def raw_key(model: dict, mesh: dict) -> str:
     geom.pop("name", None)
     m = {k: v for k, v in mesh.items() if k not in ("name", "geometry")}
     payload = {"version": SCRIPT_VERSION, "source": geom, "mesh": m}
-    if mesh.get("sizes"):                     # located by selections: they matter
+    if mesh.get("sizes") or any(isinstance(r, dict) and r.get("selection", M.ALL) != M.ALL
+                                for r in mesh.get("refine") or []):     # located by selections: they matter
         full = M.geometry_of(model, mesh)
         payload["size_selections"] = {n: s for n, s in M.selection_table(model, full).items()
                                       if not s.get("builtin")}

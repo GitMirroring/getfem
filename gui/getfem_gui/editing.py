@@ -471,6 +471,9 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
         for j, rule in enumerate(m.get("sizes") or []):
             if isinstance(rule, dict):
                 node.children.append(Node(("meshes", i, "sizes", j), size_label(rule), "mesh_size"))
+        for j, rule in enumerate(m.get("refine") or []):
+            if isinstance(rule, dict):
+                node.children.append(Node(("meshes", i, "refine", j), refine_label(rule), "mesh_refine"))
         meshes.children.append(node)
     root.children.append(meshes)
 
@@ -1075,6 +1078,18 @@ def fields(model: dict, path: Path) -> list[Field]:
                 Field(path, "", "info", help="A first mesh of the global size locates the selection; the "
                                              "final mesh has the size s on it, min(h, s + (growth - 1) d) at "
                                              "a distance d from it.")]
+    if path[0] == "meshes" and n == 4 and path[2] == "refine":
+        mesh = get_at(model, path[:2], {})
+        geom = M.geometry_of(model, mesh) or {}
+        names = list(M.selection_table(model, geom)) if geom else [M.ALL]
+        return [Field(path + ("selection",), "Selection", "choice", _choices(names),
+                      help="'all': the whole mesh, refined by its mesher (following the geometry); a selection: "
+                           "its elements, or those along its faces, refined by GetFEM"),
+                Field(path + ("times",), "Times", "int",
+                      help=f"1 to {M.MAX_REFINE}: each time, the elements are split in 2^d (halved)"),
+                Field(path, "", "info", help="The refinements of 'all' come first, then the others in their "
+                                             "order; a local refinement splits enough neighbors to keep the "
+                                             "mesh conforming (triangles and tetrahedra).")]
     if path[0] == "meshes" and n == 2:
         mesh = get_at(model, path, {})
         geom = M.geometry_of(model, mesh) or {}
@@ -1682,6 +1697,36 @@ def size_label(rule: dict) -> str:
     return f"Size {format_value(rule.get('size'))} on {rule.get('selection', '?')}"
 
 
+def refine_label(rule: dict) -> str:
+    """The label of a refinement of a mesh in the tree."""
+    where = rule.get("selection", M.ALL)
+    return f"Refined {format_value(rule.get('times', 1))}× " + ("everywhere" if where == M.ALL else f"on {where}")
+
+
+def can_refine(model: dict, mesh: dict) -> bool:
+    """Whether a mesh may be refined: of a box, a constructive geometry, a
+    CAD or mesh file, not in layers."""
+    geom = M.geometry_of(model, mesh) or {}
+    return not mesh.get("layers") and geom.get("source", {}).get("type") in M.REFINED_SOURCES
+
+
+def add_refinement(model: dict, path: Path) -> Path:
+    """A new refinement of the mesh at path: of the whole mesh if it has
+    none, else of its first selection made by the user not refined yet;
+    once."""
+    mesh = get_at(model, path)
+    if not can_refine(model, mesh):
+        raise ValueError("refinements are for a mesh of a box, a constructive geometry, a CAD or mesh file "
+                         "(not in layers)")
+    used = {r.get("selection", M.ALL) for r in mesh.get("refine") or [] if isinstance(r, dict)}
+    name = M.ALL
+    if M.ALL in used and mesh.get("element") != "quad":
+        table = M.selection_table(model, M.geometry_of(model, mesh))
+        name = next((n for n, sel in table.items() if not sel["builtin"] and n not in used), M.BOUNDARY)
+    mesh.setdefault("refine", []).append({"selection": name, "times": 1})
+    return path + ("refine", len(mesh["refine"]) - 1)
+
+
 def can_size(model: dict, mesh: dict) -> bool:
     """Whether a mesh may have local sizes: an unstructured mesher (not in
     layers) of a box, a constructive geometry or a CAD file."""
@@ -1831,6 +1876,7 @@ def _items_with_selection(model: dict, geom: dict) -> list[dict]:
     for mesh, _ in M.all_meshes(model):              # the local sizes of its meshes
         if M.geometry_of(model, mesh) is geom:
             collect(mesh.get("sizes") or [])
+            collect(mesh.get("refine") or [])
     return out
 
 
@@ -2261,9 +2307,11 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif path[:1] == ("meshes",) and n == 2:
         if can_size(model, get_at(model, path, {})):
             out.append(("add_size", "Add a local size"))
+        if can_refine(model, get_at(model, path, {})):
+            out.append(("add_refinement", "Add a refinement"))
         if len(model.get("meshes", [])) > 1:
             out.append(("remove", "Remove"))
-    elif path[:1] == ("meshes",) and n == 4 and path[2] == "sizes":
+    elif path[:1] == ("meshes",) and n == 4 and path[2] in ("sizes", "refine"):
         out.append(("remove", "Remove"))
     elif path == ("models",):
         out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
@@ -2504,13 +2552,16 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return _remove_shape(model, path)
     if action == "add_size":
         return add_size(model, path)
-    if action == "remove" and path[:1] == ("meshes",) and len(path) == 4 and path[2] == "sizes":
-        mesh = get_at(model, path[:2])
-        del mesh["sizes"][path[3]]
-        if mesh["sizes"]:
-            return path[:3] + (min(path[3], len(mesh["sizes"]) - 1),)
-        mesh.pop("sizes")
-        mesh.pop("growth", None)
+    if action == "add_refinement":
+        return add_refinement(model, path)
+    if action == "remove" and path[:1] == ("meshes",) and len(path) == 4 and path[2] in ("sizes", "refine"):
+        mesh, key = get_at(model, path[:2]), path[2]
+        del mesh[key][path[3]]
+        if mesh[key]:
+            return path[:3] + (min(path[3], len(mesh[key]) - 1),)
+        mesh.pop(key)
+        if key == "sizes":
+            mesh.pop("growth", None)
         return path[:2]
     if action == "remove":
         parent = get_at(model, path[:-1])
@@ -2859,7 +2910,7 @@ def highlighted_selection(model: dict, path: Path) -> tuple[str | None, str | No
     if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
         mesh = geometry_mesh(model, model["geometries"][path[1]]) or {}
         return mesh.get("name"), path[3]
-    if path[:1] == ("meshes",) and len(path) == 4 and path[2] == "sizes":     # a local size: on its mesh
+    if path[:1] == ("meshes",) and len(path) == 4 and path[2] in ("sizes", "refine"):   # on its mesh
         rule = get_at(model, path, {}) or {}
         return get_at(model, path[:2] + ("name",)), rule.get("selection")
     md = owner(model, path)

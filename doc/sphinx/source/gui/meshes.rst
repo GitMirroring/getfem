@@ -82,6 +82,33 @@ with a size callback, Netgen with the sizes restricted at these points (its
 grading follows the growth). The interfaces between regions followed by the
 GetFEM mesher take the local sizes too.
 
+.. _gui-meshes-refine:
+
+Refinements
+-----------
+
+*Add a refinement* on a mesh (of a box, a constructive geometry, a CAD or
+mesh file, not in layers) splits its elements, each time in 2\ :sup:`d`
+(their size halved), which gives nested meshes (convergence studies)::
+
+   "refine": [{"selection": "all", "times": 1}, {"selection": "hole", "times": 2}]
+
+- on ``all``, the whole mesh, by its mesher: Gmsh and Netgen split their
+  elements following the geometry; for the ``getfem`` mesher, GetFEM splits
+  them and the new boundary nodes are projected on the geometry; a
+  structured mesh gets 2\ :sup:`n` times more divisions; an imported mesh is
+  split by GetFEM;
+- on a selection, after the refinements of ``all`` and in their order: its
+  elements (those along its faces for a selection of edges or faces), by
+  GetFEM (Bank refinement: enough neighbors are split for the mesh to stay
+  conforming; triangles and tetrahedra only). The selections are located on
+  the mesh before these refinements, and refined with it. The new boundary
+  nodes are projected on the geometry with the ``getfem`` mesher only (with
+  Gmsh or Netgen, they stay on the chords of the curves).
+
+A local size (above) gives a mesh that grows smoothly away from the
+selection; a refinement keeps the elements of the first mesh, split.
+
 Quadrangles and hexahedra
 -------------------------
 

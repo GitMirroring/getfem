@@ -110,6 +110,14 @@ getfem, gmsh and netgen (box, csg, cad; not in layers): local sizes
                elements), growing away from it by the rate growth: the size
                at a point is min(h, s + (growth - 1) d), d its distance to
                the selection (located on a first mesh of size h)
+all but in layers (box, csg, cad, mesh_file): refinements
+               {"refine": [{"selection": "all", "times": 1}, {"selection": name, "times": n}]}
+               "all": the whole mesh split n times by its mesher (Gmsh, Netgen:
+               following the geometry; GetFEM mesher: the new boundary nodes
+               projected on it; structured: divisions doubled); a selection:
+               its elements (those along its faces) split n times by GetFEM
+               (Bank, conforming; triangles and tetrahedra), after the
+               refinements of "all", in their order
 
 Selections
 ----------
@@ -1257,6 +1265,7 @@ def _validate_mesh(model, mesh, where, errors):
         errors.append(f"{where}.order: 1, 2 or 3 expected")
     if mesher == "netgen" and mesh.get("order", 1) not in (1, 2):
         errors.append(f"{where}.order: 1 or 2 expected (Netgen)")
+    _validate_refine(model, geom, mesh, where, errors)
     if mesher not in FREE_MESHERS:
         return
     src = geom.get("source", {})
@@ -1335,6 +1344,40 @@ def _validate_sizes(model, geom, mesh, where, errors, layers) -> None:
     if isinstance(g, bool) or not isinstance(g, (int, float)) or not g > 1:
         errors.append(f"{where}.growth: a rate above 1 expected (1.3: each element 30% larger than its "
                       "neighbor)")
+
+
+REFINED_SOURCES = ("box", "csg", "cad", "mesh_file")    # geometries whose meshes may be refined
+MAX_REFINE = 4
+
+
+def _validate_refine(model, geom, mesh, where, errors) -> None:
+    """The refinements of a mesh: on "all" (by its mesher) or on selections
+    of its geometry (by GetFEM: triangles and tetrahedra), 1 to MAX_REFINE
+    times; not for a mesh in layers."""
+    rules = mesh.get("refine")
+    if rules is None:
+        return
+    if not isinstance(rules, list):
+        errors.append(f"{where}.refine: a list of {{'selection', 'times'}} expected")
+        return
+    if rules and (geom.get("source", {}).get("type") not in REFINED_SOURCES or mesh.get("layers")):
+        errors.append(f"{where}.refine: refinements only for a mesh of a box, a constructive geometry, a CAD "
+                      "file or a mesh file (not in layers)")
+        return
+    table = selection_table(model, geom)
+    for j, rule in enumerate(rules):
+        w = f"{where}.refine[{j}]"
+        if not isinstance(rule, dict):
+            errors.append(f"{w}: {{'selection', 'times'}} expected")
+            continue
+        name, times = rule.get("selection", ALL), rule.get("times", 1)
+        if name not in table:
+            errors.append(f"{w}.selection: unknown selection {name!r}")
+        if isinstance(times, bool) or not isinstance(times, int) or not 1 <= times <= MAX_REFINE:
+            errors.append(f"{w}.times: an integer from 1 to {MAX_REFINE} expected")
+        if name != ALL and mesh.get("element") == "quad":
+            errors.append(f"{w}.selection: a local refinement splits triangles and tetrahedra only "
+                          "(quadrangles: refine 'all')")
 
 
 def _has_type(shape, t) -> bool:

@@ -44,6 +44,7 @@ GUI_TESTS =                                     \
     tests/test_parameters.py                    \
     tests/test_polygon.py                       \
     tests/test_quality.py                       \
+    tests/test_refine.py                        \
     tests/test_scene.py                         \
     tests/test_sizes.py                         \
     tests/test_sketch.py                        \
