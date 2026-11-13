@@ -105,6 +105,18 @@ namespace getfem {
       case 27: { /* 4TH ORDER LINE */
         pgt = bgeot::simplex_geotrans(1, 4);
       } break;
+      case 29: { /* 3RD ORDER TETRAHEDRON (20-NODE) */
+        pgt = bgeot::simplex_geotrans(3,3);
+      } break;
+      case 36: { /* 3RD ORDER QUADRANGLE (16-NODE) */
+        pgt = bgeot::parallelepiped_geotrans(2,3);
+      } break;
+      case 90: { /* 3RD ORDER PRISM (40-NODE) */
+        pgt = bgeot::prism_geotrans(3,3);
+      } break;
+      case 92: { /* 3RD ORDER HEXAHEDRON (64-NODE) */
+        pgt = bgeot::parallelepiped_geotrans(3,3);
+      } break;
       default: { /* UNKNOWN .. */
         /* higher order elements : to be done .. */
         GMM_ASSERT1(false, "gmsh element type " << type << " is unknown.");
@@ -183,6 +195,18 @@ namespace getfem {
       } break;
       case 27: { /* 4TH ORDER LINE */
         nodes.resize(5);
+      } break;
+      case 29: { /* 3RD ORDER TETRAHEDRON (20-NODE) */
+        nodes.resize(20);
+      } break;
+      case 36: { /* 3RD ORDER QUADRANGLE (16-NODE) */
+        nodes.resize(16);
+      } break;
+      case 90: { /* 3RD ORDER PRISM (40-NODE) */
+        nodes.resize(40);
+      } break;
+      case 92: { /* 3RD ORDER HEXAHEDRON (64-NODE) */
+        nodes.resize(64);
       } break;
       default: { /* UNKNOWN .. */
         /* higher order elements : to be done .. */
@@ -690,6 +714,32 @@ namespace getfem {
           ci.nodes[2]  = tmp_nodes[3];
           ci.nodes[3]  = tmp_nodes[4];
           ci.nodes[4]  = tmp_nodes[1];
+        } break;
+        case 29: { /* Third order tetrahedron (20-node) */
+          static const unsigned short perm[20] = {
+            0, 4, 5, 1, 9, 16, 6, 8, 7, 2, 11, 17, 15, 18, 19, 13, 10, 14,
+            12, 3 };
+          for (size_type i = 0; i < 20; ++i) ci.nodes[i] = tmp_nodes[perm[i]];
+        } break;
+        case 36: { /* Third order quadrangle (16-node) */
+          static const unsigned short perm[16] = {
+            0, 4, 5, 1, 11, 12, 13, 6, 10, 15, 14, 7, 3, 9, 8, 2 };
+          for (size_type i = 0; i < 16; ++i) ci.nodes[i] = tmp_nodes[perm[i]];
+        } break;
+        case 90: { /* Third order prism (40-node) */
+          static const unsigned short perm[40] = {
+            0, 6, 7, 1, 8, 24, 12, 9, 13, 2, 10, 26, 27, 14, 30, 38, 34, 33,
+            35, 16, 11, 29, 28, 15, 31, 39, 37, 32, 36, 17, 3, 18, 19, 4, 20,
+            25, 22, 21, 23, 5 };
+          for (size_type i = 0; i < 40; ++i) ci.nodes[i] = tmp_nodes[perm[i]];
+        } break;
+        case 92: { /* Third order hexahedron (64-node) */
+          static const unsigned short perm[64] = {
+            0, 8, 9, 1, 10, 32, 35, 14, 11, 33, 34, 15, 3, 19, 18, 2, 12, 36,
+            37, 16, 40, 56, 57, 44, 43, 59, 58, 45, 22, 49, 48, 20, 13, 39,
+            38, 17, 41, 60, 61, 47, 42, 63, 62, 46, 23, 50, 51, 21, 4, 24,
+            25, 5, 26, 52, 53, 28, 27, 55, 54, 29, 7, 31, 30, 6 };
+          for (size_type i = 0; i < 64; ++i) ci.nodes[i] = tmp_nodes[perm[i]];
         } break;
         }
         for (size_type k = 1; k < regions.size(); ++k) {
