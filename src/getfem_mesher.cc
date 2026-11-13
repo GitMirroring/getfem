@@ -319,6 +319,7 @@ namespace getfem {
   struct mesher {
     pmesher_signed_distance dist;
     const mesher_virtual_function& edge_len;
+    bool uniform_size;          // edge_len is constant (1): the plain grid
     scalar_type h0, dist_point_hull, boundary_threshold_flatness;
     size_type N, K, iter_max, iter_wtcc;
     int prefind, noisy;
@@ -347,7 +348,9 @@ namespace getfem {
            mesh &m, const std::vector<base_node> &fixed_points,
            int noise, size_type itm, int pref,
            scalar_type dph, scalar_type btf)
-      : dist(dist_), edge_len(edge_len_), dist_point_hull(dph),
+      : dist(dist_), edge_len(edge_len_),
+        uniform_size(dynamic_cast<const mvf_constant *>(&edge_len_) != nullptr),
+        dist_point_hull(dph),
         boundary_threshold_flatness(btf), iter_max(itm), prefind(pref),
         noisy(noise) {
       if (noise == -1) noisy = gmm::traces_level::level() - 2;
@@ -807,29 +810,23 @@ namespace getfem {
         else if (noisy > 0)
           cout << "Removed duplicate fixed point: "<<fixed_points[i]<<"\n";
       }
-      base_node P(N), Q(N);
-      for (size_type i=0; i < nbpt; ++i) {
-        for (size_type k=0, r = i; k < N; ++k) {
-          unsigned p =  unsigned(r % gridnx[k]);
-          P[k] = p * (bounding_box_max[k] - bounding_box_min[k]) / 
-            scalar_type((gridnx[k]-1)) + bounding_box_min[k];
-          if (N==2 && k==0 && ((r/gridnx[0])&1)==1) P[k] += h0/2;
-          r /= gridnx[k];
-        }
-
+      base_node Q(N);
+      // a candidate point P, snapped to the constraints (the boundary) when
+      // it is closer to them than about the local spacing hl
+      auto add_candidate = [&](const base_node &P, scalar_type hl) {
         dal::bit_vector co;
         if ((prefind == 1 && (*dist)(P) < 0) || prefind == 2) {
           for (size_type k = 0; k < constraints.size() && co.card() < N; ++k) {
             gmm::copy(P, Q);
-            if (gmm::abs((*(constraints[k]))(Q)) < h0) {
+            if (gmm::abs((*(constraints[k]))(Q)) < hl) {
               constraint_projection(Q, k);
-              if ((*dist)(Q) > -geps && 
-                  (gmm::vect_dist2(P, Q) < h0 / scalar_type(2))) co.add(k);
+              if ((*dist)(Q) > -geps &&
+                  (gmm::vect_dist2(P, Q) < hl / scalar_type(2))) co.add(k);
             }
           }
         }
         gmm::copy(P, Q);
-        if (co.card() > 0) { 
+        if (co.card() > 0) {
           bool ok = pure_multi_constraint_projection(Q, co);
           if (!ok || gmm::abs((*dist)(Q)) > geps) { gmm::copy(P, Q); co.clear(); }
         }
@@ -850,6 +847,47 @@ namespace getfem {
             m.add_point(Q); pts.push_back(Q);
             pts_attr.push_back(get_attr(false, co));
           }
+        }
+      };
+
+      // where the size function is below 1, the cell of a point of the grid
+      // gets a finer grid of n^N points, each one kept with the probability
+      // that gives the density of the size (as in distmesh): deterministic
+      unsigned long rnd = 12345;
+      auto uniform = [&rnd]() {
+        rnd = (rnd * 6364136223846793005UL + 1442695040888963407UL);
+        return scalar_type((rnd >> 11) & ((1UL << 52) - 1)) / scalar_type(1UL << 52);
+      };
+      std::vector<scalar_type> cell(N);
+      for (size_type k = 0; k < N; ++k)
+        cell[k] = (gridnx[k] > 1) ? (bounding_box_max[k] - bounding_box_min[k])
+                                    / scalar_type(gridnx[k]-1) : h0;
+      size_type nmax = (N <= 2) ? 64 : 24;
+      base_node P(N), R(N);
+      for (size_type i=0; i < nbpt; ++i) {
+        for (size_type k=0, r = i; k < N; ++k) {
+          unsigned p =  unsigned(r % gridnx[k]);
+          P[k] = p * (bounding_box_max[k] - bounding_box_min[k]) /
+            scalar_type((gridnx[k]-1)) + bounding_box_min[k];
+          if (N==2 && k==0 && ((r/gridnx[0])&1)==1) P[k] += h0/2;
+          r /= gridnx[k];
+        }
+        scalar_type f = uniform_size ? scalar_type(1) : edge_len(P);
+        if (f >= scalar_type(0.999)) { add_candidate(P, h0); continue; }
+        if ((*dist)(P) > h0 * scalar_type(N)) continue;   // far out of the domain
+        size_type n = std::min(nmax, size_type(std::ceil(scalar_type(1) / std::max(f, scalar_type(1e-12)))));
+        size_type nsub = 1;
+        for (size_type k = 0; k < N; ++k) nsub *= n;
+        for (size_type j = 0; j < nsub; ++j) {
+          for (size_type k = 0, r = j; k < N; ++k) {
+            R[k] = P[k] + cell[k] * ((scalar_type(r % n) + scalar_type(0.5)) / scalar_type(n)
+                                     - scalar_type(0.5));
+            r /= n;
+          }
+          scalar_type fr = std::max(edge_len(R), scalar_type(1e-12));
+          scalar_type keep = pow(scalar_type(1) / (scalar_type(n) * fr), scalar_type(N));
+          if (keep >= scalar_type(1) || uniform() < keep)
+            add_candidate(R, h0 * std::max(fr, scalar_type(1) / scalar_type(n)));
         }
       }
       if (noisy > 0) cout << "effective bounding box : " << eff_boxmin << " : " << eff_boxmax << endl;
@@ -1446,6 +1484,47 @@ namespace getfem {
                   scalar_type boundary_threshold_flatness) {
     mesher mg(K, dist, getfem::mvf_constant(1), h0, m, fixed_points, noise,
               iter_max, prefind, dist_point_hull, boundary_threshold_flatness);
+  }
+
+  void build_mesh(mesh &m, const pmesher_signed_distance& dist,
+                  scalar_type h0, const mesher_virtual_function &edge_len,
+                  const std::vector<base_node> &fixed_points,
+                  size_type K, int noise, size_type iter_max, int prefind,
+                  scalar_type dist_point_hull,
+                  scalar_type boundary_threshold_flatness) {
+    mesher mg(K, dist, edge_len, h0, m, fixed_points, noise,
+              iter_max, prefind, dist_point_hull, boundary_threshold_flatness);
+  }
+
+  void mvf_point_sizes::add(const std::vector<base_node> &pts, scalar_type s) {
+    if (pts.empty()) return;
+    GMM_ASSERT1(s > 0, "the sizes must be positive");
+    if (s >= h) return;                          // no finer than the global size
+    for (size_type k = 0; k < sizes.size(); ++k)
+      if (gmm::abs(sizes[k] - s) <= 1e-12 * h) {
+        for (const base_node &P : pts) trees[k]->add_point(P);
+        return;
+      }
+    sizes.push_back(s);
+    trees.push_back(std::make_unique<bgeot::kdtree>());
+    for (const base_node &P : pts) trees.back()->add_point(P);
+  }
+
+  scalar_type mvf_point_sizes::min_size() const {
+    scalar_type r = 1;
+    for (scalar_type s : sizes) r = std::min(r, s / h);
+    return r;
+  }
+
+  scalar_type mvf_point_sizes::operator()(const base_node &P) const {
+    scalar_type r = h;
+    bgeot::index_node_pair ipt;
+    for (size_type k = 0; k < sizes.size(); ++k) {
+      if (sizes[k] >= r) continue;
+      scalar_type d = sqrt(trees[k]->nearest_neighbor(ipt, P));
+      r = std::min(r, sizes[k] + slope * d);
+    }
+    return r / h;
   }
   
 }

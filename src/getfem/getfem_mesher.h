@@ -61,6 +61,25 @@ namespace getfem {
     scalar_type operator()(const base_node &) const { return c; }
   };
 
+  /** A size function for the mesher (relative to a global size h): at a
+      point P, min(h, min_k (h_k + (growth - 1) d_k(P))) / h, where d_k is
+      the distance from P to the k-th set of points, of size h_k. Local
+      sizes given on parts of a domain (sampled by points), growing away
+      from them. */
+  class mvf_point_sizes : public mesher_virtual_function {
+    scalar_type h, slope;
+    std::vector<scalar_type> sizes;
+    std::vector<std::unique_ptr<bgeot::kdtree>> trees;
+  public:
+    mvf_point_sizes(scalar_type h_, scalar_type growth)
+      : h(h_), slope(std::max(growth - scalar_type(1), scalar_type(1e-3))) {}
+    /** Points of size s (each call: a set of points). */
+    void add(const std::vector<base_node> &pts, scalar_type s);
+    /** The smallest relative size. */
+    scalar_type min_size() const;
+    scalar_type operator()(const base_node &P) const;
+  };
+
   // Signed distance definition. Should not be a real signed distance but
   // should satisfy that dist(P) is less than the euclidean distance from
   // P to the boundary and more than 1/sqrt(N) time this distance.
@@ -2110,6 +2129,17 @@ namespace getfem {
 		  size_type iter_max = 500, int prefind = 1,
 		  scalar_type dist_point_hull = 4,
 		  scalar_type boundary_threshold_flatness = 0.11);
+
+  /** The mesher with a size function: edge_len(P) is the size of the
+      elements at P relative to h0 (at most 1, see mvf_point_sizes); more
+      points are distributed where it is smaller than 1. */
+  void build_mesh(mesh &m, const pmesher_signed_distance& dist_,
+                  scalar_type h0, const mesher_virtual_function &edge_len,
+                  const std::vector<base_node> &fixed_points
+                  = std::vector<base_node>(), size_type K = 1, int noise = -1,
+                  size_type iter_max = 500, int prefind = 1,
+                  scalar_type dist_point_hull = 4,
+                  scalar_type boundary_threshold_flatness = 0.11);
 
   // exported functions
   bool try_projection(const mesher_signed_distance& dist, base_node &X,

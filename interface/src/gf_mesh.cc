@@ -404,6 +404,9 @@ template <typename T> static inline void dummy_func(T &) {}
   }
 
 
+// local sizes of the mesher: the points of each size
+typedef std::map<double, std::vector<getfem::base_node> > points_by_size;
+
 static void
 build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
   /*@INIT M = ('empty', @int dim)
@@ -580,13 +583,20 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      pmesh->copy_from(*m2);
      );
 
-  /*@INIT M = ('generate', @tmo mo, @scalar h[, @int K = 1[, @mat vertices]])
+  /*@INIT M = ('generate', @tmo mo, @scalar h[, @int K = 1[, @mat vertices[, @mat size_points, @vec sizes[, @scalar growth = 1.3]]]])
     Call the experimental mesher of GetFEM on the geometry represented
     by `mo`. Please control the conformity of the produced mesh. You can
     help the mesher by adding a priori vertices in the array `vertices`
     which should be of size ``n x m`` where ``n`` n is the dimension of
-    the mesh and ``m`` the number of points. `h` is approximate diameter
-    of the elements. `K` is the degree of the mesh (>1 for curved boundaries).
+    the mesh and ``m`` the number of points (possibly none). `h` is
+    approximate diameter of the elements. `K` is the degree of the mesh
+    (>1 for curved boundaries). Local sizes may be given at points: the
+    columns of `size_points` (``n x p``), of sizes `sizes` (``p`` values,
+    smaller than `h`); the size of the elements at a point is then
+    min(h, s + (growth - 1) d) over the sizes s given, d being the distance
+    to the points of size s (`growth`: the rate at which the elements grow
+    away from them). Local sizes are given on parts of the domain (an edge,
+    a face, a region) by points sampled on them, about s apart.
     The mesher will try to optimize the quality of the elements. This
     operation may be time consuming. Note that if the mesh generation fails,
     because of some random procedure used, it can be run again since it will
@@ -596,7 +606,7 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
     can be obtained by `gf_util('trace level', 4)`. See ``MESHER_OBJECT:INIT``
     to manipulate geometric primitives in order to describe the geometry.@*/
   sub_command
-    ("generate", 2, 4, 0, 1,
+    ("generate", 2, 7, 0, 1,
      getfem::pmesher_signed_distance psd = to_mesher_object(in.pop());
      double h = in.pop().to_scalar();
      int K = 1;
@@ -612,7 +622,23 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      }
      int prefind = 1;
      int max_iter = 400;
-     getfem::build_mesh(*pmesh, psd, h, fixed, K, -1, max_iter, prefind);
+     if (in.remaining()) {
+       darray P = in.pop().to_darray(-1, -1);
+       darray s = in.pop().to_darray(int(P.getn()));
+       double growth = 1.3;
+       if (in.remaining()) growth = in.pop().to_scalar(1.0);
+       getfem::mvf_point_sizes sizes(h, growth);
+       points_by_size by_size;
+       for (int j=0; j < int(P.getn()); j++) {
+         getfem::base_node pt(P.getm());
+         gmm::copy(P.col_to_bn(j), pt);
+         by_size[s[j]].push_back(pt);
+       }
+       for (const auto &e : by_size) sizes.add(e.second, e.first);
+       getfem::build_mesh(*pmesh, psd, h, sizes, fixed, K, -1, max_iter,
+                          prefind);
+     } else
+       getfem::build_mesh(*pmesh, psd, h, fixed, K, -1, max_iter, prefind);
      );
 
 } // build_sub_command_table
