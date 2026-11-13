@@ -169,6 +169,28 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      );
 
 
+  /*@INIT MF = ('ellipsoid', @vec center, @vec radii[, @mat axes])
+    Represents an ellipsoid in 3D of semi-axes `radii` (3 values), along
+    the x, y and z axes, or along the columns of the 3 x 3 matrix `axes`
+    (orthonormalized).@*/
+  sub_command
+    ("ellipsoid", 2, 3, 0, 1,
+     darray c = in.pop().to_darray(3);
+     darray r = in.pop().to_darray(3);
+     getfem::base_matrix A(3, 3);
+     if (in.remaining()) {
+       darray a = in.pop().to_darray(3, 3);
+       for (unsigned i = 0; i < 3; ++i)
+         for (unsigned j = 0; j < 3; ++j) A(i, j) = a(i, j);
+     } else {
+       for (unsigned i = 0; i < 3; ++i) A(i, i) = 1.;
+     }
+     psd = getfem::new_mesher_ellipsoid(getfem::base_node(c[0], c[1], c[2]),
+                                        getfem::base_small_vector(r[0], r[1], r[2]),
+                                        A);
+     );
+
+
   /*@INIT MF = ('polygon', @mat vertices[, @mat controls])
     Represents a simple polygon in 2D (not necessarily convex), the columns
     of `vertices` (2 x n) being its vertices, in either order. With

@@ -40,7 +40,8 @@ perimeter = gf.asm('generic', mim, 0, '1', 1)
 
 def ellipse_perimeter(a, b):
   t = np.linspace(0, 2*np.pi, 200001)
-  return np.trapezoid(np.hypot(a*np.sin(t), b*np.cos(t)), t)
+  trapezoid = getattr(np, "trapezoid", None) or np.trapz    # (NumPy < 2: trapz)
+  return trapezoid(np.hypot(a*np.sin(t), b*np.cos(t)), t)
 
 
 exact_area = np.pi*(a*b - 0.2*0.3)
