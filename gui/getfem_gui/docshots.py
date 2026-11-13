@@ -233,6 +233,14 @@ def constraints(win):
     win._changed(select=poly + ("constraints", 3))
 
 
+def dimensions(win):
+    """The constrained polygon with its dimensions shown: the base imposed,
+    the other sides measured."""
+    constraints(win)
+    win.select(E.constraint_owner(win.current_path()))
+    win.viewer.dims_button.setChecked(True)
+
+
 def array_3d(win):
     """The hole of the block copied in a linear array: its selection holds
     the three holes."""
@@ -255,6 +263,7 @@ SHOTS = {
     "work_plane.png": ("block_with_hole_3d.json", work_plane),
     "work_plane_3d.png": ("block_with_hole_3d.json", work_plane_3d),
     "constraints.png": ("plate_with_hole.json", constraints),
+    "dimensions.png": ("plate_with_hole.json", dimensions),
     "array_3d.png": ("block_with_hole_3d.json", array_3d),
     "surface.png": ("heated_dish.json", surface),
     "mesh_layers.png": ("heat_sink_3d.json", mesh_layers),

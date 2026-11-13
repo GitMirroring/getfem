@@ -247,6 +247,93 @@ def test_window():
             win.close()
 
 
+def test_dimensions():
+    """The dimensions of a polygon: the lengths of its straight sides (in
+    parentheses when not imposed) and the radii of its fillets; edited: a
+    length constraint added, changed or removed, a radius changed; refused
+    (the model unchanged) when the polygon cannot take it."""
+    m = model_with({"type": "polygon", "points": QUAD, "fillets": [{"vertex": 3, "radius": 0.1}],
+                    "constraints": [{"type": "horizontal", "side": 1}]})
+    dims = E.polygon_dimensions(m, ROOT)
+    assert [(d["kind"], d["k"], d["imposed"]) for d in dims] == \
+        [("side", 1, False), ("side", 2, False), ("side", 3, False), ("side", 4, False), ("fillet", 3, True)]
+    side1, arc = dims[0], dims[4]
+    assert side1["text"].startswith("(") and np.allclose(side1["normal"], [0, -1], atol=1e-6)   # out of it
+    assert arc["text"] == "R 0.1" and arc["edit"] == "0.1"
+    assert E.set_dimension(m, ROOT, "side", 1, "2*a") == "length of side 1: 2*a"
+    pts = resolved_points(m)
+    assert abs(np.linalg.norm(pts[1] - pts[0]) - 1.0) < 1e-8
+    d1 = E.polygon_dimensions(m, ROOT)[0]
+    assert d1["imposed"] and d1["text"] == "2*a = 1" and d1["edit"] == "2*a"
+    E.set_dimension(m, ROOT, "side", 1, "0.8")                  # the same constraint changed
+    cons = E.get_at(m, ROOT)["constraints"]
+    assert [c for c in cons if c["type"] == "length"] == [{"type": "length", "side": 1, "value": 0.8}]
+    assert not any("L=" in t for _, t in E.constraint_marks(m, ROOT, lengths=False))
+    assert any("L=0.8" in t for _, t in E.constraint_marks(m, ROOT))
+    E.set_dimension(m, ROOT, "fillet", 3, "0.15")
+    assert E.get_at(m, ROOT)["fillets"] == [{"vertex": 3, "radius": 0.15}]
+    before = copy.deepcopy(m)
+    for kind, k, text in (("fillet", 3, "5"), ("side", 2, "-1"), ("side", 2, "x y"), ("fillet", 3, "")):
+        try:
+            E.set_dimension(m, ROOT, kind, k, text)
+            raise AssertionError(f"{kind} {k} {text!r} accepted")
+        except ValueError:
+            assert m == before
+    assert E.set_dimension(m, ROOT, "side", 1, "") == "side 1: its length free"
+    assert E.get_at(m, ROOT)["constraints"] == [{"type": "horizontal", "side": 1}]
+    assert E.set_dimension(m, ROOT, "side", 2, " ") == ""       # nothing to remove
+
+
+def test_window_dimensions():
+    """The Dimensions button: the dimensions of the selected polygon drawn;
+    a label double-clicked: a field over it, Enter imposes the length."""
+    import os
+    import shutil
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM="offscreen", GETFEM_GUI_NO_3D="", GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "m.json"
+        M.save(model_with({"type": "polygon", "points": QUAD}), path)
+        win = MainWindow(shutil.copy(path, tmp + "/sketch.json"))
+        try:
+            v = win.viewer
+            if v.plotter is None:
+                return
+            win.select(ROOT)
+            assert not any(k.startswith("dimension") for k in v.plotter.actors)
+            v.dims_button.setChecked(True)
+            assert "dimension_labels-labels" in v.plotter.actors and len(v._dim_labels) == 4
+            pos, d = v._dim_labels[0]
+            assert v.dimension_at(pos) == 0 and v.dimension_at([10.0, 10.0]) is None
+            ed = v.edit_dimension(0)
+            assert ed.text() == d["edit"] and v._dim_editor is not None
+            ed.setText("2*a")
+            ed.returnPressed.emit()
+            assert v._dim_editor is None
+            assert E.get_at(win.model, ROOT)["constraints"] == [{"type": "length", "side": 1, "value": "2*a"}]
+            assert win.state.text() == "Dimension: length of side 1: 2*a"
+            assert "dimension_labels_imposed-labels" in v.plotter.actors
+            assert [d["text"] for _, d in v._dim_labels][0] == "2*a = 1"
+            v.edit_dimension(1).setText("-2")                     # refused: the model unchanged
+            v._dim_editor[0].returnPressed.emit()
+            assert win.state.text().startswith("Not applied") and len(E.get_at(win.model, ROOT)["constraints"]) == 1
+            v.edit_dimension(0)
+            v._escape()                                           # cancelled
+            assert v._dim_editor is None and len(win._undo) == 1
+            win.undo()
+            assert "constraints" not in E.get_at(win.model, ROOT)
+            v.dims_button.setChecked(False)
+            assert not any(k.startswith("dimension") for k in v.plotter.actors)
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

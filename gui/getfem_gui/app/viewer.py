@@ -157,16 +157,22 @@ class ClickFilter(QObject):
     PyVista then listens to them on the interactor style, which is replaced
     whenever the interaction style changes (2D / 3D)."""
 
-    def __init__(self, callback, parent=None, draw=None, other=None):
+    def __init__(self, callback, parent=None, draw=None, other=None, double=None):
         super().__init__(parent)
         self.callback = callback          # callback(widget, x, y), Qt logical coordinates
         self.draw = draw                  # object with active(), press/move/release(widget, x, y)
         self.other = other                # other(widget, x, y, button): middle and right clicks
+        self.double = double              # double(widget, x, y): a left double click, True if taken
         self._press = None
         self._other_press = {}            # button: position (a click of the middle or right button)
 
     def eventFilter(self, obj, ev):
         t = ev.type()
+        if t == QEvent.Type.MouseButtonDblClick and self.double is not None \
+                and ev.button() == Qt.MouseButton.LeftButton \
+                and self.double(obj, ev.position().x(), ev.position().y()):
+            self._press = None
+            return True
         if self.draw is not None and t in (
                 QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
             # drawing a shape or dragging a handle: the events are taken here (the
@@ -220,6 +226,8 @@ class Viewer(QWidget):
     handleClicked = Signal(str)           # a handle clicked (pressed and released without moving)
     fieldEdgesToggled = Signal(bool)      # the Edges button on a result field: its setting
     exportRequested = Signal()            # the Export button: the window asks where
+    dimensionEdited = Signal(str, int, str)   # a dimension of the polygon edited: kind, side or vertex, text
+    dimensionsToggled = Signal(bool)      # the Dimensions button of the drawing bar
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -399,6 +407,7 @@ class Viewer(QWidget):
             from . import scene as _s
             _s.show_handles(self.plotter, [p for _, p in self._handles], minor=self._minor_handles())
             _s.show_marks(self.plotter, getattr(self, "_marks", []))
+            self._draw_dimensions()
         self.plotter.render()
 
     def show_geometry_3d(self, shape: dict, highlighted=None, part=None, status: str = "",
@@ -490,7 +499,8 @@ class Viewer(QWidget):
         if iren is None:              # off-screen plotter: see pick_world / hover_world
             return
         iren.add_observer("MouseMoveEvent", self._on_move)
-        self._click_filter = ClickFilter(self._on_click, self, draw=_DrawHooks(self), other=self._on_other_click)
+        self._click_filter = ClickFilter(self._on_click, self, draw=_DrawHooks(self), other=self._on_other_click,
+                                         double=self._on_double_click)
         self.view_widget.installEventFilter(self._click_filter)
 
     def _on_other_click(self, widget, x, y, button) -> None:
@@ -683,6 +693,17 @@ class Viewer(QWidget):
         self.snap_box.setToolTip("The drawn points and the dragged handles snap to the grid "
                                  "(unchecked: anywhere)")
         row.addWidget(self.snap_box)
+        self.dims_button = QToolButton()
+        self.dims_button.setText("Dimensions")
+        self.dims_button.setObjectName("draw:dimensions")
+        self.dims_button.setCheckable(True)
+        self.dims_button.setToolTip("The dimensions of the selected polygon: the lengths of its sides, the radii "
+                                    "of its fillets (in parentheses: not imposed). Double-click one to edit "
+                                    "it: a number or an expression of parameters, imposed as a constraint "
+                                    "(empty: the side free again)")
+        self.dims_button.toggled.connect(self._dimensions_toggled)
+        row.addWidget(self.dims_button)
+        self._dims, self._dim_labels, self._dim_editor = [], [], None
         self._grid_fixed = None           # a step chosen by the user (None: it follows the zoom)
         self._grid_timer = QTimer(self)
         self._grid_timer.setSingleShot(True)
@@ -705,12 +726,15 @@ class Viewer(QWidget):
 
     # -------------------------------------------------------------- handles
 
-    def set_handles(self, handles, preview=None, marks=()) -> None:
+    def set_handles(self, handles, preview=None, marks=(), dimensions=()) -> None:
         """Handles [(name, position)] of the selected primitive; preview(name,
         point) gives the shape while a handle is dragged; marks [(position,
-        text)]: its constraints, drawn by its sides and vertices."""
+        text)]: its constraints, drawn by its sides and vertices; dimensions:
+        those of a polygon (editing.polygon_dimensions), drawn when the
+        Dimensions button is on."""
         self._handles, self._handle_preview, self._grabbed = list(handles), preview, None
         self._marks = list(marks)
+        self._dims = list(dimensions)
         if self.plotter is not None and self._tool is None:
             self._show_grid(self._grid_wanted())
         self._draw_handles()
@@ -720,9 +744,89 @@ class Viewer(QWidget):
             return
         from . import scene as _scene
         _scene.show_marks(self.plotter, getattr(self, "_marks", []))
+        self._draw_dimensions()
         from . import scene
         scene.show_handles(self.plotter, [p for _, p in self._handles], active, minor=self._minor_handles())
         self.plotter.render()
+
+    # -------------------------------------------------------------- dimensions
+
+    def dimensions_shown(self) -> bool:
+        return self.plotter is not None and self.dims_button.isChecked()
+
+    def _dimensions_toggled(self, on: bool) -> None:
+        self._dimension_done(False)
+        self.dimensionsToggled.emit(on)
+
+    def _draw_dimensions(self) -> None:
+        """The dimensions drawn again (their offsets and arrows are in pixels:
+        also after a zoom)."""
+        if self.plotter is None:
+            return
+        from . import scene
+        dims = self._dims if self.dims_button.isChecked() else []
+        self._dim_labels = scene.show_dimensions(self.plotter, dims, scene.pixel_size(self.plotter) if dims else 1.0)
+
+    def dimension_at(self, world) -> int | None:
+        """The dimension whose label is at a world point (an index in
+        _dim_labels), if any."""
+        if self.plotter is None or not self._dim_labels:
+            return None
+        from . import scene
+        px = scene.pixel_size(self.plotter)
+        best = None
+        for i, (p, d) in enumerate(self._dim_labels):
+            dx, dy = abs(world[0] - p[0]) / px, abs(world[1] - p[1]) / px
+            if dx <= 6 + 3.8 * len(d["text"]) and dy <= 11 and (best is None or dx + dy < best[0]):
+                best = (dx + dy, i)
+        return None if best is None else best[1]
+
+    def _on_double_click(self, widget, x, y) -> bool:
+        if self._tool is not None or not self.dimensions_shown():
+            return False
+        i = self.dimension_at(_DrawHooks(self)._world(widget, x, y))
+        if i is None:
+            return False
+        self.edit_dimension(i)
+        return True
+
+    def edit_dimension(self, i: int) -> QLineEdit:
+        """A field over the label of the dimension i (in _dim_labels): Enter
+        applies it (dimensionEdited), Escape or leaving it cancels."""
+        from . import scene
+        self._dimension_done(False)
+        pos, d = self._dim_labels[i]
+        ed = QLineEdit(self)
+        ed.setObjectName("dimension_editor")
+        ed.setText(d["edit"])
+        ed.selectAll()
+        ed.setToolTip("A number or an expression of parameters" + (", empty: the side free again"
+                                                                   if d["kind"] == "side" else "")
+                      + " (Enter: apply, Escape: cancel)")
+        ed.setFixedWidth(max(90, ed.fontMetrics().horizontalAdvance(d["edit"]) + 24))
+        x, y = scene.world_to_display(self.plotter, pos)
+        s = self.view_widget.devicePixelRatioF() or 1.0
+        at = self.view_widget.mapTo(self, QPoint(round(x / s), round(self.view_widget.height() - y / s)))
+        ed.move(at.x() - ed.width() // 2, at.y() - ed.sizeHint().height() // 2)
+        ed.returnPressed.connect(lambda: self._dimension_done(True))
+        ed.editingFinished.connect(lambda: self._dimension_done(False))
+        self._dim_editor = (ed, d)
+        ed.show()
+        ed.raise_()
+        ed.setFocus()
+        self.status_message(f"{'Length of side' if d['kind'] == 'side' else 'Radius of the fillet of vertex'} "
+                            f"{d['k']}: Enter applies (a constraint), Escape cancels")
+        return ed
+
+    def _dimension_done(self, apply: bool) -> None:
+        if self._dim_editor is None:
+            return
+        (ed, d), self._dim_editor = self._dim_editor, None
+        text = ed.text()
+        ed.hide()
+        ed.deleteLater()
+        if apply:
+            self.dimensionEdited.emit(d["kind"], d["k"], text)
 
     def _minor_handles(self) -> list[bool]:
         return [n[:1] == "m" and n[1:].isdigit() for n, _ in self._handles]
@@ -776,6 +880,9 @@ class Viewer(QWidget):
         self.draw_bar.setVisible(enabled and self.plotter is not None)
 
     def _escape(self) -> None:
+        if self._dim_editor is not None:
+            self._dimension_done(False)
+            return
         self.stop_drawing()
         self.escaped.emit()
 
@@ -906,6 +1013,8 @@ class Viewer(QWidget):
         """The grid and the axes again (after a zoom or a pan)."""
         if self.plotter is None:
             return
+        if self._dims and self.dims_button.isChecked():
+            self._draw_dimensions()
         if self._grid_wanted():
             self._show_grid(True)
         elif self._last and self._last[0] == "geometry":

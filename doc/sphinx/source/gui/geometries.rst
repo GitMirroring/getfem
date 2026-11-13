@@ -260,6 +260,22 @@ split by a new vertex (or two sides merged by the removal of a vertex) loses
 its constraints; contradictory constraints are reported as an error of the
 polygon.
 
+.. image:: images/dimensions.png
+   :width: 100%
+   :alt: The dimensions of the constrained polygon: its base of length 0.4 imposed, the other sides measured
+
+*Dimensions* (in the drawing bar) shows the dimensions of the selected
+polygon, as in a CAD sketch: the length of each straight side, from vertex
+to vertex (where the sides meet without their fillets), and the radius of
+each fillet. A length in parentheses is only measured; the others are
+imposed by a constraint, in its color (with an expression of parameters:
+``2*a = 1``, the expression and its value). A double click on a dimension
+edits it in place: a number or an expression, then Enter (Escape cancels).
+The length of a side so given becomes its length constraint (added, or the
+one it has changed), and the vertices move for it to hold; emptied, the
+constraint is removed. A fillet gets the radius. A value that the polygon
+cannot take (contradictory constraints, a fillet too large) is refused.
+
 .. _gui-geometries-building:
 
 Building the tree

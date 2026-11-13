@@ -128,6 +128,8 @@ class MainWindow(QMainWindow):
         self.viewer.escaped.connect(self._cancel_plane_pick)
         self.viewer.handleMoved.connect(self._handle_moved)
         self.viewer.handleAction.connect(self._handle_action)
+        self.viewer.dimensionEdited.connect(self._dimension_edited)
+        self.viewer.dimensionsToggled.connect(lambda _on: self.update_view())
         self.viewer.handle_menu = lambda name: E.handle_actions(
             self.model, E.constraint_owner(self.current_path()) or self.current_path(), name)
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -914,6 +916,29 @@ class MainWindow(QMainWindow):
         self._update_undo()
         self._changed(select=new_path if new_path is not None else path)
 
+    def _dimension_edited(self, kind: str, k: int, text: str) -> None:
+        """A dimension of the polygon edited in the view: imposed as a
+        constraint (a side), or the radius of its fillet."""
+        path = E.constraint_owner(self.current_path()) or self.current_path()
+        before = copy.deepcopy(self.model)
+        try:
+            done = E.set_dimension(self.model, path, kind, k, text)
+        except (ValueError, KeyError, TypeError) as exc:
+            self.model = before
+            self.state.setText(f"Not applied: {exc}")
+            self.update_view()
+            return
+        if self.model == before:
+            self.update_view()
+            return
+        self._undo.append(before)
+        del self._undo[:-UNDO_LIMIT]
+        self._redo.clear()
+        self._update_undo()
+        current = self.current_path()           # a constraint selected: still there unless one was removed
+        self._changed(select=current if text.strip() or current == path else path)
+        self.state.setText(f"Dimension: {done}")
+
     def _handle_moved(self, name: str, point):
         path = E.constraint_owner(self.current_path()) or self.current_path()
         before = copy.deepcopy(self.model)
@@ -1229,8 +1254,10 @@ class MainWindow(QMainWindow):
                 self.viewer.show_geometry(shape, pieces, highlighted, domain, status=title,
                                           pickable=pickable, key=title.split(" — ")[0].split(":")[0],
                                           reference=reference, context=context)
+                dims = self.viewer.dimensions_shown()
                 self.viewer.set_handles(handles, lambda name, point, p=spath: self._handle_preview(p, name, point),
-                                        marks=E.constraint_marks(self.model, path))
+                                        marks=E.constraint_marks(self.model, path, lengths=not dims),
+                                        dimensions=E.polygon_dimensions(self.model, spath) if dims else ())
                 if E.polygon_to_enter(self.model, path):
                     self.viewer.enter_polygon()
             except Exception as exc:  # noqa: BLE001

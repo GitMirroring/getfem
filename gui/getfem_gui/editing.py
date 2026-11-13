@@ -3524,10 +3524,11 @@ def _remap_constraints(model: dict, path: Path, side, vertex) -> None:
         other["constraints"] = out
 
 
-def constraint_marks(model: dict, path: Path) -> list[tuple[list[float], str]]:
+def constraint_marks(model: dict, path: Path, lengths: bool = True) -> list[tuple[list[float], str]]:
     """The marks of the constraints of the polygon at path (or of the
     polygon of the constraint at path), where its sides and vertices are
-    drawn: (position, text)."""
+    drawn: (position, text); lengths: also those of the lengths of sides
+    (not when the dimensions are shown: they give them)."""
     poly = constraint_owner(path) or path
     shape = get_at(model, poly)
     if not isinstance(shape, dict) or shape.get("type") != "polygon" or not shape.get("constraints"):
@@ -3545,6 +3546,8 @@ def constraint_marks(model: dict, path: Path) -> list[tuple[list[float], str]]:
         if SK.check(rc, n) is not None:
             continue
         t = c["type"]
+        if t == "length" and not lengths:
+            continue
         text = SK.SYMBOLS.get(t, "")
         if t == "length":
             text = f"L={format_value(c['value'])}"
@@ -3558,6 +3561,133 @@ def constraint_marks(model: dict, path: Path) -> list[tuple[list[float], str]]:
                 pos = V[k - 1] + 0.15 * size * d / (np.linalg.norm(d) or 1.0)
             out.setdefault((kind, k, tuple(pos)), []).append(text)
     return [(list(pos), " ".join(texts)) for (_, _, pos), texts in out.items()]
+
+
+# ------------------------------------------------------------------ dimensions of polygons
+
+def _dimension_text(given, measured: float, prefix: str = "") -> tuple[str, str]:
+    """The label of an imposed dimension and the text to edit: its value,
+    or its expression with what it gives."""
+    if isinstance(given, str):
+        return f"{prefix}{given} = {measured:.4g}", given
+    return f"{prefix}{format_value(given)}", format_value(given)
+
+
+def polygon_dimensions(model: dict, path: Path) -> list[dict]:
+    """The dimensions of the polygon at path (or of the polygon of the
+    constraint at path), as in a CAD sketch: the length of each straight
+    side, from vertex to vertex (where the sides would meet without their
+    fillets), and the radius of each fillet. Where the transforms above the
+    polygon put it, for the view: [{"kind": "side" | "fillet", "k": the
+    side or the vertex (1-based), "a", "b": the ends of the side, or the
+    middle of the arc and its corner, "normal": out of the polygon (a side),
+    "text": the label, "edit": the text to edit, "imposed": given by a
+    constraint (a fillet: always)}]. A side without length constraint shows
+    its length in parentheses (a reference dimension)."""
+    poly = constraint_owner(path) or path
+    shape = get_at(model, poly)
+    if not isinstance(shape, dict) or shape.get("type") != "polygon" or len(shape.get("points") or []) < 3:
+        return []
+    V = _resolved_points(model, poly)
+    if V is None or V.ndim != 2 or len(V) < 3:
+        return []
+    A, b = handle_frame(model, poly)
+    W = V @ A.T + b
+    n = len(V)
+    area = float(np.sum(W[:, 0] * np.roll(W[:, 1], -1) - np.roll(W[:, 0], -1) * W[:, 1]))
+    sign = 1.0 if area >= 0 else -1.0               # counterclockwise: the outer normal on the right
+    given = {}
+    for c in shape.get("constraints") or []:
+        if isinstance(c, dict) and c.get("type") == "length" and isinstance(c.get("side"), int):
+            given.setdefault(c["side"], c.get("value"))
+    curved = spline_sides(model, poly)
+    out = []
+    for i in range(n):
+        if i + 1 in curved:
+            continue
+        a, e = W[i], W[(i + 1) % n]
+        d = e - a
+        ld = float(np.linalg.norm(d))
+        if ld == 0:
+            continue
+        L = float(np.linalg.norm(V[(i + 1) % n] - V[i]))
+        if i + 1 in given:
+            text, edit = _dimension_text(given[i + 1], L)
+        else:
+            text, edit = f"({L:.4g})", f"{L:.4g}"
+        out.append({"kind": "side", "k": i + 1, "a": a.tolist(), "b": e.tolist(),
+                    "normal": (sign * np.array([d[1], -d[0]]) / ld).tolist(), "text": text, "edit": edit,
+                    "imposed": i + 1 in given})
+    arcs = {name: q for name, q in shape_handles(model, poly) if re.fullmatch(r"f\d+", name)}
+    resolved = {f.get("vertex"): f.get("radius") for f in (get_at(P.resolved(model), poly) or {}).get("fillets") or []
+                if isinstance(f, dict)}
+    for f in shape.get("fillets") or []:
+        k = f.get("vertex") if isinstance(f, dict) else None
+        if f"f{k}" not in arcs or not isinstance(resolved.get(k), (int, float)):
+            continue
+        text, edit = _dimension_text(f.get("radius"), float(resolved[k]), "R ")
+        out.append({"kind": "fillet", "k": k, "a": list(arcs[f"f{k}"]), "b": W[k - 1].tolist(), "normal": None,
+                    "text": text, "edit": edit, "imposed": True})
+    return out
+
+
+def set_dimension(model: dict, path: Path, kind: str, k: int, text: str) -> str:
+    """A dimension of the polygon at path (or of the polygon of the
+    constraint at path) edited: text is a number or an expression of
+    parameters. A side: its length constraint, added or changed (empty
+    text: removed, the side free again); the vertices move for it to hold.
+    A fillet: its radius. What was done (empty: nothing); raises ValueError,
+    the model unchanged, when the polygon cannot take it."""
+    from . import geometry2d as G
+    poly = constraint_owner(path) or path
+    shape = get_at(model, poly)
+    before = copy.deepcopy(shape)
+    errors0 = set(P.resolve(model)[1])
+    text = text.strip()
+    value = parse_value(text) if text else None
+    if isinstance(value, bool) or (isinstance(value, (int, float)) and not value > 0):
+        raise ValueError(f"{'a length' if kind == 'side' else 'a radius'} must be positive")
+    if kind == "side":
+        cons = shape.get("constraints") or []
+        idx = [j for j, c in enumerate(cons) if isinstance(c, dict) and c.get("type") == "length"
+               and c.get("side") == k]
+        if value is None:
+            if not idx:
+                return ""
+            cons = [c for j, c in enumerate(cons) if j not in idx]
+            if cons:
+                shape["constraints"] = cons
+            else:
+                shape.pop("constraints", None)
+            done = f"side {k}: its length free"
+        else:
+            if idx:
+                cons[idx[0]]["value"] = value
+                cons = [c for j, c in enumerate(cons) if j not in idx[1:]]
+            else:
+                cons.append({"type": "length", "side": k, "value": value})
+            shape["constraints"] = cons
+            done = f"length of side {k}: {text}"
+    elif kind == "fillet":
+        f = next((f for f in shape.get("fillets") or [] if isinstance(f, dict) and f.get("vertex") == k), None)
+        if f is None:
+            raise ValueError(f"vertex {k} has no fillet")
+        if value is None:
+            raise ValueError("a radius is needed (the menu of the arc removes the fillet)")
+        f["radius"] = value
+        done = f"radius of the fillet of vertex {k}: {text}"
+    else:
+        raise ValueError(f"unknown dimension {kind!r}")
+    resolved, errors = P.resolve(model)
+    new = [e for e in errors if e not in errors0]
+    problem = new[0] if new else None
+    if problem is None and kind == "fillet":
+        problem = G.fillet_problem(get_at(resolved, poly))
+    if problem:
+        shape.clear()
+        shape.update(before)
+        raise ValueError(problem.split(": ", 1)[-1] if new else problem)
+    return done
 
 
 # ------------------------------------------------------------------ handles of 2D primitives

@@ -1381,6 +1381,84 @@ def show_marks(plotter, marks) -> None:
                              always_visible=True, name="marks")
 
 
+DIMENSION_COLORS = {False: "#4f5b66", True: "#8a3b12"}    # reference dimensions, imposed ones (constraints)
+DIMENSION_NAMES = ("dimension_lines", "dimension_arrows", "dimension_labels")
+
+
+def dimension_geometry(dims, px: float):
+    """Where the dimensions of a polygon (editing.polygon_dimensions) are
+    drawn, px the world length of a pixel: ({imposed: segments [[p, q]]},
+    {imposed: triangles of the arrows [[p, q, r]]}, [(label position, dim)]).
+    A side: a dimension line beside it, out of the polygon, its extension
+    lines and two arrows, the label in its middle; a fillet: a leader from
+    the middle of its arc, toward its corner."""
+    segs, tris, labels = {False: [], True: []}, {False: [], True: []}, []
+    head, half = 8 * px, 2.5 * px
+    for d in dims:
+        imp = bool(d["imposed"])
+        a, b = np.asarray(d["a"], float), np.asarray(d["b"], float)
+        if d["kind"] == "side":
+            nrm = np.asarray(d["normal"], float)
+            off = 22 * px
+            pa, pb = a + off * nrm, b + off * nrm
+            segs[imp] += [[a + 3 * px * nrm, a + (off + 4 * px) * nrm], [b + 3 * px * nrm, b + (off + 4 * px) * nrm],
+                          [pa, pb]]
+            u = (pb - pa) / (np.linalg.norm(pb - pa) or 1.0)
+            for tip, w in ((pa, u), (pb, -u)):        # the arrows point to the extension lines
+                tris[imp].append([tip, tip + head * w + half * nrm, tip + head * w - half * nrm])
+            labels.append(((pa + pb) / 2, d))
+        else:
+            u = b - a
+            u = u / (np.linalg.norm(u) or 1.0)
+            v = np.array([-u[1], u[0]])
+            end = a + 30 * px * u
+            segs[imp].append([a, end])
+            tris[imp].append([a, a + head * u + half * v, a + head * u - half * v])
+            labels.append((a + 40 * px * u, d))
+    return segs, tris, labels
+
+
+def show_dimensions(plotter, dims, px: float) -> list:
+    """The dimensions of the selected polygon (empty: remove), the imposed
+    ones in the color of the constraints; returns where their labels are
+    [(position, dim)] (a double click on one edits it)."""
+    for name in DIMENSION_NAMES:
+        for imp in (False, True):
+            plotter.remove_actor(f"{name}{'_imposed' if imp else ''}")
+    if not dims:
+        return []
+    segs, tris, labels = dimension_geometry(dims, px)
+    z = lambda q: [q[0], q[1], 0.0]            # noqa: E731
+    for imp in (False, True):
+        suffix, color = "_imposed" if imp else "", DIMENSION_COLORS[imp]
+        if segs[imp]:
+            pts = np.array([z(q) for s in segs[imp] for q in s], float)
+            cells = np.hstack([[2, 2 * i, 2 * i + 1] for i in range(len(segs[imp]))])
+            plotter.add_mesh(pv.PolyData(pts, lines=cells), color=color, line_width=1.2, lighting=False,
+                             name="dimension_lines" + suffix, pickable=False)
+        if tris[imp]:
+            pts = np.array([z(q) for t in tris[imp] for q in t], float)
+            faces = np.hstack([[3, 3 * i, 3 * i + 1, 3 * i + 2] for i in range(len(tris[imp]))])
+            plotter.add_mesh(pv.PolyData(pts, faces=faces), color=color, lighting=False,
+                             name="dimension_arrows" + suffix, pickable=False)
+        own = [(p, d) for p, d in labels if bool(d["imposed"]) == imp]
+        if own:
+            plotter.add_point_labels(np.array([z(p) for p, _ in own], float), [d["text"] for _, d in own],
+                                     font_size=12, text_color=color, shape="rounded_rect", shape_color="#ffffff",
+                                     shape_opacity=0.85, point_size=1, show_points=False, always_visible=True,
+                                     name="dimension_labels" + suffix, pickable=False)
+    return labels
+
+
+def world_to_display(plotter, point) -> tuple[float, float]:
+    """Display pixel (origin at the bottom) of a world point of the z = 0 plane."""
+    ren = plotter.renderer
+    ren.SetWorldPoint(float(point[0]), float(point[1]), 0.0, 1.0)
+    ren.WorldToDisplay()
+    x, y, _ = ren.GetDisplayPoint()
+    return x, y
+
+
 def move_active_handle(plotter, point) -> None:
     """The grabbed handle drawn where the mouse is (while it is dragged)."""
     plotter.add_mesh(pv.PolyData(np.array([[float(point[0]), float(point[1]), 0.0]])), color=HOVER,
