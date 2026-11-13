@@ -1235,6 +1235,7 @@ class Viewer(QWidget):
         view.pop("edges", None)
         self.status.setText(status)
         self._last = ("field", result_file, name, component, warp, scale, status, view)
+        self._show_quality_controls(False)       # (for a mesh only)
         self._snap_points = None
         self._pieces, self._regions_of = [], None
         self._faces = None

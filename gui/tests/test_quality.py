@@ -158,6 +158,15 @@ def test_viewer():
             assert "quality_worst" in v.plotter.actors
             v.show_message("nothing")
             assert v.quality_button.isHidden() and v.quality_box.isHidden()
+            v.show_mesh(f3, status="Mesh m3")
+            assert not v.quality_button.isHidden()
+            import pyvista as pv
+            field = Path(tmp) / "field.vtu"                       # a result field: no quality controls
+            ds = pv.read(str(f2))
+            ds.point_data["u"] = ds.points[:, 0]
+            ds.save(str(field))
+            v.show_field(field, "u")
+            assert v.quality_button.isHidden() and v.quality_box.isHidden()
         finally:
             v.close_plotter()
 
