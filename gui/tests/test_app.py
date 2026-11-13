@@ -546,14 +546,16 @@ def test_add_a_geometry_from_its_menu():
 
 def test_constructive_geometry_from_nothing_in_the_window():
     """An empty 2D and 3D constructive geometry, an extrusion of an empty
-    profile: selected without error; shapes and booleans added."""
+    profile: their root (or profile) selected, to fill; shapes and booleans
+    added. An extrusion added in a 3D solid: its empty profile selected."""
     win = window("plate.json")
     for kind in ("csg2", "csg3", "extrusion"):
         win.select(("geometries",))
         win._panel_action(f"add_geometry:{kind}")
-        path = win.current_path()
-        win.select(path)
+        where = win.current_path()
+        path = where[:2]
         root = path + ("source", "shape")
+        assert where == (root + ("profile",) if kind == "extrusion" else root)
         win.select(root)
         assert any("empty union" in e for e in win.errors)
         if kind == "extrusion":
@@ -568,6 +570,14 @@ def test_constructive_geometry_from_nothing_in_the_window():
         win._panel_action("add_shape:ball")
         assert not [e for e in win.errors if e.startswith(f"geometries[{path[1]}]")], win.errors
         win.select(path)
+        if kind == "csg3":
+            win.select(root)
+            win._panel_action("add_shape:revolution")
+            new = win.current_path()
+            assert new[-1] == "profile" and E.get_at(win.model, new) == E.EMPTY_SHAPE
+            win.select(root)
+            E.get_at(win.model, root)["of"].pop()               # (back to the box and the difference)
+            win._changed(select=root)
     close(win)
 
 

@@ -266,7 +266,11 @@ Building the tree
 ^^^^^^^^^^^^^^^^^
 
 A new constructive geometry starts from nothing: its root is an empty union
-(*Union (empty: add shapes)* in the tree, an error until a shape is added).
+(*Union (empty: add shapes)* in the tree, an error until a shape is added),
+selected at once to add shapes. A new extrusion or revolution, as a
+geometry or added in a 3D geometry, starts with an empty profile, selected
+at once to draw it in the 2D view (an added extrusion spans the heights of
+the rest of the geometry).
 The actions of a shape node (right click, the **+** button, or the buttons
 of its form) build the tree:
 

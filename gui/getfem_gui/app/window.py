@@ -1433,8 +1433,7 @@ class MainWindow(QMainWindow):
             self.model = before
             QMessageBox.warning(self, APP_NAME, str(exc))
             return
-        if ident in ("add_geometry:extrusion", "add_geometry:revolution") and new_path is not None:
-            new_path = tuple(new_path) + ("source", "shape", "profile")   # its profile, to draw (2D view)
+        new_path = E.selected_after(ident, new_path)   # (a new union, a new profile: there, to fill)
         self._undo.append(before)
         self._redo.clear()
         self._update_undo()

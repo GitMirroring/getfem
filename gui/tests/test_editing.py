@@ -70,8 +70,9 @@ def test_every_action_keeps_a_valid_model():
                 errors = M.validate(model)
                 if action.startswith(("add_model:", "add_module:")):   # new: conditions to be set
                     errors = [e for e in errors if "up to a constant" not in e and "rigid body" not in e]
-                if action in ("add_shape:union", "add_shape:intersection", "add_shape:difference"):
-                    # an empty boolean, to be filled
+                if action in ("add_shape:union", "add_shape:intersection", "add_shape:difference",
+                              "add_shape:extrusion", "add_shape:revolution"):
+                    # an empty boolean (or profile), to be filled
                     errors = [e for e in errors if ": add shapes to it" not in e]
                 if action == "add_shape:polygon":        # its vertices to enter
                     errors = [e for e in errors if "at least three vertices" not in e]
@@ -443,3 +444,28 @@ if __name__ == "__main__":
                 failed += 1
                 print(f"FAILED   {name}: {exc!r}")
     sys.exit(1 if failed else 0)
+
+
+def test_new_geometries_and_sweeps_start_empty():
+    """A new constructive geometry: its root (an empty union) is where one
+    goes, to add shapes; a new extrusion or revolution, as a geometry or in
+    one, has an empty profile, where one goes to draw it (the extrusion
+    between the heights of the rest of the geometry)."""
+    m = M.default_model()
+    for kind, where in (("csg2", ("source", "shape")), ("csg3", ("source", "shape")),
+                        ("extrusion", ("source", "shape", "profile")),
+                        ("revolution", ("source", "shape", "profile"))):
+        g = E.do_action(m, ("geometries",), "add_geometry:" + kind)
+        assert E.selected_after("add_geometry:" + kind, g) == tuple(g) + where
+        assert E.get_at(m, tuple(g) + where) == E.EMPTY_SHAPE
+    gi = len(m["geometries"]) - 4                     # the 3D solid
+    root = ("geometries", gi + 1, "source", "shape")
+    E.do_action(m, root, "add_shape:rectangle")        # a box
+    m["geometries"][gi + 1]["source"]["shape"]["of"][0].update(min=[0, 0, -1], max=[2, 2, 3])
+    for t in ("extrusion", "revolution"):
+        p = E.do_action(m, root, "add_shape:" + t)
+        assert E.selected_after("add_shape:" + t, p) == tuple(p) + ("profile",)
+        new = E.get_at(m, p)
+        assert new["type"] == t and new["profile"] == E.EMPTY_SHAPE
+    assert E.get_at(m, root)["of"][1]["z"] == [-1.0, 3.0]              # the heights of the box
+    assert E.selected_after("add_shape:rectangle", ("x",)) == ("x",)

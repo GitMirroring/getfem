@@ -1481,6 +1481,39 @@ def vertex_rows(model: dict, path: Path) -> list[tuple]:
     return out
 
 
+def _swept_in_geometry(model: dict, gi: int, t: str) -> dict:
+    """A new extrusion or revolution in a 3D geometry: an empty profile, to
+    draw; an extrusion between the heights of the rest of the geometry
+    (from 0 to 0.5 when there is none)."""
+    from . import geometry3d as G3
+    shape = _default_shape(t, 3)
+    shape["profile"] = copy.deepcopy(EMPTY_SHAPE)
+    if t == "extrusion":
+        try:
+            lo, hi = G3.bounds(G3.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+            if np.all(np.isfinite([lo[2], hi[2]])) and hi[2] > lo[2]:
+                shape["z"] = [float(lo[2]), float(hi[2])]
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+            pass
+    return shape
+
+
+def selected_after(action: str, new_path) -> tuple | None:
+    """Where to go after an action of creation: in a new constructive
+    geometry, on its root (an empty union, to add shapes), or on the profile
+    of a new extrusion or revolution (the 2D view, to draw it)."""
+    if new_path is None:
+        return None
+    new_path = tuple(new_path)
+    if action in ("add_geometry:csg2", "add_geometry:csg3"):
+        return new_path + ("source", "shape")
+    if action in ("add_geometry:extrusion", "add_geometry:revolution"):
+        return new_path + ("source", "shape", "profile")
+    if action in ("add_shape:extrusion", "add_shape:revolution"):
+        return new_path + ("profile",)
+    return new_path
+
+
 def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
     """A new primitive for a 2D geometry: in its middle, at its scale (the
     default shape otherwise)."""
@@ -2444,6 +2477,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
             new = {"type": t, "of": []}
         elif t == "polygon":                 # empty: its vertices clicked in the view, or typed
             new = {"type": "polygon", "points": []}
+        elif t in M.SHAPES_SWEPT and "profile" not in path[4:]:   # its profile from nothing
+            new = _swept_in_geometry(model, path[1], t)
         else:
             new = _shape_in_profile(model, path, t) if "profile" in path[4:] \
                 else _shape_in_geometry(model, path[1], t)
