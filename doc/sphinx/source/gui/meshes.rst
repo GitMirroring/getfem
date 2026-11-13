@@ -48,6 +48,9 @@ each face of an element is drawn in 4\ :sup:`n` triangles and each edge in
 interpolation, *n* being set by *Curved* in the bar of the view (shown for
 such meshes; 2 by default, 0: straight elements through their corners).
 The selections of a curved mesh are drawn refined as well.
+The geometric order 3 (``getfem`` and ``gmsh`` meshers) follows the curved
+boundaries more closely still; its elements are drawn by the same
+quadratic interpolation.
 
 Quadrangles and hexahedra
 -------------------------

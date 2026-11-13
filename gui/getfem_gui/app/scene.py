@@ -46,8 +46,40 @@ def read(path: str | Path) -> pv.DataSet:
     if key not in _cache:
         for k in [k for k in _cache if k[0] == key[0]]:
             del _cache[k]
-        _cache[key] = pv.read(str(path))
+        _cache[key] = oriented(pv.read(str(path)))
     return _cache[key]
+
+
+# a quadratic tetrahedron turned over: the corners 1 and 2 exchanged, with the middle nodes
+_TETRA10_FLIP = np.array([0, 2, 1, 3, 6, 5, 4, 7, 9, 8])
+
+
+def oriented(ds: pv.DataSet) -> pv.DataSet:
+    """The quadratic tetrahedra of ds turned positively (in place): VTK's
+    surface filter takes the faces of those turned over for boundary faces
+    (the inner faces were drawn, the edges missing); GetFEM's structured
+    meshes, for one, have tetrahedra of both orientations."""
+    if not isinstance(ds, pv.UnstructuredGrid) or not ds.n_cells:
+        return ds
+    types = np.asarray(ds.celltypes)
+    quad_tets = np.flatnonzero(types == 24)
+    if not len(quad_tets):
+        return ds
+    from vtkmodules.util.numpy_support import vtk_to_numpy
+    cells = ds.GetCells()
+    off = vtk_to_numpy(cells.GetOffsetsArray())
+    conn = vtk_to_numpy(cells.GetConnectivityArray())       # (a view: changed in place)
+    rows = off[quad_tets][:, None] + np.arange(10)[None]
+    T = conn[rows]
+    X = np.asarray(ds.points, float)
+    det = np.einsum("ij,ij->i", np.cross(X[T[:, 1]] - X[T[:, 0]], X[T[:, 2]] - X[T[:, 0]]), X[T[:, 3]] - X[T[:, 0]])
+    bad = det < 0
+    if bad.any():
+        conn[rows[bad]] = T[bad][:, _TETRA10_FLIP]
+        cells.GetConnectivityArray().Modified()
+        cells.Modified()
+        ds.Modified()
+    return ds
 
 
 def is_planar(ds: pv.DataSet) -> bool:

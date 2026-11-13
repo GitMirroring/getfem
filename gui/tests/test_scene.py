@@ -583,3 +583,27 @@ def test_edges_of_the_faces_turned_to_the_camera():
     front = darkness()
     assert front > 1e5                                                # the edges drawn
     assert darkness((4, 400)) < 1.02 * front                          # and none of the back
+
+
+def test_quadratic_tetrahedra_turned_over():
+    """Quadratic tetrahedra of both orientations (as in GetFEM's structured
+    meshes, or a mesh of order 3 exported as quadratic cells): read turned
+    positively, the boundary of the ball then made of its outer faces only
+    (VTK's surface filter took the faces of the turned over ones for
+    boundary faces)."""
+    import tempfile
+    from getfem_gui.app import scene
+    ball = _quadratic_ball()
+    T = np.array(ball.cells_dict[24])
+    T[::2] = T[::2][:, scene._TETRA10_FLIP]                  # half of them turned over
+    flipped = pv.UnstructuredGrid(np.hstack([np.full((len(T), 1), 10), T]).ravel(),
+                                  np.full(len(T), 24, np.uint8), np.asarray(ball.points))
+    outer = ball.extract_surface(nonlinear_subdivision=0).n_cells
+    assert flipped.extract_surface(nonlinear_subdivision=0).n_cells > outer      # the defect of VTK
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "m.vtu"
+        flipped.save(f)
+        ds = scene.read(f)
+    X, C = np.asarray(ds.points), np.asarray(ds.cells_dict[24])
+    det = np.einsum("ij,ij->i", np.cross(X[C[:, 1]] - X[C[:, 0]], X[C[:, 2]] - X[C[:, 0]]), X[C[:, 3]] - X[C[:, 0]])
+    assert np.all(det > 0) and ds.extract_surface(nonlinear_subdivision=0).n_cells == outer
