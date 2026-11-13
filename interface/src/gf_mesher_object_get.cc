@@ -48,6 +48,35 @@ void gf_mesher_object_get(getfemint::mexargs_in& in,
    GMM_ASSERT1(false, "Sorry, function to be done");
    // std::string s = ...;
    // out.pop().from_string(s.c_str());
+  } else if (check_cmd(cmd, "distance", in, out, 1, 1, 0, 1)) {
+    /*@GET d = ('distance', @mat PTS)
+      The signed distance of the @tmo at the points `PTS` (one point per
+      column): negative inside, zero on its boundary (not exactly the
+      euclidean distance for every object, see the mesher).@*/
+    darray P = in.pop().to_darray(-1, -1);
+    darray d = out.pop().create_darray_h(unsigned(P.getn()));
+    getfem::base_node X(P.getm());
+    for (unsigned j = 0; j < P.getn(); ++j) {
+      gmm::copy(P.col_to_bn(j), X);
+      d[j] = (*paf)(X);
+    }
+  } else if (check_cmd(cmd, "project", in, out, 1, 1, 0, 1)) {
+    /*@GET Q = ('project', @mat PTS)
+      The points `PTS` (one point per column) projected on the boundary
+      of the @tmo (on its zero level, by Newton iterations along the
+      gradient of its signed distance), e.g. the new boundary nodes of a
+      refined mesh. A point already on it stays; a point whose projection
+      fails stays too.@*/
+    darray P = in.pop().to_darray(-1, -1);
+    darray Q = out.pop().create_darray(unsigned(P.getm()), unsigned(P.getn()));
+    getfem::base_node X(P.getm()), Y(P.getm());
+    for (unsigned j = 0; j < P.getn(); ++j) {
+      gmm::copy(P.col_to_bn(j), X);
+      gmm::copy(X, Y);
+      if (gmm::abs((*paf)(X)) > 1e-12 && !getfem::try_projection(*paf, Y, true))
+        gmm::copy(X, Y);
+      for (unsigned k = 0; k < P.getm(); ++k) Q(k, j) = Y[k];
+    }
   } else if (check_cmd(cmd, "display", in, out, 0, 0, 0, 0)) {
     /*@GET ('display')
       displays a short summary for a @tmo object.@*/
