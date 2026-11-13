@@ -212,6 +212,29 @@ class ClickFilter(QObject):
         return False                      # the view still receives the events (panning)
 
 
+class _DimensionEdit(QLineEdit):
+    """The field of a dimension edited in the view: it takes the keys that
+    are shortcuts of the view while drawing (Enter, Backspace, Escape),
+    which would otherwise go to the shortcuts and not to it. Escape cancels."""
+
+    def __init__(self, parent, cancel):
+        super().__init__(parent)
+        self._cancel = cancel
+
+    def event(self, ev):
+        if ev.type() == QEvent.Type.ShortcutOverride and ev.key() in (
+                Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Backspace, Qt.Key.Key_Escape):
+            ev.accept()
+            return True
+        return super().event(ev)
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Escape:
+            self._cancel()
+            return
+        super().keyPressEvent(ev)
+
+
 class Viewer(QWidget):
     edgeClicked = Signal(object)          # geometry2d.Piece clicked in a pickable preview
     regionClicked = Signal(object)        # region (geometry2d.region_at) clicked in the preview
@@ -796,7 +819,7 @@ class Viewer(QWidget):
         from . import scene
         self._dimension_done(False)
         pos, d = self._dim_labels[i]
-        ed = QLineEdit(self)
+        ed = _DimensionEdit(self, lambda: self._dimension_done(False))
         ed.setObjectName("dimension_editor")
         ed.setText(d["edit"])
         ed.selectAll()

@@ -312,8 +312,20 @@ def test_window_dimensions():
             assert v.dimension_at(pos) == 0 and v.dimension_at([10.0, 10.0]) is None
             ed = v.edit_dimension(0)
             assert ed.text() == d["edit"] and v._dim_editor is not None
-            ed.setText("2*a")
-            ed.returnPressed.emit()
+            ed.setText("2*b")
+            from PySide6.QtCore import QEvent, Qt
+            from PySide6.QtGui import QKeyEvent
+
+            def key(widget, k, t=QEvent.Type.KeyPress):
+                ev = QKeyEvent(t, k, Qt.KeyboardModifier.NoModifier, "a" if k == Qt.Key.Key_A else "")
+                QApplication.sendEvent(widget, ev)
+                return ev.isAccepted()
+            for k in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Backspace, Qt.Key.Key_Escape):
+                assert key(ed, k, QEvent.Type.ShortcutOverride)   # for the field, not for the shortcuts
+            key(ed, Qt.Key.Key_Backspace)                         # of the view (Enter, Backspace: the
+            key(ed, Qt.Key.Key_A)                                 # polygon being drawn)
+            assert ed.text() == "2*a"
+            key(ed, Qt.Key.Key_Return)
             assert v._dim_editor is None
             assert E.get_at(win.model, ROOT)["constraints"] == [{"type": "length", "side": 1, "value": "2*a"}]
             assert win.state.text() == "Dimension: length of side 1: 2*a"
@@ -322,8 +334,7 @@ def test_window_dimensions():
             v.edit_dimension(1).setText("-2")                     # refused: the model unchanged
             v._dim_editor[0].returnPressed.emit()
             assert win.state.text().startswith("Not applied") and len(E.get_at(win.model, ROOT)["constraints"]) == 1
-            v.edit_dimension(0)
-            v._escape()                                           # cancelled
+            key(v.edit_dimension(0), Qt.Key.Key_Escape)           # cancelled
             assert v._dim_editor is None and len(win._undo) == 1
             win.undo()
             assert "constraints" not in E.get_at(win.model, ROOT)
