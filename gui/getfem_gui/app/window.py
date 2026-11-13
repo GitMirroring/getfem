@@ -1769,16 +1769,17 @@ class MainWindow(QMainWindow):
         return True
 
     def export_view(self, path=None, mode: str | None = None, dpi: int | None = None) -> bool:
-        """Write the view as vector graphics (PDF, SVG, EPS) or as an image
-        (PNG, JPEG, TIFF, or PDF with the image): without path, the format,
-        the kind and the density chosen in a dialog, then the file."""
+        """Write the view as an image (PNG, JPEG, TIFF, or a PDF holding it:
+        the defaults) or as vector graphics (SVG, EPS, or a PDF if asked):
+        without path, the format, the kind and the density chosen in a
+        dialog (PNG at first, then the last choice), then the file."""
         v = self.viewer
         if v.plotter is None:
             QMessageBox.information(self, APP_NAME, "No 3D view to export.")
             return False
         if path is None:
-            from .export_dialog import FORMATS, ExportDialog
-            last = getattr(self, "_export_choice", (".pdf", "vector", 300))
+            from .export_dialog import DEFAULT_CHOICE, FORMATS, ExportDialog
+            last = getattr(self, "_export_choice", DEFAULT_CHOICE)
             dlg = ExportDialog(self, tuple(v.plotter.window_size), v.vector_problem(), *last)
             if not self.run_export_dialog(dlg):
                 return False
@@ -1794,7 +1795,8 @@ class MainWindow(QMainWindow):
                 path += ext
         ext = Path(path).suffix.lower()
         if mode is None:
-            mode = "vector" if ext in v.VECTOR_FORMATS else "image"
+            from .export_dialog import default_mode
+            mode = default_mode(ext)
         dpi = int(dpi or 300)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:

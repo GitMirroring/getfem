@@ -23,9 +23,17 @@ from __future__ import annotations
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
                                QLabel, QRadioButton, QSpinBox, QVBoxLayout, QWidget)
 
-# (extension, name, vector possible)
-FORMATS = [(".pdf", "PDF", True), (".svg", "SVG", True), (".eps", "EPS", True), (".ps", "PostScript", True),
-           (".png", "PNG", False), (".jpg", "JPEG", False), (".tif", "TIFF", False)]
+# (extension, name, vector possible); PNG first: the default (lossless, sharp edges and lines)
+FORMATS = [(".png", "PNG", False), (".jpg", "JPEG", False), (".tif", "TIFF", False), (".pdf", "PDF", True),
+           (".svg", "SVG", True), (".eps", "EPS", True), (".ps", "PostScript", True)]
+# what a format holds by default: a PDF the image of the view (vector graphics, redrawn by
+# matplotlib, are for the exceptions), SVG and PostScript the vector graphics
+DEFAULT_MODE = {".pdf": "image", ".svg": "vector", ".eps": "vector", ".ps": "vector"}
+DEFAULT_CHOICE = (".png", "image", 300)
+
+
+def default_mode(ext: str) -> str:
+    return DEFAULT_MODE.get(ext, "image")
 
 
 class ExportDialog(QDialog):
@@ -34,7 +42,7 @@ class ExportDialog(QDialog):
     vector graphics are not possible for this view ("" if they are)."""
 
     def __init__(self, parent=None, view_size=(800, 600), vector_problem: str = "",
-                 ext: str = ".pdf", mode: str = "vector", dpi: int = 300):
+                 ext: str = DEFAULT_CHOICE[0], mode: str | None = None, dpi: int = DEFAULT_CHOICE[2]):
         super().__init__(parent)
         self.setWindowTitle("Export the view")
         self.view_size = view_size
@@ -83,9 +91,10 @@ class ExportDialog(QDialog):
         lay.addWidget(buttons)
         i = self.format.findData(ext)
         self.format.setCurrentIndex(i if i >= 0 else 0)
+        mode = mode or default_mode(self.ext())
         (self.vector if mode == "vector" else self.image).setChecked(True)
         self.density.setValue(int(dpi))
-        self.format.currentIndexChanged.connect(self._update)
+        self.format.currentIndexChanged.connect(self._format_changed)
         self.vector.toggled.connect(self._update)
         self.density.valueChanged.connect(self._update)
         self._update()
@@ -98,6 +107,11 @@ class ExportDialog(QDialog):
 
     def dpi(self) -> int:
         return int(self.density.value())
+
+    def _format_changed(self, *_):
+        """Another format: what it holds by default (a PDF: the image)."""
+        (self.vector if default_mode(self.ext()) == "vector" else self.image).setChecked(True)
+        self._update()
 
     def _update(self, *_):
         vector_format = next(v for e, _, v in FORMATS if e == self.ext())

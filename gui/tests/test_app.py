@@ -889,6 +889,7 @@ def test_export_view():
             assert v.export_view(svg) == "vector" and b"<image" not in svg.read_bytes()
             assert b"<path" in svg.read_bytes()
             assert v.export_view(pdf) == "vector" and b"/Subtype /Image" not in pdf.read_bytes()
+            assert win.export_view(pdf) and b"/Subtype /Image" in pdf.read_bytes()   # a PDF: the image
             # the dialog: the format, vector or image, the density (the size it gives), then the file
             from PySide6.QtWidgets import QFileDialog
             from getfem_gui.app.export_dialog import ExportDialog
@@ -912,6 +913,12 @@ def test_export_view():
                 dlg.format.setCurrentIndex(dlg.format.findData(".svg"))
                 dlg.vector.setChecked(True)
                 assert dlg.mode() == "vector" and not dlg.density.isEnabled()
+                dlg = ExportDialog(None, (w, h), "")                  # by default: a PNG image
+                assert (dlg.ext(), dlg.mode()) == (".png", "image")
+                dlg.format.setCurrentIndex(dlg.format.findData(".pdf"))  # a PDF: the image too,
+                assert dlg.mode() == "image" and dlg.vector.isEnabled()  # vector graphics if asked
+                dlg.format.setCurrentIndex(dlg.format.findData(".svg"))
+                assert dlg.mode() == "vector"
                 dlg = ExportDialog(None, (w, h), "no view", ".pdf", "vector")
                 assert dlg.mode() == "image" and "no view" in dlg.note.text()   # no vector: said why
             finally:
