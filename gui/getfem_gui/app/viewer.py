@@ -403,8 +403,8 @@ class Viewer(QWidget):
         mesh = scene.read(mesh_file)
         sel = scene.read(selection_file) if selection_file else None
         self._show_curved(scene.is_curved(mesh))
-        self._show_quality_controls(True)
-        if self.quality_button.isChecked():
+        self._show_quality_controls(not scene.is_curve(mesh))     # (segments: no measure)
+        if self.quality_button.isChecked() and not scene.is_curve(mesh):
             summary = scene.show_quality(self.plotter, mesh, self.quality_box.value(), reset=key != self._shown_key,
                                          edges=self.edges["mesh"], level=self.curved_box.value())
             self.status.setText(f"{status} — {summary}" if status else summary)
