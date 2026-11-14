@@ -11,11 +11,13 @@ Geometries
 a menu of the kinds of geometry: a segment, a rectangle or a box; a 2D
 domain or a 3D solid by constructive geometry, an extrusion or a revolution
 of a 2D profile; a curve in 2D or 3D, a surface in 3D, an extruded or
-revolved curve; a CAD or a mesh file. A new box, curve or surface is a simple one of that
+revolved curve; a CAD or a mesh file. A new box or surface is a simple one of that
 kind, to be edited; a new constructive geometry (2D domain, 3D solid) starts
 from nothing, as does the profile of a new extrusion or revolution (see
 :ref:`gui-geometries-building`), which is then selected: its 2D view, to
-draw it. *Add a mesh of this geometry* gives it a
+draw it. A new curve, extruded or revolved curve starts from an empty
+polygon, selected with the polygon tool on: its vertices are clicked in
+the view. *Add a mesh of this geometry* gives it a
 mesh. Its source can still be changed in its form.
 
 A geometry is given by its *source* (see :ref:`gui-ref-sources` for all

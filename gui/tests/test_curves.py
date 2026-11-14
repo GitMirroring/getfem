@@ -197,8 +197,10 @@ def test_swept_surfaces():
     assert any("must not touch the axis" in e for e in M.validate(model_with(bad, conditions=[])))
     m = M.default_model()
     for kind in ("swept_extrusion", "swept_revolution"):
-        m["geometries"][0]["source"] = E.new_geometry_source(kind)
+        m["geometries"][0]["source"] = E.new_geometry_source(kind)        # an empty polygon: drawn first
         m["geometries"][0]["selections"] = {}
+        assert E.selected_after(f"add_geometry:{kind}", ("geometries", 0)) == POLY and E.polygon_to_enter(m, POLY)
+        E.get_at(m, POLY)["points"] = [[1.0, 0.0], [1.0, 1.0], [2.0, 1.0]]
         assert m["geometries"][0]["source"]["shape"]["open"] is True
         assert E.find_node(E.tree(m), POLY).label.startswith("Swept curve: open polygon")
         assert E.can_draw(m, POLY) == 0 and E.can_draw(m, ("geometries", 0)) is None
@@ -220,6 +222,9 @@ def test_editing():
     m = M.default_model()
     m["geometries"][0]["source"] = E.new_geometry_source("curve2")
     m["geometries"][0]["selections"] = {}
+    assert E.selected_after("add_geometry:curve2", ("geometries", 0)) == POLY       # drawn first
+    assert E.find_node(E.tree(m), POLY).label == "Curve: open polygon (to draw)" and E.polygon_to_enter(m, POLY)
+    m["geometries"][0]["source"] = E._default_source("curve", 2)
     assert m["geometries"][0]["source"]["shape"]["open"] is True
     node = E.find_node(E.tree(m), POLY)
     assert node is not None and node.label == "Curve: open polygon (3 vertices)"
@@ -304,6 +309,46 @@ def test_drawing():
             assert E.get_at(win.model, POLY)["open"] is True
             win.select(("geometries", 0))
             assert "fill" not in v.plotter.actors
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
+def test_a_new_curve_or_swept_surface_drawn_first():
+    """A new curve or swept surface: its empty polygon selected, entered in
+    the view at once; drawn there, the geometry valid."""
+    try:
+        from PySide6.QtWidgets import QApplication
+        import pyvista  # noqa: F401
+    except ImportError:
+        return
+    os.environ.update(QT_QPA_PLATFORM=os.environ.get("QT_QPA_PLATFORM", "offscreen"), GETFEM_GUI_NO_3D="",
+                      GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "model.json"
+        M.save(M.default_model(), path)
+        win = MainWindow(str(path))
+        try:
+            v = win.viewer
+            for kind in ("curve2", "curve3", "swept_extrusion", "swept_revolution"):
+                win.select(("geometries",))
+                win._panel_action(f"add_geometry:{kind}")
+                i = len(win.model["geometries"]) - 1
+                poly = ("geometries", i, "source", "shape")
+                assert win.current_path() == poly and E.get_at(win.model, poly)["points"] == [], kind
+                assert any(e.startswith(f"geometries[{i}]") and "two vertices" in e for e in win.errors)
+                if v.plotter is None:
+                    continue
+                assert v._entering and v.curve_mode and v.draw_buttons["polygon"].isChecked(), kind
+                for p in ([1, 0], [2, 0], [2, 1]):
+                    v._polygon_click(p)
+                v.polygon_close()
+                assert E.get_at(win.model, poly)["points"] == [[1, 0], [2, 0], [2, 1]], kind
+                assert E.get_at(win.model, poly)["open"] is True
+                assert not [e for e in win.errors if e.startswith(f"geometries[{i}]")], (kind, win.errors)
+                win.select(("geometries", i))                    # its view: the curve or the surface
         finally:
             win.setWindowModified(False)
             win.close()

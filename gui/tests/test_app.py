@@ -540,8 +540,10 @@ def test_add_a_geometry_from_its_menu():
     assert b is not None and b.menu() is not None
     next(a for a in b.menu().actions() if a.data() == "add_geometry:curve3").trigger()
     assert win.model["geometries"][-1]["source"]["type"] == "curve"
-    assert win.errors == ["geometries[1].source.shape.profile.of: empty union: add shapes to it"]
+    assert win.errors == ["geometries[1].source.shape.profile.of: empty union: add shapes to it",
+                          "geometries[2].source.shape.points: at least two vertices expected"]
     close(win)
+
 
 
 def test_constructive_geometry_from_nothing_in_the_window():

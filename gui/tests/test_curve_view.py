@@ -33,7 +33,7 @@ from getfem_gui import editing as E, mesher, model as M, runner  # noqa: E402
 
 def curve_model(kind, order=1):
     m = M.default_model()
-    m["geometries"][0]["source"] = E.new_geometry_source(kind)
+    m["geometries"][0]["source"] = E._default_source("curve", int(kind[-1]))
     m["geometries"][0]["selections"] = {}
     m["meshes"][0] = {"name": "mesh", "geometry": m["geometries"][0]["name"], "mesher": "getfem", "h": 0.1,
                       "order": order}

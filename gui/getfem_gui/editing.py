@@ -1756,11 +1756,13 @@ def _swept_in_geometry(model: dict, gi: int, t: str) -> dict:
 def selected_after(action: str, new_path) -> tuple | None:
     """Where to go after an action of creation: in a new constructive
     geometry, on its root (an empty union, to add shapes), or on the profile
-    of a new extrusion or revolution (the 2D view, to draw it)."""
+    of a new extrusion or revolution, or on the polygon of a new curve or
+    swept surface (the 2D view, to draw it)."""
     if new_path is None:
         return None
     new_path = tuple(new_path)
-    if action in ("add_geometry:csg2", "add_geometry:csg3"):
+    if action in ("add_geometry:csg2", "add_geometry:csg3", "add_geometry:curve2", "add_geometry:curve3",
+                  "add_geometry:swept_extrusion", "add_geometry:swept_revolution"):
         return new_path + ("source", "shape")
     if action in ("add_geometry:extrusion", "add_geometry:revolution"):
         return new_path + ("source", "shape", "profile")
@@ -1815,15 +1817,18 @@ def new_geometry_source(kind: str) -> dict:
         shape = _default_shape(kind, 3)
         shape["profile"] = copy.deepcopy(EMPTY_SHAPE)
         return {"type": "csg", "dim": 3, "shape": shape}
-    if kind in ("curve2", "curve3"):
-        return _default_source("curve", int(kind[-1]))
+    empty = {"type": "polygon", "open": True, "points": []}      # a curve: its polygon drawn in the view
+    if kind == "curve2":
+        return {"type": "curve", "dim": 2, "shape": empty}
+    if kind == "curve3":                      # (in the plane z = 0 at first)
+        return {"type": "curve", "dim": 3, "shape": empty, "origin": [0.0, 0.0, 0.0],
+                "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], "height": 0.0}
     if kind == "surface":
         return _default_source("surface", 3)
-    if kind == "swept_extrusion":            # an open polygon, edited in the view
-        return {"type": "swept_surface", "sweep": "extrusion", "z": [0.0, 1.0],
-                "shape": {"type": "polygon", "open": True, "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}}
+    if kind == "swept_extrusion":
+        return {"type": "swept_surface", "sweep": "extrusion", "z": [0.0, 1.0], "shape": empty}
     if kind == "swept_revolution":
-        return _default_source("swept_surface", 3)
+        return {"type": "swept_surface", "sweep": "revolution", "angle": [0.0, 360.0], "shape": empty}
     if kind in ("cad", "mesh_file"):
         return _default_source(kind, 3)
     raise ValueError(f"unknown kind of geometry {kind!r}")

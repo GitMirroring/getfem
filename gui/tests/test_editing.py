@@ -367,6 +367,10 @@ def test_add_a_geometry_of_each_kind():
             root = path + ("source", "shape") + (("profile",) if kind in ("extrusion", "revolution") else ())
             E.do_action(m, root, "add_shape:rectangle")
             errors = [e for e in M.validate(m) if e.startswith(f"geometries[{path[1]}]")]
+        if kind in ("curve2", "curve3", "swept_extrusion", "swept_revolution"):   # a polygon to draw
+            assert len(errors) == 1 and "at least two vertices expected" in errors[0], (kind, errors)
+            E.get_at(m, path + ("source", "shape"))["points"] = [[1.0, 0.0], [2.0, 1.0]]
+            errors = [e for e in M.validate(m) if e.startswith(f"geometries[{path[1]}]")]
         assert errors == [], (kind, errors)
         mesh = E.do_action(m, path, "add_mesh")
         assert M.validate(m) == [], (kind, M.validate(m))
