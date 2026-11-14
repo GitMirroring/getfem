@@ -404,6 +404,50 @@ template <typename T> static inline void dummy_func(T &) {}
   }
 
 
+// the mesh of faces of m2 (gf_mesh('faces')): the faces given, or its outer faces
+static void
+mesh_of_faces(getfem::mesh &out, const getfem::mesh &m2, mexargs_in &in) {
+  std::vector<std::pair<size_type, short_type> > faces;
+  if (in.remaining()) {
+    iarray v = in.pop().to_iarray(2, -1);
+    for (size_type j = 0; j < v.getn(); ++j)
+      faces.push_back(std::make_pair(size_type(v(0,j) - config::base_index()),
+                                     short_type(v(1,j) - config::base_index())));
+  } else {
+    getfem::mesh_region mr = getfem::outer_faces_of_mesh(m2);
+    for (getfem::mr_visitor i(mr); !i.finished(); ++i)
+      faces.push_back(std::make_pair(i.cv(), i.f()));
+  }
+  out.clear();
+  std::map<size_type, size_type> new_point;
+  std::vector<size_type> ipts;
+  for (const auto &cf : faces) {
+    size_type cv = cf.first;
+    short_type f = cf.second;
+    if (!m2.convex_index().is_in(cv))
+      THROW_BADARG("convex " << cv + config::base_index() << " not found in mesh");
+    bgeot::pconvex_structure cvs = m2.structure_of_convex(cv);
+    if (f >= cvs->nb_faces())
+      THROW_BADARG("convex " << cv + config::base_index() << " has no face "
+                   << f + config::base_index());
+    bgeot::pconvex_structure fcvs = cvs->faces_structure()[f];
+    bgeot::pgeometric_trans pgt;
+    if (fcvs->dim() == 2 && fcvs->nb_faces() == 4 && fcvs->nb_points() == 8)
+      pgt = bgeot::Q2_incomplete_geotrans(2);     // a face of a 20-node hexahedron
+    else
+      pgt = bgeot::default_trans_of_cvs(fcvs);
+    bgeot::mesh_structure::ind_pt_face_ct pt = m2.ind_points_of_face_of_convex(cv, f);
+    ipts.resize(pt.size());
+    for (size_type k = 0; k < pt.size(); ++k) {
+      auto it = new_point.find(pt[k]);
+      if (it == new_point.end())
+        it = new_point.insert(std::make_pair(pt[k], out.add_point(m2.points()[pt[k]]))).first;
+      ipts[k] = it->second;
+    }
+    out.add_convex(pgt, ipts.begin());
+  }
+}
+
 // local sizes of the mesher: the points of each size
 typedef std::map<double, std::vector<getfem::base_node> > points_by_size;
 
@@ -572,6 +616,21 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
      std::string fmt = in.pop().to_string();
      std::string fname = in.pop().to_string();
      getfem::import_mesh(fname, fmt, *pmesh);
+     );
+
+
+  /*@INIT M = ('faces', @tmesh m2[, @imat CVFIDs])
+    Create the mesh of faces of `m2`: one element per face listed in
+    `CVFIDs` (a two-rows matrix: convex #ids, face numbers), by default
+    the outer faces of `m2`. Each element has the nodes of its face and the
+    geometric transformation of the face (of the same degree as that of
+    its convex: the faces of a curved mesh are curved), in the space of
+    `m2`; the points are shared. The elements are numbered in the order of
+    `CVFIDs` (for instance, the boundary of a 3D mesh as a surface mesh).@*/
+  sub_command
+    ("faces", 1, 2, 0, 1,
+     const getfem::mesh *m2 = extract_mesh_object(in.pop());
+     mesh_of_faces(*pmesh, *m2, in);
      );
 
 
