@@ -785,6 +785,23 @@ def test_changing_the_mesher_from_its_combo_box():
     close(win)
 
 
+def test_a_combo_box_changed_twice_without_rebuilding_the_form():
+    """With the focus in the form, a change that keeps the same fields does
+    not rebuild it: the second change of the same combo box (a curve open,
+    closed, open again) must still apply."""
+    win = window("heated_wire.json")
+    path = ("geometries", 0, "source", "shape")
+    win.select(path)
+    win._focus_outside_panel = lambda: False          # (the focus in the form: not rebuilt)
+    combo = win.props.editor(path + ("open",))
+    for is_open in (False, True, False, True):
+        choose(combo, is_open)
+        QApplication.processEvents()
+        assert win.props.editor(path + ("open",)) is combo           # the same form
+        assert win.model["geometries"][0]["source"]["shape"]["open"] is is_open
+    close(win)
+
+
 def test_materials_from_the_library_in_the_window():
     win = window("plate_inclusion.json")
     win.select(("materials",))

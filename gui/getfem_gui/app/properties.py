@@ -685,8 +685,15 @@ class PropertiesPanel(QScrollArea):
             if value not in values:
                 combo.addItem(f"{value} (invalid)" if value is not None else "", value)
             combo.setCurrentIndex(values.index(value) if value in values else combo.count() - 1)
-            combo.activated.connect(lambda i, c=combo: c.itemData(i) != value
-                                    and self._commit(f, c.itemData(i)))
+            # the value it holds now: the form is not rebuilt after each change (the focus kept),
+            # so a second change compares with the first one, not with the value of the form
+            held = {"value": value}
+
+            def chosen(i, c=combo):
+                if c.itemData(i) != held["value"]:
+                    held["value"] = c.itemData(i)
+                    self._commit(f, c.itemData(i))
+            combo.activated.connect(chosen)
             return combo
         if k == "names":
             lst = QListWidget()
