@@ -367,6 +367,12 @@ def test_add_a_geometry_of_each_kind():
             root = path + ("source", "shape") + (("profile",) if kind in ("extrusion", "revolution") else ())
             E.do_action(m, root, "add_shape:rectangle")
             errors = [e for e in M.validate(m) if e.startswith(f"geometries[{path[1]}]")]
+        if kind == "boundary":                      # of the first solid: none in this model
+            assert len(errors) == 1 and "another geometry of the model expected" in errors[0], (kind, errors)
+            m["geometries"].append({"name": "solid", "source": E._default_source("box", 3), "selections": {}})
+            assert E.find_node(E.tree(m), path).children[0].children[-1].label == "boundary (built-in)"
+            geom["source"]["geometry"] = "solid"
+            errors = [e for e in M.validate(m) if e.startswith(f"geometries[{path[1]}]")]
         if kind in ("curve2", "curve3", "swept_extrusion", "swept_revolution"):   # a polygon to draw
             assert len(errors) == 1 and "at least two vertices expected" in errors[0], (kind, errors)
             E.get_at(m, path + ("source", "shape"))["points"] = [[1.0, 0.0], [2.0, 1.0]]

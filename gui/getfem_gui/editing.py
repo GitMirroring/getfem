@@ -446,7 +446,9 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
     geoms = Node(("geometries",), "Geometries", "geometries")
     for i, g in enumerate(model.get("geometries", [])):
         src = g.get("source", {})
-        gn = Node(("geometries", i), f"{g.get('name', '?')} ({src.get('type', '?')})", "geometry")
+        what = src.get("type", "?") if src.get("type") != "boundary" else f"boundary of {src.get('geometry', '?')}" \
+            + (f": {src['selection']}" if src.get("selection") else "")
+        gn = Node(("geometries", i), f"{g.get('name', '?')} ({what})", "geometry")
         if src.get("type") in ("csg", "surface") and isinstance(src.get("shape"), dict):
             node = _shape_node(src["shape"], ("geometries", i, "source", "shape"),
                                2 if src["type"] == "surface" else geometry_dim(model, i))
@@ -466,7 +468,8 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
         sels = Node(("geometries", i, "selections"), "Selections", "selections")
         for name, s in M.selection_table(model, g).items():
             kind = "selection" if not s["builtin"] else "builtin_selection"
-            label = name if not s["builtin"] else f"{name} (built-in)"
+            label = name if not s["builtin"] else f"{name} (from {src.get('geometry')})" if s.get("inherited") \
+                else f"{name} (built-in)"
             sels.children.append(Node(("geometries", i, "selections", name), label, kind))
         gn.children.append(sels)
         geoms.children.append(gn)
@@ -1128,7 +1131,8 @@ def fields(model: dict, path: Path) -> list[Field]:
                          (("box", "box"), ("csg", "constructive geometry (csg)"),
                           ("curve", "curve (2D or 3D)"), ("surface", "surface in 3D (flat domain + height)"),
                           ("swept_surface", "surface in 3D swept by a curve"),
-                          ("cad", "CAD file (STEP, IGES, BREP)"), ("mesh_file", "mesh file (.msh)")),
+                          ("cad", "CAD file (STEP, IGES, BREP)"), ("mesh_file", "mesh file (.msh)"),
+                          ("boundary", "boundary of a 3D geometry")),
                          op="source_type")]
             t = src.get("type")
             if t == "box":
@@ -1208,6 +1212,21 @@ def fields(model: dict, path: Path) -> list[Field]:
                                                      "(x, y).")]
             elif t in ("cad", "mesh_file"):
                 out.append(Field(base + ("file",), "File", "file"))
+            elif t == "boundary":
+                vol = M.volume_of(model, geom)
+                bsel = [n for n, sl in M.selection_table(model, vol).items() if sl["kind"] == M.BOUNDARY
+                        and n != M.BOUNDARY] if vol else []
+                out += [Field(base + ("geometry",), "Of the geometry", "choice", _choices(solids(model, geom)),
+                              op="boundary_of"),
+                        Field(base + ("selection",), "Faces", "choice",
+                              ((None, "all (its whole boundary)"),) + tuple(_choices(bsel)),
+                              help="A boundary selection of the geometry: its faces only (an open surface)",
+                              op="boundary_faces"),
+                        Field(base, "", "info", help="A surface: the 3D geometry is meshed with the parameters "
+                                                     "of the mesh, then its faces are taken. Its boundary "
+                                                     "selections are built-in selections (parts) of the "
+                                                     "surface; the selection 'boundary' is the edge of an "
+                                                     "open surface.")]
             return out
         if path[2] == "source" and constraint_owner(path) is not None:
             return _constraint_fields(model, path)
@@ -1219,6 +1238,10 @@ def fields(model: dict, path: Path) -> list[Field]:
         if path[2] == "selections" and n == 4:
             name = path[3]
             table = M.selection_table(model, geom)
+            if table.get(name, {}).get("inherited"):
+                return [Field(path, "", "info",
+                              help=f"Built-in domain selection: the faces of the boundary selection {name!r} "
+                                   f"of {geom['source'].get('geometry')!r}.")]
             if table.get(name, {}).get("builtin"):
                 return [Field(path, "", "info",
                               help=f"Built-in {table[name]['kind']} selection.")]
@@ -1289,6 +1312,7 @@ def fields(model: dict, path: Path) -> list[Field]:
     if path[0] == "meshes" and n == 2:
         mesh = get_at(model, path, {})
         geom = M.geometry_of(model, mesh) or {}
+        geom = M.meshed_geometry(model, geom) if geom else geom      # a boundary: its volume meshed
         stype = geom.get("source", {}).get("type")
         dim = (M.geometry_dim(model, geom) if geom else None) or 2
         meshers = [x for x, srcs in M.MESHERS.items() if stype in srcs] or list(M.MESHERS)
@@ -1306,7 +1330,7 @@ def fields(model: dict, path: Path) -> list[Field]:
             orders = ((1, "1 (straight)"), (2, "2 (curved)")) + (((3, "3"),) if mesher != "netgen" else ())
             out += [Field(path + (_size_key(mesher),), "Element size", "number"),
                     Field(path + ("order",), "Geometric order", "choice", orders)]
-            src = (M.geometry_of(model, mesh) or {}).get("source", {})
+            src = geom.get("source", {})
             swept = src.get("type") == "csg" and src.get("dim") == 3 and M.swept_root(src.get("shape"))
             if swept:
                 around = swept["type"] == "revolution"
@@ -1802,6 +1826,8 @@ GEOMETRY_KINDS = (
     ("Curves and surfaces", "swept_extrusion", "Extruded curve (3D surface)", "a 2D curve extruded along z"),
     ("Curves and surfaces", "swept_revolution", "Revolved curve (3D surface)",
      "a 2D curve turned about the z axis"),
+    ("Curves and surfaces", "boundary", "Boundary of a 3D geometry",
+     "its faces (or some of them) as a surface: shells, membranes"),
     ("Files", "cad", "CAD file (STEP, IGES, BREP)", "read by Gmsh"),
     ("Files", "mesh_file", "Gmsh mesh file (.msh)", "the mesh is the geometry"),
 )
@@ -1831,7 +1857,16 @@ def new_geometry_source(kind: str) -> dict:
         return {"type": "swept_surface", "sweep": "revolution", "angle": [0.0, 360.0], "shape": empty}
     if kind in ("cad", "mesh_file"):
         return _default_source(kind, 3)
+    if kind == "boundary":                    # (of the first 3D solid of the model: add_geometry)
+        return {"type": "boundary", "geometry": ""}
     raise ValueError(f"unknown kind of geometry {kind!r}")
+
+
+def solids(model: dict, but: dict | None = None) -> list[str]:
+    """The names of the 3D solids of the model (the geometries whose
+    boundary may be taken), but one."""
+    return [g["name"] for g in model.get("geometries", [])
+            if g is not but and M.volume_of(model, {"source": {"type": "boundary", "geometry": g.get("name")}})]
 
 
 def _default_source(t: str, dim: int) -> dict:
@@ -1852,6 +1887,8 @@ def _default_source(t: str, dim: int) -> dict:
     if t == "swept_surface":
         return {"type": "swept_surface", "sweep": "revolution", "angle": [0.0, 360.0],
                 "shape": {"type": "polygon", "open": True, "points": [[1.0, 0.0], [1.0, 1.0]]}}
+    if t == "boundary":
+        return {"type": "boundary", "geometry": ""}
     return {"type": t, "file": ""}
 
 
@@ -1888,8 +1925,15 @@ def default_mesher(source_type: str | None) -> str:
 def _fit_meshes(model: dict, gi: int) -> list[str]:
     """The meshes of a geometry whose mesher cannot mesh its new source get
     the default one (their element size kept). Returns notes."""
-    geom = model["geometries"][gi]
-    stype = geom.get("source", {}).get("type")
+    notes = []
+    for geom in [model["geometries"][gi]] + [g for g in model["geometries"]       # and its boundaries
+                                             if M.volume_of(model, g) is model["geometries"][gi]]:
+        notes += _fit_meshes_of(model, geom)
+    return notes
+
+
+def _fit_meshes_of(model: dict, geom: dict) -> list[str]:
+    stype = M.meshed_geometry(model, geom).get("source", {}).get("type")
     notes = []
     for mesh in model.get("meshes", []):
         if mesh.get("geometry") == geom.get("name") and stype not in M.MESHERS.get(mesh.get("mesher"), ()):
@@ -2097,6 +2141,13 @@ def _rename_selection(model, gi, old, new) -> None:
     for it in _items_with_selection(model, geom):
         if it.get("selection") == old:
             it["selection"] = new
+    for bi, g in enumerate(model.get("geometries", [])):     # its boundaries: their faces, their parts
+        src = g.get("source", {})
+        if bi != gi and src.get("type") == "boundary" and src.get("geometry") == geom.get("name") \
+                and old not in g.get("selections", {}):
+            if src.get("selection") == old:
+                src["selection"] = new
+            _rename_selection(model, bi, old, new)
 
 
 def apply(model: dict, f: Field, value) -> Path | None:
@@ -2105,6 +2156,20 @@ def apply(model: dict, f: Field, value) -> Path | None:
     key = f.key
     if f.op is None:
         set_at(model, key, value)
+        return None
+    if f.op == "boundary_of":                # another volume: its faces kept if it has that selection
+        src = get_at(model, key[:-1])
+        src["geometry"] = value
+        vol = M.volume_of(model, {"source": src})
+        if src.get("selection") and (vol is None or M.selection_table(model, vol).get(src["selection"], {})
+                                     .get("kind") != M.BOUNDARY):
+            src.pop("selection")
+        return None
+    if f.op == "boundary_faces":             # None: the whole boundary (no key)
+        if value is None:
+            get_at(model, key[:-1]).pop("selection", None)
+        else:
+            set_at(model, key, value)
         return None
     if f.op == "placement":
         shape = get_at(model, key[:-1])
@@ -2180,6 +2245,9 @@ def apply(model: dict, f: Field, value) -> Path | None:
         for fld in model.get("fields", []):
             if fld.get("geometry") == old:
                 fld["geometry"] = value
+        for g in model.get("geometries", []):           # the boundaries of the geometry
+            if g.get("source", {}).get("type") == "boundary" and g["source"].get("geometry") == old:
+                g["source"]["geometry"] = value
     elif f.op in ("rename_parameter", "rename_field", "rename_variable"):
         old = get_at(model, key)
         if value != old:
@@ -2237,6 +2305,8 @@ def apply(model: dict, f: Field, value) -> Path | None:
         gi = key[1]
         if get_at(model, key) != value:
             model["geometries"][gi]["source"] = _default_source(value, geometry_dim(model, gi))
+            if value == "boundary":
+                model["geometries"][gi]["source"]["geometry"] = next(iter(solids(model, model["geometries"][gi])), "")
             _fit_meshes(model, gi)
     elif f.op == "box_dim":
         src = get_at(model, key[:-1])
@@ -2892,6 +2962,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         gname = unique_name(name or "geometry", [g.get("name") for g, _ in M.all_geometries(model)])
         kind = action.partition(":")[2]
         src = new_geometry_source(kind) if kind else _default_source("box", dim)
+        if src["type"] == "boundary":
+            src["geometry"] = next(iter(solids(model)), "")
         geoms.append({"name": gname, "source": src, "selections": {}})
         return ("geometries", len(geoms) - 1)
     if action == "add_selection":
@@ -2947,7 +3019,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
     if action == "add_mesh":
         meshes = model.setdefault("meshes", [])
         geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else model["geometries"][0]
-        stype = geom.get("source", {}).get("type")
+        stype = M.meshed_geometry(model, geom).get("source", {}).get("type")
         mesher = default_mesher(stype)
         gdim = M.geometry_dim(model, geom) or 2
         mesh = {"name": unique_name(name or "mesh", [m.get("name") for m, _ in M.all_meshes(model)]),

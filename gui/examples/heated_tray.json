@@ -1,0 +1,48 @@
+{
+  "format_version": 3,
+  "name": "Heated tray: a sheet-metal tray (the boundary of a box, its lid off), heated at its bottom, its rim held at 20 degrees (boundary geometry)",
+  "parameters": [
+    {"name": "L", "value": 0.4, "description": "length of the tray (m)"},
+    {"name": "W", "value": 0.3, "description": "width of the tray (m)"},
+    {"name": "H", "value": 0.1, "description": "height of the tray (m)"},
+    {"name": "e", "value": 0.001, "description": "thickness of the sheet (m)"},
+    {"name": "flux", "value": 500, "description": "heat flux received by the bottom (W/m2)"}
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "box",
+      "source": {"type": "box", "origin": [0, 0, 0], "size": ["L", "W", "H"]},
+      "selections": {
+        "walls": {"kind": "boundary", "criteria": {"type": "union", "of": ["xmin", "xmax", "ymin", "ymax", "zmin"]}}
+      }
+    },
+    {
+      "name": "tray",
+      "source": {"type": "boundary", "geometry": "box", "selection": "walls"},
+      "selections": {}
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "tray", "mesher": "getfem", "h": 0.02, "order": 1}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "value": "50*e"}]},
+          "sources": [{"selection": "zmin", "value": "flux"}],
+          "conditions": [{"type": "temperature", "selection": "boundary", "value": 20}]
+        }
+      ],
+      "outputs": [
+        {"name": "area", "expr": "1", "selection": "all"},
+        {"name": "bottom", "expr": "1", "selection": "zmin"},
+        {"name": "heat_out", "expr": "-k*Grad_T.Normal", "selection": "boundary"}
+      ],
+      "vtu": "tray.vtu"
+    }
+  ]
+}

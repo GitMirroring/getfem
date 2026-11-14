@@ -11,7 +11,7 @@ Geometries
 a menu of the kinds of geometry: a segment, a rectangle or a box; a 2D
 domain or a 3D solid by constructive geometry, an extrusion or a revolution
 of a 2D profile; a curve in 2D or 3D, a surface in 3D, an extruded or
-revolved curve; a CAD or a mesh file. A new box or surface is a simple one of that
+revolved curve, the boundary of a 3D geometry; a CAD or a mesh file. A new box or surface is a simple one of that
 kind, to be edited; a new constructive geometry (2D domain, 3D solid) starts
 from nothing, as does the profile of a new extrusion or revolution (see
 :ref:`gui-geometries-building`), which is then selected: its 2D view, to
@@ -506,6 +506,20 @@ than their space:
    edited in the view from its node under the geometry as that of a 2D
    ``curve`` (the default), or points and arcs in a table (the menu of the
    geometry node converts between them).
+
+``boundary`` (3D)
+   The boundary of another geometry of the model, a 3D solid (a box, a
+   constructive geometry, a CAD or mesh file), as a surface: the whole
+   boundary, or the faces of one of its boundary selections (*Faces*: an
+   open surface; a union of selections for several faces). The solid is
+   meshed with the parameters of the mesh (its mesher, its element size,
+   its order: the faces of a curved mesh are curved), then its faces are
+   taken (``gf.Mesh('faces')``), so the surface mesh is that of the
+   boundary of the volume mesh. The boundary selections of the solid are
+   built-in selections of the surface (its parts), renamed with them; the
+   selection ``boundary`` is the edge of an open surface. The preview is
+   that of the solid, the faces taken highlighted. See
+   ``examples/heated_tray.json``.
 
 Their meshes are built by the meshing script (see :ref:`gui-meshes`) and
 the models use them as any mesh, the gradients being then tangential. The

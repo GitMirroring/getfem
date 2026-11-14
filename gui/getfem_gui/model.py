@@ -97,6 +97,10 @@ Geometry sources
                        "center": [...], "angle": a, "axis": [...]}   the union of n copies
 - cad       : {"type": "cad", "file": "part.step"}                   STEP, IGES, BREP (through Gmsh)
 - mesh_file : {"type": "mesh_file", "file": "part.msh"}              the geometry is the mesh
+- boundary  : {"type": "boundary", "geometry": "solid"[, "selection": "top"]}   the boundary of a 3D
+              geometry of the model (or the faces of one of its boundary selections), a surface:
+              the volume meshed with the mesh parameters, its faces extracted; its boundary
+              selections are the built-in (domain) selections of the surface
 
 Meshers and compatible sources
 ------------------------------
@@ -202,7 +206,7 @@ DOMAIN = "domain"
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _AXES = "xyz"
 
-GEOMETRY_SOURCES = ("box", "csg", "cad", "mesh_file", "curve", "surface", "swept_surface")
+GEOMETRY_SOURCES = ("box", "csg", "cad", "mesh_file", "curve", "surface", "swept_surface", "boundary")
 MESHERS = {
     "structured": ("box",),
     "getfem": ("box", "csg", "curve", "surface", "swept_surface"),
@@ -211,6 +215,8 @@ MESHERS = {
     "import": ("mesh_file",),
 }
 FREE_MESHERS = ("getfem", "gmsh", "netgen")    # unstructured meshers: element size, order
+# (a "boundary" geometry is meshed by the meshers of its volume)
+INHERITED_REGION = 1000      # the regions of the boundary selections of a volume, on its boundary mesh
 CRITERIA = {
     "plane": (BOUNDARY,),
     "normal": (BOUNDARY,),
@@ -662,9 +668,35 @@ def main_solver(model: dict) -> dict:
     return {"name": "default", "type": "sequence", "steps": solve_order(model)}
 
 
+def volume_of(model: dict, geom: dict) -> dict | None:
+    """The 3D geometry whose boundary a "boundary" geometry is (None if
+    not found, or not a volume: validation reports it)."""
+    src = geom.get("source", {})
+    if src.get("type") != "boundary":
+        return None
+    vol = find_geometry(model, src.get("geometry"))
+    if vol is None or vol is geom or vol.get("source", {}).get("type") in ("boundary", "curve", "surface",
+                                                                             "swept_surface"):
+        return None
+    try:
+        return vol if geometry_dim(model, vol) == 3 else None
+    except (OSError, ValueError):
+        return None
+
+
+def meshed_geometry(model: dict, geom: dict) -> dict:
+    """The geometry that the mesher meshes for a geometry: the volume of a
+    boundary (its faces then extracted), the geometry itself otherwise."""
+    if geom.get("source", {}).get("type") == "boundary":
+        return volume_of(model, geom) or geom
+    return geom
+
+
 def geometry_dim(model: dict, geom: dict) -> int | None:
     """Dimension of the space of a geometry (3 for a surface in 3D)."""
     src = geom.get("source", {})
+    if src.get("type") == "boundary":
+        return 3
     if src.get("type") in ("curve", "surface", "swept_surface"):
         from . import manifold
         return manifold.space_dim(src)
@@ -730,6 +762,11 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
         for name, point in zip(("start", "end"), ends):
             table[name] = {"kind": BOUNDARY, "builtin": True,
                            "criteria": {"type": "in_ball", "center": point, "radius": radius}}
+    elif src.get("type") == "boundary" and volume_of(model, geom) is not None:
+        # the boundary selections of the volume: parts of the surface (regions set by the extraction)
+        for k, name in enumerate(inherited_selections(model, geom)):
+            table[name] = {"kind": DOMAIN, "builtin": True, "inherited": True,
+                           "criteria": {"type": "physical", "tag": INHERITED_REGION + k}}
     elif src.get("type") == "mesh_file" and "file" in src:
         names = read_gmsh_physical_names(resolve_file(model, src["file"]))
         top = max((d for d, _ in names.values()), default=0)
@@ -739,6 +776,15 @@ def selection_table(model: dict, geom: dict) -> dict[str, dict]:
     for name, sel in geom.get("selections", {}).items():
         table[name] = {"kind": sel.get("kind"), "builtin": False, "criteria": sel.get("criteria", {})}
     return table
+
+
+def inherited_selections(model: dict, geom: dict) -> list[str]:
+    """The boundary selections of the volume of a "boundary" geometry (its
+    whole boundary excepted), which are parts of the surface."""
+    vol = volume_of(model, geom)
+    if vol is None:
+        return []
+    return [n for n, s in selection_table(model, vol).items() if s["kind"] == BOUNDARY and n != BOUNDARY]
 
 
 def _numbers(model: dict, values: list) -> list:
@@ -1153,6 +1199,20 @@ def _validate_geometry(model, geom, where, errors):
     elif t == "surface":
         _check_shape(src.get("shape"), 2, f"{where}.source.shape", errors)
         _check_placement(model, src, where, errors)
+    elif t == "boundary":
+        name = src.get("geometry")
+        vol = find_geometry(model, name)
+        if not isinstance(name, str) or vol is None or vol is geom:
+            errors.append(f"{where}.source.geometry: another geometry of the model expected, got {name!r}")
+        elif volume_of(model, geom) is None:
+            errors.append(f"{where}.source.geometry: {name!r} is not a 3D solid (a box, a constructive "
+                          "geometry, a CAD or mesh file in 3D)")
+        elif src.get("selection") is not None:
+            vt = selection_table(model, vol)
+            sel = src["selection"]
+            if not isinstance(sel, str) or sel not in vt or vt[sel]["kind"] != BOUNDARY:
+                errors.append(f"{where}.source.selection: a boundary selection of {name!r} expected, "
+                              f"got {sel!r}")
     elif t in ("cad", "mesh_file"):
         if "file" not in src:
             errors.append(f"{where}.source.file: missing file path")
@@ -1343,6 +1403,17 @@ def _validate_mesh(model, mesh, where, errors):
     mesher = mesh.get("mesher")
     if mesher not in MESHERS:
         errors.append(f"{where}.mesher: {', '.join(MESHERS)} expected, got {mesher!r}")
+        return
+    if geom.get("source", {}).get("type") == "boundary":
+        # its volume meshed with the parameters of the mesh: checked as a mesh of the volume
+        vol = volume_of(model, geom)
+        if vol is None:
+            errors.append(f"{where}.geometry: the volume of {geom.get('name')!r} is missing")
+            return
+        if mesh.get("sizes") or mesh.get("refine"):
+            errors.append(f"{where}: no local sizes or refinements for the boundary of a geometry (yet)")
+        _validate_mesh(model, dict({k: v for k, v in mesh.items() if k not in ("sizes", "growth", "refine")},
+                                   geometry=vol.get("name")), where, errors)
         return
     stype = geom.get("source", {}).get("type")
     if stype not in MESHERS[mesher]:

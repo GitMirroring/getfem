@@ -36,6 +36,9 @@ The source of a geometry says how it is defined. The form of a geometry node sho
    * - :ref:```swept_surface`` <gui-ref-source-swept_surface>`
      - surface in 3D swept by a curve
      - ``getfem``
+   * - :ref:```boundary`` <gui-ref-source-boundary>`
+     - boundary of a 3D geometry
+     - those of its solid
 
 .. _gui-ref-source-box:
 
@@ -219,5 +222,33 @@ Meshers: ``getfem``.
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
 
 The swept curve is the polygon below, drawn and edited in the view as the polygons of a 2D geometry, open or closed, in the plane (r, z): it must not touch the axis r = 0.
+
+Built-in selections: ``all``, ``boundary``.
+
+.. _gui-ref-source-boundary:
+
+boundary: boundary of a 3D geometry
+-----------------------------------
+
+Meshers: those of its solid.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Name
+     - ``geometries.0.name``
+     - name
+   * - Of the geometry
+     - ``geometry``
+     - a name
+   * - Faces
+     - ``selection``
+     - one of ``null`` (all (its whole boundary)). A boundary selection of the geometry: its faces only (an open surface)
+
+A surface: the 3D geometry is meshed with the parameters of the mesh, then its faces are taken. Its boundary selections are built-in selections (parts) of the surface; the selection 'boundary' is the edge of an open surface.
 
 Built-in selections: ``all``, ``boundary``.

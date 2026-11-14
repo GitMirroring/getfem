@@ -187,7 +187,12 @@ to the interpreter that runs the computations (`getfem.util_version()`).
     shows below the geometry;
   - `swept_surface` (3D): a 2D curve extruded along z or turned about the z
     axis (an angle range; the curve must not touch the axis), meshed in
-    quadrangles.
+    quadrangles;
+  - `boundary` (3D): the boundary of another geometry, a 3D solid, or the
+    faces of one of its boundary selections (an open surface): the solid
+    is meshed with the parameters of the mesh, its faces taken
+    (`gf.Mesh('faces')`); its boundary selections are built-in selections
+    of the surface. See `examples/heated_tray.json`.
 
   Their meshes are built by the meshing script (a curve: elements of the
   element size, the nodes of the arcs on them; a surface: the mesh of its

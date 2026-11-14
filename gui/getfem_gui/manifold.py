@@ -65,7 +65,7 @@ import math
 import numpy as np
 
 SOURCES = ("curve", "surface", "swept_surface")
-TOPOLOGICAL_DIM = {"curve": 1, "surface": 2, "swept_surface": 2}
+TOPOLOGICAL_DIM = {"curve": 1, "surface": 2, "swept_surface": 2, "boundary": 2}
 
 
 def space_dim(src: dict) -> int | None:

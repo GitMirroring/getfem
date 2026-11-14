@@ -60,6 +60,8 @@ The meshers and the geometry sources they accept:
      -
      -
 
+A ``boundary`` geometry is meshed by the meshers of its solid.
+
 A new mesh of a box is structured; the other ones use ``gmsh`` when it accepts the source (environment variable ``GETFEM_GUI_DEFAULT_MESHER``).
 
 .. _gui-ref-mesher-structured:

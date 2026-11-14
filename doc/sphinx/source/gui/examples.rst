@@ -124,6 +124,20 @@ conductivity is that of copper times the section of the wire. The ``length``
 output gives the length of the wire, arcs included; ``heat_out``, the heat
 that leaves it by its ends, balances the heat generated.
 
+.. _gui-example-heated_tray:
+
+Heated tray (``heated_tray.json``)
+----------------------------------
+
+A ``boundary`` geometry: the faces of a box but its top (the boundary
+selection ``walls`` of the box, a union of its faces), a sheet-metal tray.
+The box is meshed, then its faces are taken as a surface mesh; the faces of
+the box (``zmin``...) are built-in selections of the tray, and its rim (the
+edge of the open surface) is its selection ``boundary``. Heated at its
+bottom, the rim held at 20 °C: ``heat_out``, the heat that leaves by the
+rim, balances the heat received; ``area`` and ``bottom`` are the areas of
+the tray and of its bottom.
+
 .. _gui-example-anisotropic_plate:
 
 Fibre composite plate (``anisotropic_plate.json``)

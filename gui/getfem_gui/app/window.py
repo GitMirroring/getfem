@@ -851,17 +851,33 @@ class MainWindow(QMainWindow):
         if gi is None or gi >= len(geoms):
             return False
         geom = geoms[gi]
-        shape = G3.shape_of(geom.get("source", {}))
+        vol = None
+        if geom.get("source", {}).get("type") == "boundary":      # the boundary of a solid: the solid
+            vol = M.volume_of(model, geom)
+            if vol is None:
+                return False
+        shape = G3.shape_of((vol or geom).get("source", {}))
         if shape is None or not self.viewer.available:
             return False
         try:
             G3.bounds(shape)
-            table = M.selection_table(model, geom)
+            table = M.selection_table(model, vol or geom)
         except (KeyError, TypeError, ValueError, IndexError):
             return False
         title = f"Geometry {geom.get('name')!r}"
+        if vol is not None:
+            faces = geom["source"].get("selection")
+            title += f": the boundary of {vol.get('name')!r}" + (f" ({faces!r})" if faces else "")
         highlighted, part = None, None
-        if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape"):
+        if vol is not None and path in (("geometries", gi), ("geometries", gi, "source")) \
+                and geom["source"].get("selection"):
+            sel = geom["source"]["selection"]           # its faces, among those of the solid
+            from . import scene
+            surf = scene.geometry_surface_3d(shape)
+            C = np.asarray(surf.cell_centers().points) if surf.n_cells else np.zeros((0, 3))
+            N = np.asarray(surf.cell_data["outward"]) if surf.n_cells else np.zeros((0, 3))
+            highlighted = G3.faces_matching(shape, C, N, sel, table, scene.cell_faces(surf))
+        elif path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape"):
             part = E.part_3d(model, path)
             title += " — shape highlighted"
         else:
@@ -869,6 +885,8 @@ class MainWindow(QMainWindow):
                 sel = path[3]
             else:
                 _, sel = E.highlighted_selection(self.model, path)
+            if vol is not None and (sel == M.BOUNDARY or sel in geom.get("selections", {})):
+                sel = None                              # (the edge of the surface, its own selections: on its mesh)
             if sel is not None and sel in table:
                 if table[sel]["kind"] == M.DOMAIN:
                     highlighted = True if sel == M.ALL else None

@@ -809,6 +809,9 @@ def _selection_code(name, sel, w, shape=None):
     elif t == "in_ball":
         w(f"SEL[{name!r}] = ('boundary', m.outer_faces_in_ball({_floats(c['center'])}, "
           f"{float(c['radius'])!r}, TDIM))")
+    elif t == "physical" and sel.get("inherited"):        # a boundary selection of the volume
+        tag = int(c["tag"])
+        w(f"SEL[{name!r}] = ('domain', cvs(imported[{tag}]) if {tag} in imported else np.zeros(0, int))")
     elif t == "physical":
         tag = int(c["tag"])
         w(f"if {tag} not in imported:")
@@ -1017,6 +1020,69 @@ def _locate_sizes(model, geom, mesh, table, w) -> None:
     w(f"print(f'local sizes: {{SIZE_POINTS.shape[1]}} points on {len(rules)} selection(s)')")
 
 
+def _build_mesh(model, geom, mesh, table, w, basename):
+    """The mesh m of a geometry, by the mesher of the mesh."""
+    mesher = mesh["mesher"]
+    stype = geom.get("source", {}).get("type")
+    if stype == "curve":
+        _build_curve(model, geom, mesh, w)
+    elif stype == "swept_surface":
+        _build_swept(model, geom, mesh, w)
+    elif stype == "surface":
+        _build_flat(model, geom, mesh, w, basename)
+    elif mesh.get("layers"):
+        _build_layered(model, geom, mesh, w, basename)
+    elif mesher == "structured":
+        _build_structured(model, geom, mesh, w)
+    elif mesher in M.FREE_MESHERS:
+        between = None
+        if sized(model, mesh):
+            w("# With local sizes: a first mesh of the global size locates their selections")
+            between = lambda w: _locate_sizes(model, geom, mesh, table, w)   # noqa: E731
+        if mesher == "getfem":
+            _build_getfem(model, geom, mesh, w, between)
+        elif mesher == "gmsh":
+            _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh", between)
+        else:
+            _build_netgen(model, geom, mesh, w, f"{basename}_netgen.msh", between)
+    else:
+        _build_import(model, geom, mesh, w)
+
+
+def _build_boundary(model, geom, mesh, w, basename):
+    """The boundary of a 3D geometry: its volume meshed with the parameters
+    of the mesh, its boundary selections located on it, then its outer faces
+    (or those of a selection) made a surface mesh (gf.Mesh('faces'): the
+    faces of a curved mesh curved); the boundary selections of the volume
+    are regions of it (INHERITED_REGION + k), read as built-in selections."""
+    vol = M.volume_of(model, geom)
+    vtable = M.selection_table(model, vol)
+    src = geom["source"]
+    w(f"# The volume {vol['name']!r}, meshed, its boundary selections located on it")
+    _build_mesh(model, vol, mesh, vtable, w, basename)
+    inherited = M.inherited_selections(model, geom)
+    wanted = inherited + [n for n in [src.get("selection")] if n and n not in inherited]
+    _selections_code(vol, vtable, wanted, w)
+    w("")
+    w("# Its boundary: " + (f"the faces of {src['selection']!r}" if src.get("selection") else "all its outer faces")
+      + ", as a surface mesh")
+    if src.get("selection") and src["selection"] != M.BOUNDARY:
+        w(f"FACES = SEL[{src['selection']!r}][1]")
+    else:
+        w("FACES = m.outer_faces(3)")
+    w("if FACES.shape[1] == 0:")
+    w("    raise RuntimeError('no face to make the surface of')")
+    w("surface = gf.Mesh('faces', m, FACES)")
+    w("KEYS = FACES[0].astype(np.int64) * 64 + FACES[1]")
+    w(f"for k, name in enumerate({inherited!r}):")
+    w("    ids = SEL[name][1]")
+    w("    if ids.size:")
+    w("        cv = np.nonzero(np.isin(KEYS, ids[0].astype(np.int64) * 64 + ids[1]))[0]")
+    w("        if cv.size:")
+    w(f"            surface.set_region({M.INHERITED_REGION} + k, cv)")
+    w("m = surface")
+
+
 def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = None,
                 reuse_raw: bool = False, standalone: bool = False) -> str:
     """Text of the meshing script; it writes <basename>.mesh and <basename>.json.
@@ -1158,32 +1224,12 @@ def mesh_script(model: dict, mesh: dict, basename: str, raw_key: str | None = No
         w(f"m = gf.Mesh('load', {raw!r})")
     else:
         w.section(f"Mesh ({mesh['mesher']})")
-        mesher = mesh["mesher"]
         stype = geom.get("source", {}).get("type")
-        if stype == "curve":
-            _build_curve(model, geom, mesh, w)
-        elif stype == "swept_surface":
-            _build_swept(model, geom, mesh, w)
-        elif stype == "surface":
-            _build_flat(model, geom, mesh, w, basename)
-        elif mesh.get("layers"):
-            _build_layered(model, geom, mesh, w, basename)
-        elif mesher == "structured":
-            _build_structured(model, geom, mesh, w)
-        elif mesher in M.FREE_MESHERS:
-            between = None
-            if sized(model, mesh):
-                w("# With local sizes: a first mesh of the global size locates their selections")
-                between = lambda w: _locate_sizes(model, geom, mesh, table, w)   # noqa: E731
-            if mesher == "getfem":
-                _build_getfem(model, geom, mesh, w, between)
-            elif mesher == "gmsh":
-                _build_gmsh(model, geom, mesh, w, f"{basename}_gmsh.msh", between)
-            else:
-                _build_netgen(model, geom, mesh, w, f"{basename}_netgen.msh", between)
+        if stype == "boundary":
+            _build_boundary(model, geom, mesh, w, basename)
         else:
-            _build_import(model, geom, mesh, w)
-        _refinements(model, geom, mesh, table, w)
+            _build_mesh(model, geom, mesh, table, w, basename)
+            _refinements(model, geom, mesh, table, w)
         if raw_key is not None:
             w("# Kept to evaluate other selections without meshing again")
             w(f"m.save({raw!r})")
@@ -1273,12 +1319,15 @@ def raw_key(model: dict, mesh: dict) -> str:
     geom.pop("name", None)
     m = {k: v for k, v in mesh.items() if k not in ("name", "geometry")}
     payload = {"version": SCRIPT_VERSION, "source": geom, "mesh": m}
+    vol = M.volume_of(model, M.geometry_of(model, mesh))
+    if vol is not None:                   # the boundary of a volume: its selections are regions of it
+        payload["volume"] = vol
     if mesh.get("sizes") or any(isinstance(r, dict) and r.get("selection", M.ALL) != M.ALL
                                 for r in mesh.get("refine") or []):     # located by selections: they matter
         full = M.geometry_of(model, mesh)
         payload["size_selections"] = {n: s for n, s in M.selection_table(model, full).items()
                                       if not s.get("builtin")}
-    src = geom.get("source", {})
+    src = (vol if vol is not None else geom).get("source", {})
     if "file" in src:
         path = M.resolve_file(model, src["file"])
         payload["file"] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
@@ -1291,7 +1340,10 @@ def cache_key(model: dict, mesh: dict) -> str:
     the parameters: a parameter used elsewhere does not invalidate it)."""
     geom = M.geometry_of(model, mesh)
     payload = {"version": SCRIPT_VERSION, "geometry": geom, "mesh": mesh}
-    src = geom.get("source", {})
+    vol = M.volume_of(model, geom)
+    if vol is not None:
+        payload["volume"] = vol
+    src = (vol if vol is not None else geom).get("source", {})
     if "file" in src:
         path = M.resolve_file(model, src["file"])
         payload["file"] = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None

@@ -34,6 +34,11 @@
      - surface
      - getfem
      - heat_conduction
+   * - :ref:`heated_tray.json <gui-example-heated_tray>`
+     - Heated tray: a sheet-metal tray (the boundary of a box, its lid off), heated at its bottom, its rim held at 20 degrees (boundary geometry)
+     - boundary, box
+     - getfem
+     - heat_conduction
    * - :ref:`heated_wire.json <gui-example-heated_wire>`
      - Heated wire: a bent wire, its ends held at fixed temperatures (curve geometry)
      - curve 2D

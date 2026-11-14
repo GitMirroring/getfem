@@ -138,7 +138,8 @@ def _model_with_source(src: dict) -> dict:
 
 # ------------------------------------------------------------------ pages
 
-SOURCE_DIMS = {"box": 2, "csg": 2, "curve": 2, "surface": 3, "swept_surface": 3, "cad": 3, "mesh_file": 2}
+SOURCE_DIMS = {"box": 2, "csg": 2, "curve": 2, "surface": 3, "swept_surface": 3, "cad": 3, "mesh_file": 2,
+               "boundary": 3}
 
 
 def _source_labels() -> dict:
@@ -155,7 +156,7 @@ def geometry_sources() -> str:
             "geometry in the model file.\n\n")
     out += _table(["Source", "Description", "Meshers"],
                   [[f":ref:`{_lit(t)} <gui-ref-source-{t}>`", _esc(labels.get(t, t)),
-                    ", ".join(_lit(x) for x, srcs in M.MESHERS.items() if t in srcs)]
+                    ", ".join(_lit(x) for x, srcs in M.MESHERS.items() if t in srcs) or "those of its solid"]
                    for t in M.GEOMETRY_SOURCES], [20, 50, 30])
     for t in M.GEOMETRY_SOURCES:
         src = E._default_source(t, SOURCE_DIMS[t])
@@ -163,7 +164,7 @@ def geometry_sources() -> str:
         meshers = [x for x, srcs in M.MESHERS.items() if t in srcs]
         out += f".. _gui-ref-source-{t}:\n\n" + _title(t if labels.get(t, t) == t else
                                                          f"{t}: {labels[t]}", "-")
-        out += f"Meshers: {', '.join(_lit(x) for x in meshers)}.\n\n"
+        out += f"Meshers: {', '.join(_lit(x) for x in meshers) or 'those of its solid'}.\n\n"
         out += _fields_doc(m, ("geometries", 0), ("geometries", 0, "source"), skip=("type",))
         try:
             builtin = [n for n, s in M.selection_table(m, m["geometries"][0]).items() if s.get("builtin")]
@@ -257,9 +258,10 @@ def selections() -> str:
 def meshers() -> str:
     out = HEADER + ".. _gui-ref-meshers:\n\n" + _title("Meshers", "=")
     out += "The meshers and the geometry sources they accept:\n\n"
-    rows = [[_lit(x)] + ["yes" if s in srcs else "" for s in M.GEOMETRY_SOURCES]
+    rows = [[_lit(x)] + ["yes" if s in srcs else "" for s in M.GEOMETRY_SOURCES if s != "boundary"]
             for x, srcs in M.MESHERS.items()]
-    out += _table(["Mesher"] + [_lit(s) for s in M.GEOMETRY_SOURCES], rows)
+    out += _table(["Mesher"] + [_lit(s) for s in M.GEOMETRY_SOURCES if s != "boundary"], rows)
+    out += "A ``boundary`` geometry is meshed by the meshers of its solid.\n\n"
     out += (f"A new mesh of a box is structured; the other ones use {_lit(E.DEFAULT_MESHER)} "
             "when it accepts the source (environment variable ``GETFEM_GUI_DEFAULT_MESHER``).\n\n")
     for x, srcs in M.MESHERS.items():

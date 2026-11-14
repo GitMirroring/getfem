@@ -25,6 +25,7 @@ EXTRA_DIST = README.md CLAUDE.md pyproject.toml getfem_gui examples doc tests/ch
 
 GUI_TESTS =                                     \
     tests/test_app.py                           \
+    tests/test_boundary.py                      \
     tests/test_coupling.py                      \
     tests/test_curved.py                        \
     tests/test_curve_view.py                    \
