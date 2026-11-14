@@ -97,6 +97,9 @@ Geometry sources
                        "center": [...], "angle": a, "axis": [...]}   the union of n copies
 - cad       : {"type": "cad", "file": "part.step"}                   STEP, IGES, BREP (through Gmsh)
 - mesh_file : {"type": "mesh_file", "file": "part.msh"}              the geometry is the mesh
+- surface   : {"type": "surface", "shape": <2D shape>, "origin", "axes", "height"}  a flat domain
+              placed in 3D, or {"type": "surface", "shape": <2D shape in (u, v)>, "parametric":
+              {"x": ..., "y": ..., "z": ...}} a parametric surface (see manifold.py)
 - boundary  : {"type": "boundary", "geometry": "solid"[, "selection": "top"]}   the boundary of a 3D
               geometry of the model (or the faces of one of its boundary selections), a surface:
               the volume meshed with the mesh parameters, its faces extracted; its boundary
@@ -1198,7 +1201,10 @@ def _validate_geometry(model, geom, where, errors):
             errors.append(f"{where}.source.closed: true or false expected")
     elif t == "surface":
         _check_shape(src.get("shape"), 2, f"{where}.source.shape", errors)
-        _check_placement(model, src, where, errors)
+        if "parametric" in src:
+            _check_param_surface(model, geom, where, errors)
+        else:
+            _check_placement(model, src, where, errors)
     elif t == "boundary":
         name = src.get("geometry")
         vol = find_geometry(model, name)
@@ -1327,6 +1333,36 @@ def _check_placement(model, src, where, errors):
             P.scalar(hgt, dict(vals, x=0.1, y=0.2))
         except (ValueError, SyntaxError) as exc:
             errors.append(f"{where}.source.height: {exc}")
+
+
+def _check_param_surface(model, geom, where, errors):
+    """A parametric surface: x, y and z expressions of u, v and the
+    parameters; finite on its flat domain, its tangents independent."""
+    from . import manifold
+    par = geom["source"]["parametric"]
+    if not isinstance(par, dict):
+        errors.append(f"{where}.source.parametric: {{'x', 'y', 'z'}} expected")
+        return
+    vals, _ = P.values(model)
+    n = len(errors)
+    for k in manifold.AXES:
+        e = par.get(k, 0.0)
+        if isinstance(e, bool) or not isinstance(e, (int, float, str)):
+            errors.append(f"{where}.source.parametric.{k}: number or expression of u, v expected")
+            continue
+        try:
+            manifold.surface_code(e, vals)
+        except (ValueError, SyntaxError) as exc:
+            errors.append(f"{where}.source.parametric.{k}: {exc}")
+    if len(errors) > n or any(e.startswith(f"{where}.source") for e in errors):
+        return
+    try:
+        sub = {"parameters": model.get("parameters", []), "geometries": [geom]}
+        problem = manifold.param_surface_problem(P.resolved(sub)["geometries"][0]["source"], vals)
+    except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError, P.ParameterError) as exc:
+        problem = f"cannot be evaluated ({exc})"
+    if problem:
+        errors.append(f"{where}.source.parametric: {problem}")
 
 
 def _check_edges(src, crit, where, errors):
@@ -1470,6 +1506,17 @@ def _validate_mesh(model, mesh, where, errors):
             errors.append(f"{where}.element: quadrangles in 2D; in 3D, hexahedra by layers only "
                           "(an extrusion or a revolution)")
     _validate_sizes(model, geom, mesh, where, errors, layers)
+    if mesher == "netgen" and stype == "surface" and "parametric" in src \
+            and not any(e.startswith("geometries") for e in errors):
+        from . import manifold
+        try:
+            sub = {"parameters": model.get("parameters", []), "geometries": [geom]}
+            seams = manifold.seams(P.resolved(sub)["geometries"][0]["source"], P.values(model)[0])
+        except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError, P.ParameterError):
+            seams = []
+        if seams:
+            errors.append(f"{where}.mesher: the seams of a parametric surface (sides that meet) are not "
+                          "meshed by Netgen (use GetFEM or Gmsh)")
     if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipse"):
         errors.append(f"{where}.mesher: ellipses are not meshed by Netgen yet (use Gmsh)")
     if mesher == "netgen" and stype == "csg" and _has_type(src.get("shape", {}), "ellipsoid"):

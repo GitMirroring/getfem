@@ -829,7 +829,8 @@ class MainWindow(QMainWindow):
             return True
         vals, _ = P.values(model)
         what = {"curve": "curve" + (" (its polygon below: in its plane)" if manifold.is_placed(src) else ""),
-                "surface": "surface (the flat domain below: its selections)",
+                "surface": ("parametric surface" if "parametric" in src else "surface")
+                + " (the flat domain below: its selections)",
                 "swept_surface": "swept surface"}[src["type"]]
         try:
             self.viewer.show_manifold(src, vals, status=f"{geom['name']}: {what} (preview, no mesh)",

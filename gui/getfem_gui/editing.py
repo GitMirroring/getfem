@@ -453,7 +453,7 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
             node = _shape_node(src["shape"], ("geometries", i, "source", "shape"),
                                2 if src["type"] == "surface" else geometry_dim(model, i))
             if src["type"] == "surface":
-                node.label = f"Flat domain: {node.label}"
+                node.label = f"Flat domain{' (u, v)' if 'parametric' in src else ''}: {node.label}"
             gn.children.append(node)
         elif src.get("type") in ("curve", "swept_surface") and isinstance(src.get("shape"), dict):
             node = _shape_node(src["shape"], ("geometries", i, "source", "shape"), 2)    # drawn as a polygon
@@ -1200,8 +1200,24 @@ def fields(model: dict, path: Path) -> list[Field]:
                 if t == "curve":
                     out.append(Field(base, "", "info", help="The ends of an open curve are the built-in "
                                                             "selections start and end."))
+            elif t == "surface" and "parametric" in src:
+                out.append(Field(base + ("parametric",), "Map", "choice",
+                                 ((False, "a plane and a height"), (True, "parametric (x, y, z of u, v)")),
+                                 op="surface_map"))
+                out += [Field(base + ("parametric", k), f"{k}(u, v)", "value",
+                              help="An expression of u, v (the coordinates of the flat domain) and the "
+                                   "parameters (cos, sin, exp, sqrt, pow...)") for k in "xyz"]
+                out.append(Field(base, "", "info", help="The flat domain (2D shape below, in the coordinates u, "
+                                                        "v: x and y of its view) is mapped to (x(u, v), y(u, v), "
+                                                        "z(u, v)); its selections are defined on it. Its sides "
+                                                        "that the map sends to the same curve are merged (a "
+                                                        "seam: a cylinder, a torus); the map must not degenerate "
+                                                        "(no pole: take a flat domain that avoids it)."))
             elif t == "surface":
-                out += [_vec_field(base + ("origin",), "Origin", "numbers", 3),
+                out += [Field(base + ("parametric",), "Map", "choice",
+                              ((False, "a plane and a height"), (True, "parametric (x, y, z of u, v)")),
+                              op="surface_map"),
+                        _vec_field(base + ("origin",), "Origin", "numbers", 3),
                         _vec_field(base + ("axes", 0), "Axis x", "numbers", 3),
                         _vec_field(base + ("axes", 1), "Axis y", "numbers", 3),
                         Field(base + ("height",), "Height", "value",
@@ -1823,6 +1839,8 @@ GEOMETRY_KINDS = (
     ("Curves and surfaces", "curve2", "Curve in 2D", "segments and arcs: beams, cables"),
     ("Curves and surfaces", "curve3", "Curve in 3D", "segments and arcs: beams, cables"),
     ("Curves and surfaces", "surface", "Surface in 3D", "a flat domain plus a height: shells"),
+    ("Curves and surfaces", "surface_param", "Parametric surface (3D)",
+     "x, y, z functions of (u, v) on a flat domain: a cylinder, a torus"),
     ("Curves and surfaces", "swept_extrusion", "Extruded curve (3D surface)", "a 2D curve extruded along z"),
     ("Curves and surfaces", "swept_revolution", "Revolved curve (3D surface)",
      "a 2D curve turned about the z axis"),
@@ -1851,6 +1869,9 @@ def new_geometry_source(kind: str) -> dict:
                 "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], "height": 0.0}
     if kind == "surface":
         return _default_source("surface", 3)
+    if kind == "surface_param":               # a cylinder (u: the angle, v: the height)
+        return {"type": "surface", "shape": {"type": "rectangle", "min": [0.0, 0.0], "max": ["2*pi", 1.0]},
+                "parametric": {"x": "cos(u)", "y": "sin(u)", "z": "v"}}
     if kind == "swept_extrusion":
         return {"type": "swept_surface", "sweep": "extrusion", "z": [0.0, 1.0], "shape": empty}
     if kind == "swept_revolution":
@@ -2046,6 +2067,8 @@ def field_value(model: dict, f: Field):
         return f"material:{pc['material']}" if "material" in pc else "value"
     if f.op == "box_dim":
         return len(get_at(model, f.key, []))
+    if f.op == "surface_map":
+        return "parametric" in get_at(model, f.key[:-1], {})
     if f.op == "placement":
         shape = get_at(model, f.key[:-1], {})
         return "custom" if "origin" in shape or "axes" in shape else "xy"
@@ -2156,6 +2179,16 @@ def apply(model: dict, f: Field, value) -> Path | None:
     key = f.key
     if f.op is None:
         set_at(model, key, value)
+        return None
+    if f.op == "surface_map":                # a plane and a height, or parametric (the flat domain kept)
+        src = get_at(model, key[:-1])
+        if bool(value) != ("parametric" in src):
+            for k in ("origin", "axes", "height", "parametric"):
+                src.pop(k, None)
+            if value:
+                src["parametric"] = {"x": "u", "y": "v", "z": "0"}
+            else:
+                src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
         return None
     if f.op == "boundary_of":                # another volume: its faces kept if it has that selection
         src = get_at(model, key[:-1])

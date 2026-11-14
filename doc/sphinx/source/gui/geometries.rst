@@ -499,6 +499,22 @@ than their space:
    ``x``, ``y`` and of the parameters (``"(sqr(x) + sqr(y))/(4*f)"``). Its
    selections are those of the flat domain (edges, regions, criteria in
    the local coordinates).
+
+   A parametric surface is a ``surface`` whose *Map* is parametric: the
+   flat domain, a 2D constructive tree in the coordinates (u, v) (x and y
+   of its view), mapped to (x(u, v), y(u, v), z(u, v)), three expressions of
+   u, v and of the parameters (*Parametric surface* in the menu of the kinds
+   of geometry: a cylinder, ``cos(u)``, ``sin(u)``, ``v`` on [0, 2 pi] x [0,
+   1]; a torus, a cone, a Moebius strip...). Its selections are defined on
+   the flat domain. The sides of the flat domain that the map sends to the
+   same curve, in the same direction or reversed, are merged: a seam (the
+   cylinder, the torus are closed); they are meshed alike (periodic with
+   Gmsh, nodes inserted with the GetFEM mesher; not with Netgen). The map
+   must not degenerate (a pole: the sphere at its poles; a fold): take a
+   flat domain that avoids it, or the ``boundary`` of a solid. The elements
+   are of the element size on the surface: the flat domain is meshed scaled
+   along u and v by the typical stretches of the map, with local sizes where
+   the stretch varies. See ``examples/heated_pipe.json``.
 ``swept_surface`` (3D)
    A 2D curve extruded along z between two values, or turned about the z
    axis between two angles (the curve, in the (r, z) half plane, must then

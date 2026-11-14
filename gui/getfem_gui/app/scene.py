@@ -1288,7 +1288,10 @@ def manifold_preview(src: dict, values: dict, n: int = 120) -> pv.PolyData:
         curves = G3.profile_curves(prim, h)
         face = _profile_face(src["shape"], curves, h)
         P = manifold.map_surface(np.asarray(face.points)[:, :2].T, src, values).T
-        return pv.PolyData(P, np.asarray(face.faces))
+        surf = pv.PolyData(P, np.asarray(face.faces))
+        if manifold.is_param_surface(src):          # its seams closed
+            surf = surf.clean(tolerance=1e-9 * (float(np.ptp(P, axis=0).max()) or 1.0), absolute=True)
+        return surf
     # a swept surface: the polyline of its curve times the sweep
     X = manifold.chain_polyline(src)
     m = max(24, int(np.ceil(n * manifold.sweep_length(src) / max(float(np.ptp(X, axis=0).max()), 1e-300))))

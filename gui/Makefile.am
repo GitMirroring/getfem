@@ -44,6 +44,7 @@ GUI_TESTS =                                     \
     tests/test_heat.py                          \
     tests/test_manifolds.py                     \
     tests/test_meshers.py                       \
+    tests/test_param_surface.py                 \
     tests/test_parameters.py                    \
     tests/test_polygon.py                       \
     tests/test_quality.py                       \

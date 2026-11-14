@@ -180,6 +180,9 @@ Meshers: ``getfem``, ``gmsh``, ``netgen``.
    * - Name
      - ``geometries.0.name``
      - name
+   * - Map
+     - ``parametric``
+     - one of ``false`` (a plane and a height), ``true`` (parametric (x, y, z of u, v))
    * - Origin
      - ``origin``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter

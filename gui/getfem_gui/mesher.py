@@ -269,9 +269,10 @@ def _source_shape(src):
     return T.flatten(src["shape"], src.get("dim", 2))
 
 
-def _build_getfem(model, geom, mesh, w, between=None):
+def _build_getfem(model, geom, mesh, w, between=None, vertices=None):
     """The GetFEM mesher; between(w): the local sizes, located on a first
-    mesh of the global size (then meshed again with them)."""
+    mesh of the global size (then meshed again with them); vertices: more
+    fixed vertices (2D: dim x n)."""
     src = geom["source"]
     shape = _source_shape(src)
     w("# Implicit description of the geometry (MesherObject)")
@@ -289,7 +290,8 @@ def _build_getfem(model, geom, mesh, w, between=None):
         J = np.array([p for p in J if all(np.linalg.norm(p - q) > 1e-9 * h for q in V.T)], float).T.reshape(2, -1)
     elif src["type"] == "csg" and src.get("dim") == 3:
         J = _fillet_lines_3d(shape, h)
-    fixed = V.shape[1] + J.shape[1] > 0
+    seam = vertices is not None and vertices.size > 0       # (the seams of a parametric surface)
+    fixed = V.shape[1] + J.shape[1] > 0 or seam
     w("# GetFEM experimental mesher: element size h, geometric degree K")
     if not fixed:
         w(f"m = gf.Mesh('generate', {top}, {h!r}, {K})")
@@ -298,7 +300,11 @@ def _build_getfem(model, geom, mesh, w, between=None):
         w("# inside the domain), and at the ends of the fillets and splines: the elements follow")
         w("# them, each one is in one region, each boundary face on one side")
         rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in np.hstack([V, J]))
-        w(f"interface_vertices = np.array([{rows}])")
+        w(f"interface_vertices = np.array([{rows}]).reshape({dim}, -1)")
+        if seam:
+            w("# the vertices of the seams: the same on both sides (exactly)")
+            w(f"seam_vertices = np.array({vertices.tolist()!r})")
+            w("interface_vertices = np.hstack([interface_vertices, seam_vertices])")
         w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices)")
     w("m.optimize_structure()   # the points numbered without holes (some removed by the mesher)")
     if between is None:
@@ -317,6 +323,8 @@ def _build_getfem(model, geom, mesh, w, between=None):
             w(f"along = np.zeros(({dim}, 0))")
         rows = ", ".join("[" + ", ".join(f"{x:.12g}" for x in row) + "]" for row in J)
         w(f"interface_vertices = np.hstack([along, np.array([{rows}]).reshape({dim}, -1)])")
+        if seam:
+            w("interface_vertices = np.hstack([interface_vertices, seam_vertices])")
         w(f"m = gf.Mesh('generate', {top}, {h!r}, {K}, interface_vertices, SIZE_POINTS, SIZE_VALUES, GROWTH)")
     w("m.optimize_structure()")
 
@@ -454,7 +462,7 @@ def _ng_place(shape, v, w):
     w(f"{v} = {v}.Move(Vec({O[0]!r}, {O[1]!r}, {O[2]!r}))")
 
 
-def _build_gmsh(model, geom, mesh, w, msh_name, between=None):
+def _build_gmsh(model, geom, mesh, w, msh_name, between=None, periodic=None):
     src = geom["source"]
     w("import math")
     w("import gmsh")
@@ -472,6 +480,8 @@ def _build_gmsh(model, geom, mesh, w, msh_name, between=None):
         _occ_shape(shape, dim, w)
         w("gmsh.model.occ.synchronize()")
         w(f"dim = {dim}")
+    if periodic:                                    # (the seams of a parametric surface)
+        periodic(w)
     if mesh.get("element") == "quad":
         w("# Quadrangles: Frontal-Delaunay for quads, Blossom recombination, then one")
         w("# subdivision, which guarantees quadrangles only (and halves the size:")
@@ -744,6 +754,9 @@ def _build_flat(model, geom, mesh, w, basename):
     selections, which are defined on it)."""
     g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": T.flatten(geom["source"]["shape"], 2)},
           "selections": geom.get("selections", {})}
+    if "parametric" in geom["source"]:
+        _build_param_flat(model, geom, mesh, w, basename)
+        return
     w("# The flat domain (local coordinates x, y)")
     if mesh["mesher"] == "getfem":
         _build_getfem(model, g2, mesh, w)
@@ -753,10 +766,162 @@ def _build_flat(model, geom, mesh, w, basename):
         _build_netgen(model, g2, mesh, w, f"{basename}_netgen.msh")
 
 
+def _stretches(src, vals, Q, step):
+    from . import manifold
+    Xu, Xv = manifold.surface_tangents(src, vals, Q[0], Q[1], 1e-6 * step)
+    return np.linalg.norm(Xu, axis=0), np.linalg.norm(Xv, axis=0)
+
+
+def _build_param_flat(model, geom, mesh, w, basename):
+    """The flat domain of a parametric surface, meshed so that its elements
+    are of the size of the mesh once mapped: scaled along u and v by the
+    typical stretches of the map (|X_u|, |X_v|) when its shape can be (then
+    scaled back), of size h / s, s the largest stretch at a point (local
+    sizes where it varies: the function local_size for Gmsh, at points of a
+    grid for the GetFEM mesher and Netgen). The two sides of a seam are
+    meshed alike: periodic (Gmsh), nodes inserted (GetFEM)."""
+    from . import manifold
+    src0 = geom["source"]
+    vals, _ = P.values(model)
+    key = "h" if mesh["mesher"] == "getfem" else "size"
+    h = float(mesh[key])
+    Q, step = manifold.surface_samples(src0, 61)
+    nu, nv = _stretches(src0, vals, Q, step)
+    su, sv = (float(f"{np.median(x):.4g}") for x in (nu, nv))      # (rounded: a plain scale)
+    src = manifold.scaled_surface(src0, su, sv) if su > 0 and sv > 0 else None
+    if src is None:
+        src, su, sv = src0, 1.0, 1.0
+    Q, step = manifold.surface_samples(src, 61)
+    nu, nv = _stretches(src, vals, Q, step)
+    stretch = np.maximum(nu, nv)
+    smin, smax = float(stretch.min()), float(stretch.max())
+    h_flat = h / smin
+    flat = dict(mesh, **{key: h_flat})
+    g2 = {"name": geom["name"], "source": {"type": "csg", "dim": 2, "shape": T.flatten(src["shape"], 2)},
+          "selections": {}}
+    w("# The flat domain (coordinates u, v)" + (f", meshed scaled by ({su:.6g}, {sv:.6g}) (the typical "
+                                                 "stretches of the map along u and v)" if (su, sv) != (1, 1) else ""))
+    w("def MAP_FLAT(u, v):        # the map, of the coordinates of the mesh of the flat domain")
+    codes = [manifold.surface_code(src["parametric"].get(k, 0.0), vals) for k in manifold.AXES]
+    w(f"    return np.vstack([{', '.join(codes)}])")
+    w(f"H_SURFACE, EPS = {h!r}, {1e-6 * step!r}")
+    w("def stretch(u, v):")
+    w("    Xu = (MAP_FLAT(u + EPS, v) - MAP_FLAT(u - EPS, v)) / (2 * EPS)")
+    w("    Xv = (MAP_FLAT(u, v + EPS) - MAP_FLAT(u, v - EPS)) / (2 * EPS)")
+    w("    return np.maximum(np.linalg.norm(Xu, axis=0), np.linalg.norm(Xv, axis=0))")
+    w(f"# the size there: {h!r} / s, s the largest stretch at a point (from {smin:.4g} to {smax:.4g})")
+
+    def size(p):                             # the size in the flat domain at points p (2 x k)
+        a, b = _stretches(src, vals, p, step)
+        return np.minimum(h_flat, h / np.maximum(a, b))
+    seams = manifold.seams(src, vals)
+    vertices = np.hstack([manifold.seam_vertices(src, vals, sm, size) for sm in seams]) if seams \
+        else np.zeros((2, 0))
+
+    def periodic(w):
+        w("# The seams: each side meshed as its other side (periodic), so that they match once mapped")
+        for sm in seams:
+            axis, (a0, a1), (t0, t1) = sm["axis"], sm["at"], sm["range"]
+            eps = 1e-7 * float(max(Q.max(axis=1) - Q.min(axis=1)))
+            box = lambda a: [a - eps, t0 - eps, -1, a + eps, t1 + eps, 1] if axis == 0 \
+                else [t0 - eps, a - eps, -1, t1 + eps, a + eps, 1]                     # noqa: E731
+            Tr = np.eye(4)
+            Tr[axis, 3] = a1 - a0
+            if sm["reversed"]:
+                Tr[1 - axis, 1 - axis], Tr[1 - axis, 3] = -1.0, t0 + t1
+            w(f"_master = gmsh.model.getEntitiesInBoundingBox(*{box(a0)!r}, 1)")
+            w(f"_slave = gmsh.model.getEntitiesInBoundingBox(*{box(a1)!r}, 1)")
+            w("if len(_master) != 1 or len(_slave) != 1:")
+            w("    raise RuntimeError('a seam of the parametric surface: one curve on each side expected')")
+            w(f"gmsh.model.mesh.setPeriodic(1, [_slave[0][1]], [_master[0][1]], {Tr.ravel().tolist()!r})")
+    between = None
+    if smax > 1.2 * smin:                    # local sizes
+        lo, hi = Q.min(axis=1), Q.max(axis=1)
+
+        def between(w):
+            w.section("Local sizes: the stretch of the map")
+            w(f"H_GLOBAL, GROWTH, DIM = {h_flat!r}, 1.2, 2")
+            w("def local_size(X):")
+            w("    # the size of the elements at the points X (n x 2) of the flat domain")
+            w("    with np.errstate(all='ignore'):")
+            w("        s = H_SURFACE / stretch(X[:, 0], X[:, 1])")
+            w("    return np.minimum(H_GLOBAL, np.where(np.isfinite(s), s, H_GLOBAL))")
+            n = int(min(16, max(8, np.ceil(float(max(hi - lo)) / (h / smax)))))
+            w(f"U, V = np.meshgrid(np.linspace({lo[0]!r}, {hi[0]!r}, {n}), np.linspace({lo[1]!r}, {hi[1]!r}, {n}))")
+            w("GRID = np.vstack([U.ravel(), V.ravel()])")
+            w("SIZES = local_size(GRID.T)")
+            w("finer = SIZES < 0.95 * H_GLOBAL")
+            w("finer[np.argmin(SIZES)] = True")
+            w("SIZE_POINTS, SIZE_VALUES = GRID[:, finer], SIZES[finer]")
+            w("SIZE_SETS = [(SIZE_POINTS[:, j:j + 1], float(SIZE_VALUES[j])) for j in range(SIZE_VALUES.size)]")
+            w("def thin_out(V):")
+            w("    size = local_size(V.T)")
+            w("    kept = []")
+            w("    for j in range(V.shape[1]):")
+            w("        if all(np.linalg.norm(V[:, j] - V[:, k]) > 0.7 * min(size[j], size[k]) for k in kept):")
+            w("            kept.append(j)")
+            w("    return V[:, kept]")
+    if flat["mesher"] == "getfem" and seams:          # seams: matched, then of its degree
+        K = int(mesh.get("order", 1))
+        _build_getfem(model, g2, dict(flat, order=1), w, between, vertices)
+        w("")
+        w("# The seams: the two sides of each one made the same (nodes inserted), then degree " + str(K))
+        w(manifold.SEAM_CODE)
+        w(f"m = fix_seams(m, {[(sm['axis'], *sm['at'], *sm['range'], sm['reversed']) for sm in seams]!r}, "
+          f"{w.top}, {K})")
+    elif flat["mesher"] == "getfem":
+        _build_getfem(model, g2, flat, w, between, vertices)
+    elif flat["mesher"] == "gmsh":
+        _build_gmsh(model, g2, flat, w, f"{basename}_gmsh.msh", between, periodic if seams else None)
+    else:
+        _build_netgen(model, g2, flat, w, f"{basename}_netgen.msh", between)
+    if (su, sv) != (1, 1):
+        w("# scaled back to (u, v)")
+        w(f"m.transform([[{1 / su!r}, 0.0], [0.0, {1 / sv!r}]])")
+
+
 def _map_flat(model, geom, w):
     from . import manifold
     src = geom["source"]
     vals, _ = P.values(model)
+    if "parametric" in src:
+        w("")
+        w("def MAP(u, v):")
+        codes = [manifold.surface_code(src["parametric"].get(k, 0.0), vals) for k in manifold.AXES]
+        w(f"    return np.vstack([{', '.join(codes)}])")
+        w("# The flat domain mapped to the surface: (u, v) -> MAP(u, v); the points that then")
+        w("# coincide are merged (a seam), the faces of the flat domain there no longer on the boundary")
+        w(manifold.REMESH_CODE)
+        seams = manifold.seams(src, vals)
+        if seams:
+            w("# The seams: the nodes of each side moved to those of the other side (the meshers")
+            w("# make them nearly the same), so that they coincide once mapped")
+            w(f"SEAMS = {[(sm['axis'], *sm['at'], *sm['range'], sm['reversed']) for sm in seams]!r}")
+            w("_P = m.pts()")
+            w("_tol = 1e-7 * np.ptp(_P, axis=1).max()")
+            w("for axis, a0, a1, t0, t1, rev in SEAMS:")
+            w("    on = lambda a: np.flatnonzero((np.abs(_P[axis] - a) < _tol) & (_P[1 - axis] > t0 - _tol)")
+            w("                                  & (_P[1 - axis] < t1 + _tol))")
+            w("    A, B = on(a0), on(a1)")
+            w("    ta, tb = _P[1 - axis, A], _P[1 - axis, B]")
+            w("    tb = t0 + t1 - tb if rev else tb")
+            w("    ia, ib = np.argsort(ta), np.argsort(tb)")
+            w("    if A.size != B.size:")
+            w("        raise RuntimeError(f'the two sides of a seam of the surface are meshed differently '")
+            w("                           f'({A.size} and {B.size} nodes): change the element size a little')")
+            w("    _P[1 - axis, B[ib]] = t0 + t1 - ta[ia] if rev else ta[ia]")
+            w("    _P[axis, A], _P[axis, B] = a0, a1")
+            w("m.set_pts(_P)")
+        w("u, v = m.pts()")
+        w("m, new = remesh(m, MAP(u, v), 3)")
+        w("SEL = remap_selections(SEL, new)")
+        w("_outer = m.outer_faces(2)")
+        w("_outer = set((_outer[0].astype(np.int64) * 64 + _outer[1]).tolist())")
+        w("for _name, (_kind, _ids) in list(SEL.items()):")
+        w("    if _kind == 'boundary' and _ids.size:")
+        w("        _keep = [j for j in range(_ids.shape[1]) if int(_ids[0, j]) * 64 + int(_ids[1, j]) in _outer]")
+        w("        SEL[_name] = (_kind, _ids[:, _keep])")
+        return
     o, e1, e2, n = manifold.frame(src)
     w("")
     w("# The flat domain mapped to the surface: origin + x e1 + y e2 + height(x, y) n")

@@ -41,6 +41,12 @@ Sources:
   unit normal e1 x e2; the height h is a number or an expression of x, y
   and the parameters. The selections are defined on the flat domain (local
   coordinates), as for a 2D geometry.
+- {"type": "surface", "shape": <2D CSG shape>, "parametric": {"x": ..., "y":
+  ..., "z": ...}}: a parametric surface, its points (x, y, z) expressions of
+  the coordinates (u, v) of the flat domain (the 2D shape) and of the
+  parameters (a cylinder: "cos(u)", "sin(u)", "v" on [0, 2 pi] x [0, 1]);
+  the points of its edges that meet are merged (the seam of a cylinder, of
+  a torus), the map must not degenerate (no pole).
 - {"type": "swept_surface", "sweep": "extrusion" or "revolution", "shape"
   (an open or closed polygon, as a 2D curve) or "points", "through",
   "closed" (a 2D chain, as a curve), "z": [z0, z1] (extrusion
@@ -396,8 +402,182 @@ def frame(src: dict):
     return o, e1, e2, np.cross(e1, e2)
 
 
+def is_param_surface(src: dict) -> bool:
+    return src.get("type") == "surface" and isinstance(src.get("parametric"), dict)
+
+
+def surface_code(expr, values: dict) -> str:
+    """Python (numpy) expression of a coordinate of a parametric surface, an
+    array function of u and v (the parameters replaced by their values)."""
+    return height_code(expr, values, ("u", "v")).replace("0 * x)", "0 * u)")
+
+
+def param_surface_points(src: dict, values: dict, u, v) -> np.ndarray:
+    """Points (3 x n) of a parametric surface at the coordinates (u, v)."""
+    u, v = np.asarray(u, float), np.asarray(v, float)
+    par = src["parametric"]
+    return np.vstack([eval(surface_code(par.get(k, 0.0), values), {"np": np, "__builtins__": {}},  # noqa: S307
+                           {"u": u, "v": v}) + 0.0 * u for k in AXES])
+
+
+def surface_tangents(src: dict, values: dict, u, v, eps: float):
+    """The tangents (X_u, X_v) of a parametric surface (3 x n each), by
+    centered differences of step eps."""
+    u, v = np.asarray(u, float), np.asarray(v, float)
+    f = lambda a, b: param_surface_points(src, values, a, b)     # noqa: E731
+    return (f(u + eps, v) - f(u - eps, v)) / (2 * eps), (f(u, v + eps) - f(u, v - eps)) / (2 * eps)
+
+
+def surface_samples(src: dict, n: int = 41):
+    """Points (u, v) of the flat domain of a surface (2 x k), on a grid of its
+    bounding box (its edges included), and the step of the grid."""
+    from . import geometry2d as G
+    lo, hi = G.bounds(src["shape"])
+    U, V = np.meshgrid(np.linspace(lo[0], hi[0], n), np.linspace(lo[1], hi[1], n))
+    P = np.vstack([U.ravel(), V.ravel()])
+    step = float(max(hi[0] - lo[0], hi[1] - lo[1])) / (n - 1)
+    inside = G.sdf(src["shape"], P.T) <= 1e-9 * max(step, 1e-300)
+    return P[:, inside], step
+
+
+def param_surface_problem(src: dict, values: dict) -> str | None:
+    """Why a parametric surface cannot be meshed (not finite, a pole or a
+    fold: its tangents not independent at a point of its flat domain)."""
+    P, step = surface_samples(src)
+    if P.shape[1] == 0:
+        return "the flat domain is empty"
+    with np.errstate(all="ignore"):
+        X = param_surface_points(src, values, P[0], P[1])
+        if not np.all(np.isfinite(X)):
+            j = int(np.flatnonzero(~np.all(np.isfinite(X), axis=0))[0])
+            return f"not finite at (u, v) = ({P[0, j]:.4g}, {P[1, j]:.4g})"
+        Xu, Xv = surface_tangents(src, values, P[0], P[1], 1e-6 * max(step, 1e-300))
+    nu, nv = np.linalg.norm(Xu, axis=0), np.linalg.norm(Xv, axis=0)
+    J = np.linalg.norm(np.cross(Xu.T, Xv.T), axis=1)
+    if not np.all(np.isfinite(J)):
+        return "the map is not differentiable everywhere"
+    bad = J <= 1e-6 * nu.max() * nv.max()
+    if np.any(bad):
+        j = int(np.flatnonzero(bad)[0])
+        return (f"the map degenerates at (u, v) = ({P[0, j]:.4g}, {P[1, j]:.4g}) (a pole, or a fold: its "
+                "elements would be flat); take a flat domain that avoids it")
+    return None
+
+
+def _side_range(src: dict, axis: int, at: float, lo, hi, step: float):
+    """The range of the other coordinate where the line {axis = at} is on
+    the boundary of the flat domain (None if it is not)."""
+    from . import geometry2d as G
+    other = 1 - axis
+    t = np.linspace(lo[other], hi[other], 401)
+    P = np.zeros((401, 2))
+    P[:, axis], P[:, other] = at, t
+    on = np.abs(G.sdf(src["shape"], P)) <= 1e-6 * max(step, 1e-300)
+    if not on.any():
+        return None
+    return float(t[on].min()), float(t[on].max())
+
+
+def seams(src: dict, values: dict) -> list[dict]:
+    """The seams of a parametric surface: two opposite sides of the box of
+    its flat domain (u = u0 and u = u1, or v = v0 and v = v1), on its
+    boundary, that the map sends to the same curve, point by point, in the
+    same direction or reversed (a Moebius strip): [{"axis": 0 (u) or 1 (v),
+    "at": (a0, a1), "range": (t0, t1), "reversed": bool}]."""
+    from . import geometry2d as G
+    lo, hi = (np.asarray(x, float) for x in G.bounds(src["shape"]))
+    step = float(max(hi - lo)) / 40
+    out = []
+    for axis in (0, 1):
+        r0 = _side_range(src, axis, lo[axis], lo, hi, step)
+        r1 = _side_range(src, axis, hi[axis], lo, hi, step)
+        if r0 is None or r1 is None or abs(r0[0] - r1[0]) > 1e-9 * step or abs(r0[1] - r1[1]) > 1e-9 * step:
+            continue
+        t = np.linspace(r0[0], r0[1], 101)
+        A = np.zeros((2, t.size))
+        A[axis], A[1 - axis] = lo[axis], t
+        B = A.copy()
+        B[axis] = hi[axis]
+        with np.errstate(all="ignore"):
+            XA = param_surface_points(src, values, A[0], A[1])
+            scale = float(np.ptp(XA, axis=1).max()) or 1.0
+            for rev in (False, True):
+                Bt = B.copy()
+                if rev:
+                    Bt[1 - axis] = r0[0] + r0[1] - t
+                XB = param_surface_points(src, values, Bt[0], Bt[1])
+                if np.all(np.linalg.norm(XA - XB, axis=0) <= 1e-9 * scale):
+                    out.append({"axis": axis, "at": (float(lo[axis]), float(hi[axis])), "range": r0,
+                                "reversed": rev})
+                    break
+    return out
+
+
+def seam_vertices(src: dict, values: dict, seam: dict, size) -> np.ndarray:
+    """Points (2 x n) on the two sides of a seam, about size(points) apart
+    (a function of the points 2 x k of the flat domain), the same ones on
+    both sides (mirrored if reversed): the vertices of the flat mesh there,
+    so that the sides match once mapped."""
+    axis, (a0, a1), (t0, t1) = seam["axis"], seam["at"], seam["range"]
+    t = np.linspace(t0, t1, 401)
+    p = np.zeros((2, t.size))
+    p[axis], p[1 - axis] = a0, t
+    density = 1.0 / (0.8 * np.asarray(size(p), float))              # points per unit of t
+    cum = np.concatenate([[0.0], np.cumsum(0.5 * (density[1:] + density[:-1]) * np.diff(t))])
+    n = max(2, int(np.ceil(cum[-1])))
+    t = np.interp(np.linspace(0.0, cum[-1], n + 1), cum, t)        # evenly in the local size
+    t[0], t[-1] = t0, t1
+    A = np.zeros((2, t.size))
+    A[axis], A[1 - axis] = a0, t
+    B = np.zeros((2, t.size))
+    B[axis], B[1 - axis] = a1, (t0 + t1 - t) if seam["reversed"] else t
+    return np.hstack([A, B])
+
+
+def scaled_shape(shape: dict, su: float, sv: float) -> dict | None:
+    """The 2D shape scaled by (su, sv) along its axes (None if it cannot be:
+    fillets, curved sides, turned ellipses)."""
+    t = shape.get("type")
+    if t in ("union", "intersection", "difference"):
+        parts = [scaled_shape(c, su, sv) for c in shape.get("of", [])]
+        return None if any(p is None for p in parts) else dict(shape, of=parts)
+    S = np.array([su, sv])
+    if t == "rectangle":
+        return dict(shape, min=(S * np.asarray(shape["min"], float)).tolist(),
+                    max=(S * np.asarray(shape["max"], float)).tolist())
+    if t == "polygon" and not shape.get("fillets") and not shape.get("splines"):
+        return dict(shape, points=[(S * np.asarray(p, float)).tolist() for p in shape["points"]])
+    if t == "ball":
+        return {"type": "ellipse", "center": (S * np.asarray(shape["center"], float)).tolist(),
+                "radii": [float(shape["radius"]) * su, float(shape["radius"]) * sv], "angle": 0.0}
+    if t == "ellipse" and float(shape.get("angle", 0.0)) % 180.0 == 0.0:
+        r = np.asarray(shape["radii"], float)
+        return dict(shape, center=(S * np.asarray(shape["center"], float)).tolist(), radii=(S * r).tolist())
+    return None
+
+
+def scaled_surface(src: dict, su: float, sv: float) -> dict | None:
+    """The parametric surface with its flat domain scaled by (su, sv), the
+    map then of the scaled coordinates (None if the shape cannot be)."""
+    shape = scaled_shape(src["shape"], su, sv)
+    if shape is None:
+        return None
+
+    class Sub(ast.NodeTransformer):
+        def visit_Name(self, node):
+            if node.id in ("u", "v"):
+                k = su if node.id == "u" else sv
+                return ast.copy_location(ast.BinOp(ast.Name(node.id, ast.Load()), ast.Div(), ast.Constant(k)), node)
+            return node
+    par = {k: (ast.unparse(Sub().visit(ast.parse(str(e), mode="eval")).body) if isinstance(e, str) else e)
+           for k, e in src["parametric"].items()}
+    return dict(src, shape=shape, parametric=par)
+
+
 def map_surface(P2: np.ndarray, src: dict, values: dict) -> np.ndarray:
     """Points of a surface (3 x n) for points of its flat domain (2 x n)."""
+    if is_param_surface(src):
+        return param_surface_points(src, values, P2[0], P2[1])
     o, e1, e2, n = frame(src)
     x, y = P2[0], P2[1]
     hgt = eval(height_code(src.get("height", 0.0), values), {"np": np, "__builtins__": {}},  # noqa: S307
@@ -445,6 +625,81 @@ def script_functions() -> list[str]:
     for fn in SCRIPT_FUNCTIONS:
         lines += inspect.getsource(fn).rstrip().splitlines() + [""]
     return lines
+
+
+SEAM_CODE = '''
+def fix_seams(m, seams, top, K):
+    """A flat mesh of triangles (degree 1) whose seams match: on each seam,
+    the nodes of a side missing on the other side are inserted there (the
+    triangle along it split), the nearly equal ones made equal; then of
+    degree K (its boundary nodes projected on the domain top)."""
+    P = [p for p in m.pts().T]
+    pid, idx = m.pid_from_cvid(m.cvid())
+    T = [list(pid[idx[i]:idx[i + 1]]) for i in range(len(idx) - 1)]
+    X = np.array(P)
+    tol = 1e-7 * np.ptp(X, axis=0).max()
+    for axis, a0, a1, t0, t1, rev in seams:
+        def side(a):
+            X = np.array(P)
+            return [i for i in np.flatnonzero(np.abs(X[:, axis] - a) < tol)
+                    if t0 - tol < X[i, 1 - axis] < t1 + tol]
+        def t_of(i, b):              # the coordinate along the side, that of side A
+            t = P[i][1 - axis]
+            return t0 + t1 - t if (rev and b) else t
+        def point(t, b):
+            p = np.zeros(2)
+            p[axis] = a1 if b else a0
+            p[1 - axis] = t0 + t1 - t if (rev and b) else t
+            return p
+        A = sorted(side(a0), key=lambda i: t_of(i, 0))
+        B = sorted(side(a1), key=lambda i: t_of(i, 1))
+        ta, tb = [t_of(i, 0) for i in A], [t_of(i, 1) for i in B]
+        tau = 0.25 * min(np.diff(ta).min(), np.diff(tb).min())
+        # merged along the side: a node of A and one of B closer than tau are one, made equal
+        events = sorted([(t, 0, i) for t, i in zip(ta, A)] + [(t, 1, i) for t, i in zip(tb, B)])
+        k, pairs = 0, []
+        while k < len(events):
+            if k + 1 < len(events) and events[k + 1][0] - events[k][0] < tau and events[k + 1][1] != events[k][1]:
+                pairs.append((events[k], events[k + 1]))
+                k += 2
+            else:
+                pairs.append((events[k],))
+                k += 1
+        sides = {0: A, 1: B}
+        for group in pairs:
+            if len(group) == 2:                           # the node of B moved to that of A
+                ea, eb = sorted(group, key=lambda e: e[1])
+                P[eb[2]] = point(ea[0], 1)
+                continue
+            t, s, i = group[0]                            # missing on the other side: inserted there
+            b = 1 - s
+            mine = sides[b]
+            tm = np.array([t_of(j, b) for j in mine])
+            k = int(np.searchsorted(tm, t))
+            i0, i1 = mine[k - 1], mine[k]                 # the edge (i0, i1): split
+            n = len(P)
+            P.append(point(t, b))
+            for c, tri in enumerate(list(T)):
+                if i0 in tri and i1 in tri:
+                    T[c] = [n if q == i1 else q for q in tri]
+                    T.append([n if q == i0 else q for q in tri])
+                    break
+            mine.insert(k, n)
+    X = np.array(P).T
+    T = np.array(T).T
+    gt = gf.GeoTrans(f'GT_PK(2,{K})')
+    out = gf.Mesh('empty', 2)
+    R = gt.pts()
+    A, B, C = X[:, T[0]], X[:, T[1]], X[:, T[2]]
+    nodes = A[:, None, :] + (B - A)[:, None, :] * R[0][None, :, None] + (C - A)[:, None, :] * R[1][None, :, None]
+    out.add_convex(gt, nodes)
+    if K > 1:                        # the nodes of the boundary on the domain
+        Q = out.pts()
+        ids = out.pid_in_faces(out.outer_faces())
+        Q[:, ids] = top.project(Q[:, ids])
+        out.set_pts(Q)
+    return out
+'''
 
 
 REMESH_CODE = '''

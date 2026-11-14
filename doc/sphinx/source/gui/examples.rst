@@ -124,6 +124,20 @@ conductivity is that of copper times the section of the wire. The ``length``
 output gives the length of the wire, arcs included; ``heat_out``, the heat
 that leaves it by its ends, balances the heat generated.
 
+.. _gui-example-heated_pipe:
+
+Heated pipe (``heated_pipe.json``)
+----------------------------------
+
+A parametric ``surface``: the flat domain [0, 2 pi] x [0, L] in (u, v),
+mapped to the tube (R cos(u), R sin(u), v). Its sides u = 0 and u = 2 pi
+meet: they are merged (a seam), so the tube is closed. The flat domain is
+the union of two rectangles, so that the heated half of the tube is the
+region ``heated``; the ends of the tube (``plane`` criteria in (u, v)) are
+held at 20 °C. ``heat_out_inlet`` and ``heat_out_outlet`` share the heat
+received; ``area`` and ``heated_area`` are those of the tube and of its
+heated half.
+
 .. _gui-example-heated_tray:
 
 Heated tray (``heated_tray.json``)

@@ -184,7 +184,9 @@ to the interpreter that runs the computations (`getfem.util_version()`).
     normal, a number or an expression of the local coordinates
     (`"(sqr(x) + sqr(y))/(4*f)"`); its selections are defined on the flat
     domain (edges, regions, criteria in local coordinates), which the tree
-    shows below the geometry;
+    shows below the geometry; or a parametric surface, the flat domain in
+    (u, v) mapped to (x, y, z), expressions of u, v (its seams merged: a
+    cylinder, a torus; no pole);
   - `swept_surface` (3D): a 2D curve extruded along z or turned about the z
     axis (an angle range; the curve must not touch the axis), meshed in
     quadrangles;

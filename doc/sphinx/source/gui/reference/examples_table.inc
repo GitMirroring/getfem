@@ -34,6 +34,11 @@
      - surface
      - getfem
      - heat_conduction
+   * - :ref:`heated_pipe.json <gui-example-heated_pipe>`
+     - Heated pipe: a thin tube (a parametric surface, its seam closed), heated on one side, its ends held at 20 degrees
+     - surface
+     - getfem
+     - heat_conduction
    * - :ref:`heated_tray.json <gui-example-heated_tray>`
      - Heated tray: a sheet-metal tray (the boundary of a box, its lid off), heated at its bottom, its rim held at 20 degrees (boundary geometry)
      - boundary, box

@@ -1,0 +1,55 @@
+{
+  "format_version": 3,
+  "name": "Heated pipe: a thin tube (a parametric surface, its seam closed), heated on one side, its ends held at 20 degrees",
+  "parameters": [
+    {"name": "R", "value": 0.05, "description": "radius of the pipe (m)"},
+    {"name": "L", "value": 0.6, "description": "length of the pipe (m)"},
+    {"name": "e", "value": 0.002, "description": "thickness of the wall (m)"},
+    {"name": "flux", "value": 1000, "description": "heat flux received by the heated half (W/m2)"}
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "pipe",
+      "source": {
+        "type": "surface",
+        "shape": {"type": "union", "of": [
+          {"type": "rectangle", "min": [0, 0], "max": ["pi", "L"]},
+          {"type": "rectangle", "min": ["pi", 0], "max": ["2*pi", "L"]}
+        ]},
+        "parametric": {"x": "R*cos(u)", "y": "R*sin(u)", "z": "v"}
+      },
+      "selections": {
+        "heated": {"kind": "domain", "criteria": {"type": "regions", "regions": [[[0]]]}},
+        "inlet": {"kind": "boundary", "criteria": {"type": "plane", "point": [0, 0], "normal": [0, 1]}},
+        "outlet": {"kind": "boundary", "criteria": {"type": "plane", "point": [0, "L"], "normal": [0, 1]}}
+      }
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "pipe", "mesher": "getfem", "h": 0.015, "order": 2}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "properties": {"k": [{"selection": "all", "value": "15*e"}]},
+          "sources": [{"selection": "heated", "value": "flux"}],
+          "conditions": [
+            {"type": "temperature", "selection": "inlet", "value": 20},
+            {"type": "temperature", "selection": "outlet", "value": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "area", "expr": "1", "selection": "all"},
+        {"name": "heated_area", "expr": "1", "selection": "heated"},
+        {"name": "heat_out_inlet", "expr": "-k*Grad_T.Normal", "selection": "inlet"},
+        {"name": "heat_out_outlet", "expr": "-k*Grad_T.Normal", "selection": "outlet"}
+      ],
+      "vtu": "pipe.vtu"
+    }
+  ]
+}
