@@ -453,11 +453,15 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
             if src["type"] == "surface":
                 node.label = f"Flat domain: {node.label}"
             gn.children.append(node)
-        elif src.get("type") == "curve" and isinstance(src.get("shape"), dict):   # drawn as a polygon
-            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"), 2)
+        elif src.get("type") in ("curve", "swept_surface") and isinstance(src.get("shape"), dict):
+            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"), 2)    # drawn as a polygon
             n = len(src["shape"].get("points") or [])
-            node.label = f"Curve: {'open' if src['shape'].get('open') else 'closed'} polygon" \
-                + (f" ({n} vertices)" if n else " (to draw)") + (" in its plane" if src.get("dim") == 3 else "")
+            where = " in its plane" if src.get("dim") == 3 else ""
+            if src["type"] == "swept_surface":
+                where = " in the (r, z) plane" if src.get("sweep") == "revolution" else " in the (x, y) plane"
+            node.label = f"{'Curve' if src['type'] == 'curve' else 'Swept curve'}: " \
+                f"{'open' if src['shape'].get('open') else 'closed'} polygon" \
+                + (f" ({n} vertices)" if n else " (to draw)") + where
             gn.children.append(node)
         sels = Node(("geometries", i, "selections"), "Selections", "selections")
         for name, s in M.selection_table(model, g).items():
@@ -605,12 +609,31 @@ def _plane_of(points3) -> tuple[list, list, list]:
     return list(o), axes, Q
 
 
+def _sweep_fields(base: Path, src: dict) -> list:
+    out = [Field(base + ("sweep",), "Sweep", "choice",
+                 (("extrusion", "extrusion along z (curve in the (x, y) plane)"),
+                  ("revolution", "revolution about z (curve in the (r, z) plane)")))]
+    if src.get("sweep") == "revolution":
+        out.append(_vec_field(base + ("angle",), "From angle to angle (degrees)", "numbers", 2))
+    else:
+        out.append(_vec_field(base + ("z",), "From z to z", "numbers", 2))
+    return out
+
+
+SWEEP_KEYS = ("sweep", "z", "angle")
+
+
 def curve_as_polygon(model: dict, gi: int) -> dict:
     """The source of the curve gi given by points and arcs, as a polygon:
     its points the vertices, each arc a curved side through its point (a
     spline); in 3D, in the plane of its first points (the height: 0). A
     parametric curve: through points along it."""
     src = model["geometries"][gi]["source"]
+    if src.get("type") == "swept_surface":           # its curve, in its plane; the sweep kept
+        sweep = {k: src[k] for k in SWEEP_KEYS if k in src}
+        flat = curve_as_polygon({"parameters": model.get("parameters", []),
+                                 "geometries": [{"name": "g", "source": dict(src, type="curve", dim=2)}]}, 0)
+        return dict({"type": "swept_surface", "shape": flat["shape"]}, **sweep)
     if isinstance(src.get("parametric"), dict):
         src = curve_as_points(model, gi)
     dim = 3 if src.get("dim") == 3 else 2
@@ -660,6 +683,12 @@ def curve_as_points(model: dict, gi: int) -> dict:
     from . import manifold
     src = P.resolved(model)["geometries"][gi]["source"]
     vals, _ = P.values(model)
+    if src.get("type") == "swept_surface":           # its curve by points; the sweep kept
+        orig = model["geometries"][gi]["source"]
+        flat = curve_as_points({"parameters": model.get("parameters", []),
+                                "geometries": [{"name": "g", "source": dict(orig, type="curve", dim=2)}]}, 0)
+        flat.pop("dim")
+        return dict(flat, type="swept_surface", **{k: orig[k] for k in SWEEP_KEYS if k in orig})
     if manifold.is_parametric(src):
         closed = manifold.is_closed(src, vals)
         X = manifold.chain_polyline(src, values=vals)[::10]
@@ -698,7 +727,7 @@ def curve_as_points(model: dict, gi: int) -> dict:
 def is_curve_polygon(model: dict, path: Path) -> bool:
     """The node is the polygon of a 2D curve (its only shape)."""
     return path[:1] == ("geometries",) and len(path) == 4 and path[2:4] == ("source", "shape") \
-        and get_at(model, path[:3], {}).get("type") == "curve"
+        and get_at(model, path[:3], {}).get("type") in ("curve", "swept_surface")
 
 
 def _shape_fields(model, path, dim) -> list[Field]:
@@ -1139,6 +1168,13 @@ def fields(model: dict, path: Path) -> list[Field]:
                         Field(base, "", "info", help="The curve t -> (x(t), y(t)" + (", z(t)" if dim == 3 else "")
                               + "), divided into elements along its length; closed when its two ends meet "
                                 "(else they are the built-in selections start and end).")]
+            elif t == "swept_surface" and isinstance(src.get("shape"), dict):
+                out += _sweep_fields(base, src)
+                out.append(Field(base, "", "info", help="The swept curve is the polygon below, drawn and edited "
+                                                        "in the view as the polygons of a 2D geometry, open or "
+                                                        "closed, in the plane "
+                                                        + ("(r, z): it must not touch the axis r = 0."
+                                                           if src.get("sweep") == "revolution" else "(x, y).")))
             elif t in ("curve", "swept_surface"):
                 if t == "curve":
                     out.append(Field(base + ("dim",), "Dimension of the space", "choice",
@@ -1783,9 +1819,9 @@ def new_geometry_source(kind: str) -> dict:
         return _default_source("curve", int(kind[-1]))
     if kind == "surface":
         return _default_source("surface", 3)
-    if kind == "swept_extrusion":
-        return {"type": "swept_surface", "sweep": "extrusion", "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
-                "through": [None, None], "closed": False, "z": [0.0, 1.0]}
+    if kind == "swept_extrusion":            # an open polygon, edited in the view
+        return {"type": "swept_surface", "sweep": "extrusion", "z": [0.0, 1.0],
+                "shape": {"type": "polygon", "open": True, "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}}
     if kind == "swept_revolution":
         return _default_source("swept_surface", 3)
     if kind in ("cad", "mesh_file"):
@@ -1809,8 +1845,8 @@ def _default_source(t: str, dim: int) -> dict:
         return {"type": "surface", "shape": {"type": "rectangle", "min": [0.0, 0.0], "max": [1.0, 1.0]},
                 "origin": [0.0, 0.0, 0.0], "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], "height": 0.0}
     if t == "swept_surface":
-        return {"type": "swept_surface", "sweep": "revolution", "points": [[1.0, 0.0], [1.0, 1.0]],
-                "through": [None], "closed": False, "angle": [0.0, 360.0]}
+        return {"type": "swept_surface", "sweep": "revolution", "angle": [0.0, 360.0],
+                "shape": {"type": "polygon", "open": True, "points": [[1.0, 0.0], [1.0, 1.0]]}}
     return {"type": t, "file": ""}
 
 
@@ -2443,6 +2479,10 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif path[:1] == ("geometries",) and n == 2:
         out += [("add_selection", "Add a selection"), ("add_mesh", "Add a mesh of this geometry")]
         src = get_at(model, path + ("source",), {})
+        if src.get("type") == "swept_surface":
+            out.append(("curve:points", "Give the swept curve by points and arcs (a table)")
+                       if isinstance(src.get("shape"), dict) else
+                       ("curve:polygon", "Draw the swept curve as a polygon (in the view)"))
         if src.get("type") == "curve":
             in_plane = " in a plane" if src.get("dim") == 3 else ""
             if not isinstance(src.get("shape"), dict):
@@ -3442,7 +3482,7 @@ def can_draw(model: dict, path: Path) -> int | None:
         return gi
     if src.get("type") == "csg" and src.get("dim") == 2:
         return gi
-    if src.get("type") == "curve" and isinstance(src.get("shape"), dict) and len(path) <= 4 \
+    if src.get("type") in ("curve", "swept_surface") and isinstance(src.get("shape"), dict) and len(path) <= 4 \
             and (src.get("dim") == 2 or len(path) == 4):
         return gi                             # a curve: its polygon (in 3D, in its plane: from its node)
     return None
@@ -3652,7 +3692,7 @@ def add_shape_2d(model: dict, gi: int, shape: dict, op: str, root: Path | None =
     notes: list[str] = []
     geom = model["geometries"][gi]
     base = tuple(root) if root is not None else ("geometries", gi, "source", "shape")
-    if geom["source"].get("type") == "curve":     # a curve: the polygon drawn replaces it
+    if geom["source"].get("type") in ("curve", "swept_surface"):    # a curve: the polygon drawn replaces it
         if shape.get("type") != "polygon":
             raise ValueError("a curve is drawn as a polygon (the polygon tool)")
         set_at(model, base, {"type": "polygon", "points": [list(p) for p in shape["points"]],

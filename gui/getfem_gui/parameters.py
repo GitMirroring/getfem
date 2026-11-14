@@ -459,9 +459,10 @@ def _resolve_geometries(geoms, meshes, prefix, vals, errors):
                     holder = {"v": ax}
                     _resolve(holder, ("v",), f"{where}.axes[{j}]", vals, errors)
                     src["axes"][j] = holder["v"]
-        elif src.get("type") == "curve" and isinstance(src.get("shape"), dict):   # drawn as a polygon
-            _resolve_shape(src["shape"], f"{where}.shape", vals, errors)
+        elif src.get("type") in ("curve", "swept_surface") and isinstance(src.get("shape"), dict):
+            _resolve_shape(src["shape"], f"{where}.shape", vals, errors)       # drawn as a polygon
             _solve_sketches(src["shape"], 2, f"{where}.shape", errors)
+            _resolve(src, ("z", "angle"), where, vals, errors)          # (a swept surface)
             _resolve(src, ("origin",), where, vals, errors)           # (in 3D: its plane)
             for j, ax in enumerate(src.get("axes") or []):
                 if isinstance(ax, (list, str)):

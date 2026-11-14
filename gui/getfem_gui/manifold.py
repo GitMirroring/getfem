@@ -41,8 +41,9 @@ Sources:
   unit normal e1 x e2; the height h is a number or an expression of x, y
   and the parameters. The selections are defined on the flat domain (local
   coordinates), as for a 2D geometry.
-- {"type": "swept_surface", "sweep": "extrusion" or "revolution", "points",
-  "through", "closed" (a 2D chain, as a curve), "z": [z0, z1] (extrusion
+- {"type": "swept_surface", "sweep": "extrusion" or "revolution", "shape"
+  (an open or closed polygon, as a 2D curve) or "points", "through",
+  "closed" (a 2D chain, as a curve), "z": [z0, z1] (extrusion
   along z of a curve of the (x, y) plane) or "angle": [a0, a1] (revolution
   about the z axis, in degrees, of a curve of the (r, z) half plane, which
   must not touch the axis)}.
@@ -84,15 +85,15 @@ def chain_dim(src: dict) -> int:
 # ------------------------------------------------------------- the chain
 
 def curve_polygon(src: dict) -> dict | None:
-    """The polygon of a 2D curve drawn as a polygon (None for a chain of
-    points)."""
+    """The polygon of a curve or of the curve of a swept surface drawn as a
+    polygon (None for a chain of points)."""
     shape = src.get("shape")
-    return shape if src.get("type") == "curve" and isinstance(shape, dict) else None
+    return shape if src.get("type") in ("curve", "swept_surface") and isinstance(shape, dict) else None
 
 
 def is_placed(src: dict) -> bool:
     """A 3D curve drawn as a polygon in its plane (origin, axes, height)."""
-    return curve_polygon(src) is not None and src.get("dim") == 3
+    return src.get("type") == "curve" and curve_polygon(src) is not None and src.get("dim") == 3
 
 
 def is_parametric(src: dict) -> bool:
@@ -421,7 +422,7 @@ def sweep_length(src: dict) -> float:
     largest circle."""
     if src.get("sweep") == "revolution":
         a0, a1 = (math.radians(float(v)) for v in src.get("angle", [0.0, 360.0]))
-        r = max(float(p[0]) for p in src.get("points", [[1.0, 0.0]]))
+        r = float(np.max(chain_polyline(src)[:, 0]))
         return abs(a1 - a0) * r
     z0, z1 = (float(v) for v in src.get("z", [0.0, 1.0]))
     return abs(z1 - z0)

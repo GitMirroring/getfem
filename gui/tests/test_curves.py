@@ -15,7 +15,8 @@
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
 """Curves drawn as polygons (open or closed, with fillets, splines and
-constraints; in 3D in a plane) and parametric curves: the geometry of open
+constraints; in 3D in a plane; the curves of the swept surfaces) and
+parametric curves: the geometry of open
 polygons, validation, the pieces and the elements (lengths), solves on
 them, editing (conversions, actions, handles, dimensions), drawing in the
 view (open, closed).
@@ -71,6 +72,18 @@ def length_of(m):
         assert res.ok, res.error
         msh = gf.Mesh("load", str(res.path))
         mim = gf.MeshIm(msh, gf.Integ("IM_GAUSS1D(10)"))
+        return gf.asm_generic(mim, 0, "1", -1)
+
+
+def area_of(m):
+    """The area of the mesh of a swept surface."""
+    import getfem as gf
+    from getfem_gui import mesher
+    with tempfile.TemporaryDirectory() as tmp:
+        res = mesher.ensure_mesh(m, "mesh", tmp)
+        assert res.ok, res.error
+        msh = gf.Mesh("load", str(res.path))
+        mim = gf.MeshIm(msh, gf.Integ("IM_GAUSS_PARALLELEPIPED(2,6)"))
         return gf.asm_generic(mim, 0, "1", -1)
 
 
@@ -161,6 +174,42 @@ def test_placed_and_parametric():
     r = P.resolved(model_with(ellipse))["geometries"][0]["source"]
     assert F.is_closed(r, vals) and F.chain_ends(r, vals) == []
     assert abs(length_of(model_with(ellipse)) - 9.688448220547675) < 1e-4       # the perimeter of the ellipse
+
+
+def test_swept_surfaces():
+    """The curve of a swept surface drawn as a polygon (by default): an
+    extrusion of an open polygon with a fillet (its area: the length of the
+    curve times the height), a revolution of a closed one (a torus of
+    square section, off the axis); the conversions keep the sweep."""
+    ext = {"type": "swept_surface", "sweep": "extrusion", "z": [0, 2],
+           "shape": {"type": "polygon", "open": True, "points": [[0, 0], [1, 0], [1, 1]],
+                     "fillets": [{"vertex": 2, "radius": 0.5}]}}
+    m = model_with(ext, conditions=[], order=2)
+    assert not [e for e in M.validate(m) if e.startswith("geometries")]
+    length = 1 + math.pi * 0.5 / 2
+    assert abs(area_of(m) - 2 * length) < 1e-5
+    rev = {"type": "swept_surface", "sweep": "revolution", "angle": [0, 360],
+           "shape": {"type": "polygon", "points": [[1, 0], [2, 0], [2, 1], [1, 1]]}}
+    m = model_with(rev, conditions=[], order=2, h=0.1)
+    assert abs(area_of(m) - 2 * math.pi * (1 + 2 + 1.5 + 1.5)) < 1e-2        # Pappus: length x 2 pi r
+    bad = copy.deepcopy(rev)
+    bad["shape"]["points"][0] = [0, 0]
+    assert any("must not touch the axis" in e for e in M.validate(model_with(bad, conditions=[])))
+    m = M.default_model()
+    for kind in ("swept_extrusion", "swept_revolution"):
+        m["geometries"][0]["source"] = E.new_geometry_source(kind)
+        m["geometries"][0]["selections"] = {}
+        assert m["geometries"][0]["source"]["shape"]["open"] is True
+        assert E.find_node(E.tree(m), POLY).label.startswith("Swept curve: open polygon")
+        assert E.can_draw(m, POLY) == 0 and E.can_draw(m, ("geometries", 0)) is None
+        sweep = {k: v for k, v in m["geometries"][0]["source"].items() if k in ("sweep", "z", "angle")}
+        E.do_action(m, ("geometries", 0), "curve:points")
+        src = m["geometries"][0]["source"]
+        assert "points" in src and "shape" not in src and {k: src[k] for k in sweep} == sweep
+        E.do_action(m, ("geometries", 0), "curve:polygon")
+        src = m["geometries"][0]["source"]
+        assert src["type"] == "swept_surface" and "shape" in src and {k: src[k] for k in sweep} == sweep
+        assert not [e for e in M.validate(m) if e.startswith("geometries")]
 
 
 def test_editing():

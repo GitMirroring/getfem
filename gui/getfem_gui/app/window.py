@@ -1069,7 +1069,7 @@ class MainWindow(QMainWindow):
         self._update_undo()
         self._changed(select=E.profile_root(path) or ("geometries", gi))
         what = {"rectangle": "Rectangle", "ball": "Disk", "ellipse": "Ellipse", "polygon": "Polygon"}.get(shape["type"], "Shape")
-        if self.model["geometries"][gi]["source"].get("type") == "curve":
+        if self.model["geometries"][gi]["source"].get("type") in ("curve", "swept_surface"):
             self.state.setText(f"Curve drawn ({'open' if shape.get('open') else 'closed'}, "
                                f"{len(shape['points'])} vertices)")
             return
@@ -1254,7 +1254,8 @@ class MainWindow(QMainWindow):
             return
         gi = E.can_draw(self.model, path)
         self.viewer.set_drawing(preview is not None and gi is not None,
-                                curve=gi is not None and self.model["geometries"][gi]["source"].get("type") == "curve")
+                                curve=gi is not None and self.model["geometries"][gi]["source"].get("type")
+                                in ("curve", "swept_surface"))
         spath = E.constraint_owner(path) or path          # a constraint: the handles of its polygon
         handles = E.shape_handles(self.model, spath) if preview is not None else []
         self.viewer.set_handles([])

@@ -217,11 +217,7 @@ Meshers: ``getfem``.
    * - From angle to angle (degrees)
      - ``angle``
      - numbers or expressions of parameters, one per coordinate, or a vector parameter
-   * - Points
-     - ``points``
-     - table of the points: coordinates, and the point an arc goes through. The curve goes through the points in order: a segment to the next one, or an arc of circle through the point given in the last column ("x, y" or "x, y, z"; empty: a segment).
-   * - Closed
-     - ``closed``
-     - one of ``false`` (no), ``true`` (yes). Closed: the last point is joined to the first one.
+
+The swept curve is the polygon below, drawn and edited in the view as the polygons of a 2D geometry, open or closed, in the plane (r, z): it must not touch the axis r = 0.
 
 Built-in selections: ``all``, ``boundary``.

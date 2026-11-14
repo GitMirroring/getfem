@@ -1106,12 +1106,12 @@ def _validate_geometry(model, geom, where, errors):
                             errors.append(f"{where}.source.parametric: a single point (no length)")
                     except (ValueError, TypeError, ZeroDivisionError, FloatingPointError) as exc:
                         errors.append(f"{where}.source.parametric: {exc}")
-    elif t == "curve" and "shape" in src:        # a curve drawn as a polygon (in a plane in 3D)
+    elif t in ("curve", "swept_surface") and "shape" in src:   # drawn as a polygon (in a plane in 3D)
         from . import manifold
         poly = src.get("shape")
-        if src.get("dim") not in (2, 3):
+        if t == "curve" and src.get("dim") not in (2, 3):
             errors.append(f"{where}.source.dim: 2 or 3 expected")
-        elif src.get("dim") == 3:
+        elif t == "curve" and src.get("dim") == 3:
             _check_placement(model, src, where, errors)
         if not isinstance(poly, dict) or poly.get("type") != "polygon":
             errors.append(f"{where}.source.shape: a polygon expected (open or closed)")
@@ -1124,6 +1124,8 @@ def _validate_geometry(model, geom, where, errors):
                 problem = "the curve cannot be made"
             if problem:
                 errors.append(f"{where}.source.shape: {problem}")
+            elif t == "swept_surface":
+                _check_sweep(src, where, errors)
     elif t in ("curve", "swept_surface"):
         from . import manifold
         dim = manifold.chain_dim(src)
@@ -1145,20 +1147,7 @@ def _validate_geometry(model, geom, where, errors):
             if problem:
                 errors.append(f"{where}.source: {problem}")
             if ok and not problem and t == "swept_surface":
-                if src.get("sweep") not in ("extrusion", "revolution"):
-                    errors.append(f"{where}.source.sweep: 'extrusion' or 'revolution' expected")
-                elif src["sweep"] == "extrusion":
-                    if _check_vec(src.get("z", [0.0, 1.0]), 2, f"{where}.source.z", errors) \
-                            and src.get("z", [0.0, 1.0])[0] >= src.get("z", [0.0, 1.0])[1]:
-                        errors.append(f"{where}.source.z: z0 < z1 expected")
-                else:
-                    ang = src.get("angle", [0.0, 360.0])
-                    if _check_vec(ang, 2, f"{where}.source.angle", errors) and \
-                            not 0 < abs(ang[1] - ang[0]) <= 360:
-                        errors.append(f"{where}.source.angle: an angle between 0 and 360 degrees expected")
-                    if np.min(manifold.chain_polyline(src)[:, 0]) <= 0:
-                        errors.append(f"{where}.source.points: the curve of a revolution must not touch "
-                                      "the axis (r > 0)")
+                _check_sweep(src, where, errors)
         if not isinstance(src.get("closed", False), bool):
             errors.append(f"{where}.source.closed: true or false expected")
     elif t == "surface":
@@ -1234,6 +1223,26 @@ def _validate_geometry(model, geom, where, errors):
                     errors.append(f"{w}.criteria.of: union of unions not supported ({other!r})")
             if not crit.get("of"):
                 errors.append(f"{w}.criteria.of: list of selections expected")
+
+
+def _check_sweep(src, where, errors):
+    """The sweep of a swept surface: along z (z0 < z1), or about the z axis
+    (an angle up to a whole turn; the curve off the axis)."""
+    from . import manifold
+    if src.get("sweep") not in ("extrusion", "revolution"):
+        errors.append(f"{where}.source.sweep: 'extrusion' or 'revolution' expected")
+    elif src["sweep"] == "extrusion":
+        if _check_vec(src.get("z", [0.0, 1.0]), 2, f"{where}.source.z", errors) \
+                and src.get("z", [0.0, 1.0])[0] >= src.get("z", [0.0, 1.0])[1]:
+            errors.append(f"{where}.source.z: z0 < z1 expected")
+    else:
+        ang = src.get("angle", [0.0, 360.0])
+        if _check_vec(ang, 2, f"{where}.source.angle", errors) and \
+                not 0 < abs(ang[1] - ang[0]) <= 360:
+            errors.append(f"{where}.source.angle: an angle between 0 and 360 degrees expected")
+        if np.min(manifold.chain_polyline(src)[:, 0]) <= 0:
+            errors.append(f"{where}.source.{'shape' if 'shape' in src else 'points'}: the curve of a "
+                          "revolution must not touch the axis (r > 0)")
 
 
 def _check_placement(model, src, where, errors):

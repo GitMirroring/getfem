@@ -58,7 +58,7 @@ def shape_of(source: dict) -> dict | None:
     if (t == "csg" and source.get("dim") == 2) or t == "surface":     # surface: its flat domain
         shape = source.get("shape")
         return T.flatten(shape, 2) if isinstance(shape, dict) else shape
-    if t == "curve" and isinstance(source.get("shape"), dict):        # a 2D curve: its polygon (no inside)
+    if t in ("curve", "swept_surface") and isinstance(source.get("shape"), dict):   # a curve: its polygon
         return dict(source["shape"], _curve=True)
     return None
 

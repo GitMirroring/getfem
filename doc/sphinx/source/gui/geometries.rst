@@ -498,9 +498,12 @@ than their space:
    selections are those of the flat domain (edges, regions, criteria in
    the local coordinates).
 ``swept_surface`` (3D)
-   A 2D curve given as for ``curve``, extruded along z between two values,
-   or turned about the z axis between two angles (the curve must then not
-   touch the axis).
+   A 2D curve extruded along z between two values, or turned about the z
+   axis between two angles (the curve, in the (r, z) half plane, must then
+   not touch the axis). The curve is a polygon, open or closed, drawn and
+   edited in the view from its node under the geometry as that of a 2D
+   ``curve`` (the default), or points and arcs in a table (the menu of the
+   geometry node converts between them).
 
 Their meshes are built by the meshing script (see :ref:`gui-meshes`) and
 the models use them as any mesh, the gradients being then tangential. The
