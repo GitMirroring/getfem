@@ -90,11 +90,14 @@ Module
    * - Temperature
      - ``variable``
      - one of ``T``
-   * - conductivity
+   * - Conductivity
      - ``conductivity``
      - one of ``isotropic``, ``anisotropic``
+   * - In time
+     - ``transient``
+     - true or false. Solved in time (with its time derivative), by a transient solver (one is set up when checked); unchecked: stationary (at each time step, in a transient solver)
 
-Properties: k (thermal conductivity), rho (density, in time), cp (specific heat capacity, in time), each given per domain (the last one listed wins).
+Properties: k (thermal conductivity), rho (density, in time), cp (specific heat capacity, in time), each given per domain (the last one listed wins); sources and conditions below.
 
 Property of a module
 --------------------

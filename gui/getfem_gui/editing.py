@@ -171,6 +171,31 @@ def unique_name(base: str, used) -> str:
     return f"{base}{i}"
 
 
+def _solve_in_time(model: dict, md: dict) -> None:
+    """A model solved in time: the main solver made transient (created if
+    none: the models in the order of their imports), the model in it."""
+    if M.is_transient(model, md):
+        return
+    solvers = model.setdefault("solvers", [])
+    if not solvers:
+        s = dict(M.main_solver(model))
+        s = {"name": "main", "type": "transient", "steps": list(s.get("steps", []))}
+        solvers.insert(0, s)
+    s = solvers[0]
+    if md["name"] not in s.setdefault("steps", []):
+        s["steps"].append(md["name"])
+    if s.get("type") != "transient":
+        coupling = s.get("type", "sequence")
+        s["type"] = "transient"
+        s["coupling"] = coupling if coupling in M.COUPLINGS else "sequence"
+    s.setdefault("time", {"start": 0.0, "end": 1.0, "step": 0.1})
+    s.setdefault("save", {"every": 1})
+    s.setdefault("coupling", "sequence")
+    schemes = s.setdefault("schemes", {})
+    for name in s["steps"]:
+        schemes.setdefault(name, {"type": "theta", "theta": 1.0})
+
+
 def _choices(names) -> tuple:
     return tuple((n, n) for n in names)
 
@@ -1022,14 +1047,24 @@ def _model_fields(model, path) -> list[Field]:
             for opt, values in spec.get("options", {}).items():
                 if opt == "plane" and dim != 2:
                     continue
-                out.append(Field(mpath + (opt,), "2D model" if opt == "plane" else opt, "choice",
+                out.append(Field(mpath + (opt,), "2D model" if opt == "plane" else opt.capitalize(), "choice",
                                  tuple((x, f"plane {x}" if opt == "plane" else x) for x in values)))
             for key, kind in spec.get("values", {}).items():
                 out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
+            if spec.get("inertia"):
+                out.append(Field(mpath + ("transient",), "In time", "bool", op="module_transient",
+                                 help="Solved in time (with its time derivative), by a transient solver "
+                                      "(one is set up when checked); unchecked: stationary (at each time "
+                                      "step, in a transient solver)"))
+            from . import equations
+            out.append(Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod)))
             props = ", ".join(f"{p} ({label}{', in time' if p in spec.get('transient_properties', ()) else ''})"
                               for p, label in spec.get("properties", {}).items())
             out.append(Field(mpath, "", "info", help=f"Properties: {props}, each given per domain "
-                             "(the last one listed wins)."))
+                             "(the last one listed wins); sources and conditions below."))
+            terms = equations.gwfl_terms(model, k, rest[1])
+            if terms:
+                out.append(Field(mpath, "GWFL terms of the script", "code", help="\n".join(terms)))
             return out
         if rest[2] == "properties" and n == 5:
             p, j = rest[3], rest[4]
@@ -2210,6 +2245,17 @@ def apply(model: dict, f: Field, value) -> Path | None:
                 src["parametric"] = {"x": "u", "y": "v", "z": "0"}
             else:
                 src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
+        return None
+    if f.op == "module_transient":           # in time: a transient solver for its model, rho and cp
+        mod = get_at(model, key[:-1])
+        mod["transient"] = bool(value)
+        if value:
+            md = model["models"][key[1]]
+            _solve_in_time(model, md)
+            spec = M.MODULE_SPECS[mod["type"]]
+            for p in spec.get("transient_properties", ()):
+                if not mod["properties"].get(p):
+                    mod["properties"][p] = [{"selection": "all", "value": spec["property_defaults"].get(p, 1.0)}]
         return None
     if f.op == "solver_type":                # its type or its coupling; in time: its settings
         s = get_at(model, key[:-1])

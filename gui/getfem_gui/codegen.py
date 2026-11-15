@@ -537,7 +537,7 @@ def setup_model(c: Ctx, w: ScriptWriter) -> None:
         w("")
         MODULES[mod["type"]][1](c, mod, i, w)
         inertia = M.MODULE_SPECS[mod["type"]].get("inertia")
-        if inertia and c.transient:
+        if inertia and c.transient and M.in_time(mod):
             u = mod[inertia["variable"]]
             expr = inertia["expr"].replace("{u}", u)
             w(f"# Time derivative: {expr}")

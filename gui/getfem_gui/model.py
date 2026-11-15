@@ -190,12 +190,13 @@ Transient solver: {"name", "type": "transient", "steps": [model names],
 "save": {"every": n}, "schemes": {model name: {"type": "theta", "theta":
 1}}}. The models are solved at each time step, in turn. A module with a
 time derivative (MODULE_SPECS[...]["inertia"]: its term, rho*cp*Dot_T*Test_T
-for the heat) adds it in a transient model; its transient properties (rho,
-cp) are then required. The scheme gives Dot_u from u (the equation written
-at t_{n+1}): theta-method, Dot_u = (u - Previous_u)/(theta dt) - (1 -
-theta)/theta Previous_Dot_u. A variable starts from its "initial" value (0
-by default). The time is t in the expressions (0 for a stationary model),
-the time step timestep.
+for the heat) is in time if "transient": true (its model must then be in a
+transient solver): it adds its term, its transient properties (rho, cp)
+are then required; otherwise it is stationary (quasi-static in a transient
+solver). The scheme gives Dot_u from u (the equation written at t_{n+1}):
+theta-method, Dot_u = (u - Previous_u)/(theta dt) - (1 - theta)/theta
+Previous_Dot_u. A variable starts from its "initial" value (0 by
+default). The time is t in the expressions (0 for a stationary model).
 
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
@@ -308,7 +309,7 @@ ANCHORING_CONDITIONS = ("dirichlet", "normal_dirichlet", "robin")
 # or VECTOR.
 MODULE_SPECS = {
     "heat_conduction": {
-        "label": "Heat conduction (stationary)",
+        "label": "Heat conduction",
         "variables": {"variable": {"name": "T", "kind": SCALAR, "degree": 2, "label": "temperature"}},
         "properties": {"k": "thermal conductivity", "rho": "density", "cp": "specific heat capacity"},
         "property_defaults": {"k": 1.0, "rho": 1.0, "cp": 1.0},
@@ -694,12 +695,18 @@ def is_transient(model: dict, md: dict) -> bool:
     return s.get("type") == "transient" and md.get("name") in s.get("steps", [])
 
 
+def in_time(mod: dict) -> bool:
+    """Whether a module is solved in time (its "transient" box: its time
+    derivative, in a transient solver), or stationary (quasi-static)."""
+    return bool(mod.get("transient")) and bool(MODULE_SPECS.get(mod.get("type"), {}).get("inertia"))
+
+
 def time_variables(md: dict) -> list[str]:
-    """The variables of a model with a time derivative (of a module)."""
+    """The variables of a model with a time derivative (of a module in time)."""
     out = []
     for mod in md.get("modules", []):
         inertia = MODULE_SPECS.get(mod.get("type"), {}).get("inertia")
-        if inertia:
+        if inertia and in_time(mod):
             spec = MODULE_SPECS[mod["type"]]["variables"][inertia["variable"]]
             u = mod.get(inertia["variable"], spec["name"])
             if u not in out:
@@ -2125,7 +2132,7 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
                    == name for m in md.get("modules", [])):
             errors.append(f"{w}: requires a {MODULE_SPECS[other]['label'].lower()} module on {name!r}")
     # options and values
-    known = {"type", "properties", "sources", "conditions"} | set(spec["variables"])
+    known = {"type", "properties", "sources", "conditions", "transient"} | set(spec["variables"])
     for opt, value in mod.items():
         if opt in known:
             continue
@@ -2140,7 +2147,15 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
             errors.append(f"{w}.{opt}: unknown option for {mtype!r}")
     # properties, per domain selection
     props = mod.get("properties", {})
-    transient = is_transient(model, md)
+    transient = is_transient(model, md) and in_time(mod)
+    if "transient" in mod:
+        if not isinstance(mod["transient"], bool):
+            errors.append(f"{w}.transient: true or false expected")
+        elif mod["transient"] and not spec.get("inertia"):
+            errors.append(f"{w}.transient: no time derivative in this module")
+        elif mod["transient"] and not is_transient(model, md):
+            errors.append(f"{w}.transient: in time, but the model is not solved by a transient solver "
+                          "(add one, or uncheck In time)")
     for prop, label in spec["properties"].items():
         pieces = props.get(prop)
         where = f"{w}.properties.{prop}"

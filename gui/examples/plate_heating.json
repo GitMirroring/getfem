@@ -25,6 +25,7 @@
         {
           "type": "heat_conduction",
           "variable": "T",
+          "transient": true,
           "conductivity": "isotropic",
           "properties": {
             "k": [{"selection": "all", "material": "aluminium"}],

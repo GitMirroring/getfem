@@ -27,8 +27,8 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
-                               QToolButton, QVBoxLayout, QWidget)
+                               QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
 from .. import editing as E, model as M, parameters as P
 
@@ -199,6 +199,26 @@ class PropertiesPanel(QScrollArea):
                 lab.setWordWrap(True)
                 lab.setStyleSheet("color: #555;")
                 form.addRow(lab)
+                continue
+            if f.kind == "rich":                   # HTML text (an equation)
+                lab = QLabel(f.help)
+                lab.setObjectName("rich")
+                lab.setTextFormat(Qt.TextFormat.RichText)
+                lab.setWordWrap(True)
+                lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                if f.label:
+                    form.addRow(QLabel(f"<b>{f.label}</b>"))
+                form.addRow(lab)
+                continue
+            if f.kind == "code":                   # read-only lines (GWFL terms)
+                box = QPlainTextEdit(f.help)
+                box.setObjectName("code")
+                box.setReadOnly(True)
+                box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+                box.setStyleSheet("font-family: monospace; color: #333;")
+                box.setMaximumHeight(min(260, 22 + 16 * (f.help.count("\n") + 1)))
+                form.addRow(QLabel(f"<b>{f.label}</b>"))
+                form.addRow(box)
                 continue
             if f.kind == "parameter_table":
                 form.addRow(self._parameter_table(model, f, errors))
@@ -677,6 +697,11 @@ class PropertiesPanel(QScrollArea):
             if parts is None:
                 return self._line(E.format_value(value), f, E.parse_value, mono=True)
             return self._components(parts, f, E.parse_value)
+        if k == "bool":
+            check = QCheckBox()
+            check.setChecked(bool(value))
+            check.toggled.connect(lambda on, fld=f: self._commit(fld, bool(on)))
+            return check
         if k == "choice":
             combo = QComboBox()
             values = [c[0] for c in f.choices]

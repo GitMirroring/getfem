@@ -10,8 +10,8 @@ A module is a predefined physics acting on variables of its model. Its propertie
 
 .. _gui-ref-module-heat_conduction:
 
-heat_conduction: Heat conduction (stationary)
----------------------------------------------
+heat_conduction: Heat conduction
+--------------------------------
 
 .. list-table::
    :header-rows: 1

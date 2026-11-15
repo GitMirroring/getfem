@@ -43,6 +43,7 @@ def bar(end=0.1, step=0.01, theta=1.0, n=40, every=1):
     md = m["models"][0]
     md["variables"][0]["initial"] = "sin(pi*x)"
     mod = md["modules"][0]
+    mod["transient"] = True
     mod["conditions"] = [{"type": "temperature", "selection": "boundary", "value": 0}]
     mod["properties"].update(rho=[{"selection": "all", "value": 2.0}], cp=[{"selection": "all", "value": 0.5}])
     md["outputs"] = [{"name": "mean", "expr": "T", "selection": "all"}]
@@ -78,8 +79,14 @@ def test_validation():
     m2 = bar()                                   # the density is needed in time
     del m2["models"][0]["modules"][0]["properties"]["rho"]
     assert any("missing density" in e and "needed in time" in e for e in M.validate(m2))
-    m2["solvers"] = []                           # not in a stationary model
+    m2["solvers"] = []                           # in time: a transient solver needed
+    assert any("not solved by a transient solver" in e for e in M.validate(m2))
+    m2["models"][0]["modules"][0]["transient"] = False          # stationary: no density needed
     assert M.validate(m2) == []
+    m2 = bar()                                   # stationary in a transient solver: quasi-static
+    m2["models"][0]["modules"][0]["transient"] = False
+    del m2["models"][0]["modules"][0]["properties"]["rho"]
+    assert M.validate(m2) == [] and M.time_variables(m2["models"][0]) == []
     m2 = bar()
     m2["parameters"] = [{"name": "dt", "value": 0.02}]
     s = m2["solvers"][0]
@@ -273,6 +280,39 @@ def test_window():
         finally:
             win.setWindowModified(False)
             win.close()
+
+
+def test_module_form():
+    """The form of a module: In time (checked: a transient solver set up, rho
+    and cp given; unchecked: stationary, quasi-static), the equation solved
+    and its data, the GWFL terms of the script."""
+    from getfem_gui import equations
+    m = M.default_model()
+    path = ("models", 0, "modules", 0)
+    fields = {f.label: f for f in E.fields(m, path)}
+    assert fields["In time"].kind == "bool" and not E.field_value(m, fields["In time"])
+    eq = fields["Equation"].help
+    assert "<b>Stationary.</b>" in eq and "−div(k ∇T) = f" in eq and "T = 0 &nbsp; on xmin" in eq
+    terms = fields["GWFL terms of the script"].help.splitlines()
+    assert "k*Grad_T.Grad_Test_T" in terms and "T = T_D1_1  on xmin  (Dirichlet)" in terms
+    E.apply(m, fields["In time"], True)
+    s = m["solvers"][0]
+    assert s["type"] == "transient" and s["steps"] == ["heat"] and M.validate(m) == []
+    fields = {f.label: f for f in E.fields(m, path)}
+    assert "ρ c<sub>p</sub> ∂T/∂t − div(k ∇T) = f" in fields["Equation"].help
+    assert "by the solver main: from t = 0 to 1, step 0.1" in fields["Equation"].help
+    assert fields["GWFL terms of the script"].help.splitlines()[-1] == "rho*cp*Dot_T*Test_T"
+    E.apply(m, fields["In time"], False)
+    assert M.validate(m) == [] and "quasi-static" in equations.equation(m, m["models"][0],
+                                                                        m["models"][0]["modules"][0])
+    m2 = M.default_model()                       # a sequence: made transient, its coupling kept
+    m2["models"].append(M.new_model("other", "mesh", "heat_conduction"))
+    m2["solvers"] = [{"name": "chain", "type": "staggered", "steps": ["heat"], "max_iter": 5,
+                      "tolerance": 1e-6, "relaxation": 1.0}]
+    f = next(x for x in E.fields(m2, ("models", 1, "modules", 0)) if x.label == "In time")
+    E.apply(m2, f, True)
+    s = m2["solvers"][0]
+    assert s["type"] == "transient" and s["coupling"] == "staggered" and s["steps"] == ["heat", "other"]
 
 
 if __name__ == "__main__":
