@@ -165,7 +165,8 @@ Criteria are evaluated on the mesh, so they survive remeshing.
 Models
 ------
 - variables : {"name", "mesh", "fem": "lagrange" | "lagrange_discontinuous",
-               "degree": 1..6, "components": 1 | "dim" | n}
+               "degree": 1..6, "components": 1 | "dim" | n, "initial": value
+               at the start of a transient solver (0 by default)}
 - modules   : predefined physics, see MODULE_SPECS (properties per domain
               selection, given by a value or a material; sources;
               conditions of the module)
@@ -182,6 +183,19 @@ Models
 Global solvers: {"name", "type": "sequence" | "staggered", "steps": [model
 names], "max_iter", "tolerance", "relaxation"}; without any, the models are
 solved in an order compatible with their imports.
+
+Transient solver: {"name", "type": "transient", "steps": [model names],
+"time": {"start": 0, "end", "step"}, "coupling": "sequence" | "staggered"
+(then "max_iter", "tolerance", "relaxation": iterations at each time step),
+"save": {"every": n}, "schemes": {model name: {"type": "theta", "theta":
+1}}}. The models are solved at each time step, in turn. A module with a
+time derivative (MODULE_SPECS[...]["inertia"]: its term, rho*cp*Dot_T*Test_T
+for the heat) adds it in a transient model; its transient properties (rho,
+cp) are then required. The scheme gives Dot_u from u (the equation written
+at t_{n+1}): theta-method, Dot_u = (u - Previous_u)/(theta dt) - (1 -
+theta)/theta Previous_Dot_u. A variable starts from its "initial" value (0
+by default). The time is t in the expressions (0 for a stationary model),
+the time step timestep.
 
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
@@ -256,7 +270,9 @@ COORDINATES = ("x", "y", "z")
 
 FEMS = ("lagrange", "lagrange_discontinuous")
 SOLVER_TYPES = ("auto", "linear", "newton")
-GLOBAL_SOLVERS = ("sequence", "staggered")
+GLOBAL_SOLVERS = ("sequence", "staggered", "transient")
+COUPLINGS = ("sequence", "staggered")         # of the models at each time step
+SCHEMES = {"theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)"}
 DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
 COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
 
@@ -294,8 +310,12 @@ MODULE_SPECS = {
     "heat_conduction": {
         "label": "Heat conduction (stationary)",
         "variables": {"variable": {"name": "T", "kind": SCALAR, "degree": 2, "label": "temperature"}},
-        "properties": {"k": "thermal conductivity"},
-        "property_defaults": {"k": 1.0},
+        "properties": {"k": "thermal conductivity", "rho": "density", "cp": "specific heat capacity"},
+        "property_defaults": {"k": 1.0, "rho": 1.0, "cp": 1.0},
+        # the time derivative (written at t_{n+1}; Dot_u given by the scheme) and the
+        # properties only needed then
+        "inertia": {"order": 1, "variable": "variable", "expr": "rho*cp*Dot_{u}*Test_{u}"},
+        "transient_properties": ("rho", "cp"),
         "options": {"conductivity": ("isotropic", "anisotropic")},
         # properties that are dim x dim matrices for a value of an option
         "tensor_properties": {"k": ("conductivity", "anisotropic")},
@@ -589,9 +609,14 @@ def model_fields(model: dict, md: dict) -> list[dict]:
 
 
 def model_properties(md: dict) -> list[str]:
+    """The properties of the modules of a model (those only needed in time
+    if given)."""
     out = []
     for mod in md.get("modules", []):
-        for p in MODULE_SPECS.get(mod.get("type"), {}).get("properties", {}):
+        spec = MODULE_SPECS.get(mod.get("type"), {})
+        for p in spec.get("properties", {}):
+            if p in spec.get("transient_properties", ()) and not mod.get("properties", {}).get(p):
+                continue
             if p not in out:
                 out.append(p)
     return out
@@ -661,6 +686,25 @@ def solve_order(model: dict) -> list[str]:
             break
         order.append(ready[0])
     return order
+
+
+def is_transient(model: dict, md: dict) -> bool:
+    """Whether a model is solved in time (by a transient main solver)."""
+    s = main_solver(model)
+    return s.get("type") == "transient" and md.get("name") in s.get("steps", [])
+
+
+def time_variables(md: dict) -> list[str]:
+    """The variables of a model with a time derivative (of a module)."""
+    out = []
+    for mod in md.get("modules", []):
+        inertia = MODULE_SPECS.get(mod.get("type"), {}).get("inertia")
+        if inertia:
+            spec = MODULE_SPECS[mod["type"]]["variables"][inertia["variable"]]
+            u = mod.get(inertia["variable"], spec["name"])
+            if u not in out:
+                out.append(u)
+    return out
 
 
 def main_solver(model: dict) -> dict:
@@ -1758,7 +1802,9 @@ def validate(model: dict) -> list[str]:
         for j, st in enumerate(steps):
             if st not in mnames:
                 errors.append(f"{where}.steps[{j}]: unknown model {st!r}")
-        if s.get("type") == "staggered":
+        if s.get("type") == "transient":
+            _validate_transient(model, s, where, steps, errors)
+        if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
             _check_int(s.get("max_iter", 20), 1, 10000, f"{where}.max_iter", errors)
             tol = s.get("tolerance", 1e-6)
             if isinstance(tol, bool) or not isinstance(tol, (int, float)) or tol <= 0:
@@ -1773,6 +1819,53 @@ def validate(model: dict) -> list[str]:
         if not isinstance(model.get(key, []), list):
             errors.append(f"{key}: list expected")
     return errors
+
+
+def time_values(model: dict, s: dict) -> tuple[float, float, float]:
+    """Start, end and step of a transient solver (numbers or expressions of
+    the parameters; ValueError)."""
+    vals, _ = P.values(model)
+    t = s.get("time") or {}
+    return tuple(P.scalar(t.get(k, d), vals) for k, d in (("start", 0.0), ("end", None), ("step", None)))
+
+
+def _validate_transient(model, s, where, steps, errors) -> None:
+    t = s.get("time")
+    if not isinstance(t, dict) or "end" not in t or "step" not in t:
+        errors.append(f"{where}.time: {{'start', 'end', 'step'}} expected")
+    else:
+        try:
+            t0, t1, dt = time_values(model, s)
+        except (ValueError, TypeError, P.ParameterError) as exc:
+            errors.append(f"{where}.time: {exc}")
+        else:
+            if not t1 > t0:
+                errors.append(f"{where}.time.end: after the start expected")
+            elif not dt > 0:
+                errors.append(f"{where}.time.step: strictly positive expected")
+            elif (t1 - t0) / dt > 1e6:
+                errors.append(f"{where}.time.step: more than a million steps")
+    if s.get("coupling", "sequence") not in COUPLINGS:
+        errors.append(f"{where}.coupling: {', '.join(COUPLINGS)} expected, got {s.get('coupling')!r}")
+    save = s.get("save", {})
+    if not isinstance(save, dict):
+        errors.append(f"{where}.save: {{'every': n}} expected")
+    else:
+        _check_int(save.get("every", 1), 1, 10 ** 9, f"{where}.save.every", errors)
+    schemes = s.get("schemes", {})
+    if not isinstance(schemes, dict):
+        errors.append(f"{where}.schemes: {{model name: scheme}} expected")
+        return
+    for name, sc in schemes.items():
+        w = f"{where}.schemes.{name}"
+        if name not in steps:
+            continue                                    # (a model no longer solved: ignored)
+        if not isinstance(sc, dict) or sc.get("type", "theta") not in SCHEMES:
+            errors.append(f"{w}.type: {', '.join(SCHEMES)} expected")
+        else:
+            th = sc.get("theta", 1.0)
+            if isinstance(th, bool) or not isinstance(th, (int, float)) or not 0 < th <= 1:
+                errors.append(f"{w}.theta: number in ]0, 1] expected")
 
 
 def _where(model, key, item, owner) -> str:
@@ -1797,7 +1890,8 @@ def _check_import_order(model, errors) -> None:
             if src not in steps:
                 errors.append(f"{where}: model {src!r} is not solved by the solver "
                               f"{solver.get('name')!r}")
-            elif solver.get("type") == "sequence" and steps.index(src) > steps.index(md["name"]):
+            elif (solver.get("type") == "sequence" or (solver.get("type") == "transient" and solver.get(
+                    "coupling", "sequence") == "sequence")) and steps.index(src) > steps.index(md["name"]):
                 errors.append(f"{where}: model {src!r} is solved after {md['name']!r}: "
                               "change the order of the steps, or use a staggered solver")
 
@@ -1842,6 +1936,9 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     table = selection_table(model, geom)
     dim = geometry_dim(model, geom)
     var_kinds = {v.get("name"): variable_kind(v) for v in variables}
+    for i, v in enumerate(variables):                  # the initial values (of a transient model)
+        if "initial" in v:
+            _check_value(v["initial"], f"{w}.variables[{i}].initial", errors, var_kinds[v.get("name")], dim)
 
     # --- Imports
     known_kinds = dict(var_kinds)
@@ -1872,6 +1969,8 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
         if spec is None:
             continue
         for p in spec["properties"]:
+            if p in spec.get("transient_properties", ()) and not mod.get("properties", {}).get(p):
+                continue
             if p not in taken:
                 taken[p] = "property"
             elif taken[p] != "property":
@@ -2041,11 +2140,15 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
             errors.append(f"{w}.{opt}: unknown option for {mtype!r}")
     # properties, per domain selection
     props = mod.get("properties", {})
+    transient = is_transient(model, md)
     for prop, label in spec["properties"].items():
         pieces = props.get(prop)
         where = f"{w}.properties.{prop}"
+        if prop in spec.get("transient_properties", ()) and not transient and not pieces:
+            continue                                    # (only needed in time)
         if not isinstance(pieces, list) or not pieces:
-            errors.append(f"{where}: missing {label} (a value per domain selection)")
+            errors.append(f"{where}: missing {label} (a value per domain selection)"
+                          + (", needed in time" if prop in spec.get("transient_properties", ()) else ""))
             continue
         for j, pc in enumerate(pieces):
             _check_selection(table, pc.get("selection", ALL), DOMAIN, f"{where}[{j}].selection", errors)
@@ -2146,7 +2249,15 @@ def with_defaults(model: dict) -> dict:
         for q in md["outputs"]:
             q.setdefault("selection", ALL)
     for s in m["solvers"]:
-        if s.get("type") == "staggered":
+        if s.get("type") == "transient":
+            s.setdefault("coupling", "sequence")
+            s.setdefault("save", {}).setdefault("every", 1)
+            s.setdefault("time", {}).setdefault("start", 0.0)
+            schemes = s.setdefault("schemes", {})
+            for name in s.get("steps", []):
+                schemes.setdefault(name, {}).setdefault("type", "theta")
+                schemes[name].setdefault("theta", 1.0)
+        if s.get("type") == "staggered" or (s.get("type") == "transient" and s["coupling"] == "staggered"):
             s.setdefault("max_iter", 20)
             s.setdefault("tolerance", 1e-6)
             s.setdefault("relaxation", 1.0)

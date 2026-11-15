@@ -137,6 +137,8 @@ def test_examples_quoted_results():
     L, W, H = 0.4, 0.3, 0.1                                             # the faces of the box but its top
     assert _close(q["area"], L * W + 2 * H * (L + W), 1e-8) and _close(q["bottom"], L * W, 1e-8)
     assert _close(q["heat_out"], 500 * L * W, 1e-3)                    # the heat received leaves by the rim
+    q = _solve("plate_heating.json")["heat"]                          # in time: the final values
+    assert 95 < q["mean_T"] < 100 and q["heat_in"] > 0
     q = _solve("heated_pipe.json")["heat"]
     R, L = 0.05, 0.6                                                    # the tube; heated on a half
     assert _close(q["area"], 2 * math.pi * R * L, 1e-4) and _close(q["heated_area"], math.pi * R * L, 1e-4)

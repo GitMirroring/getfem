@@ -97,6 +97,10 @@ class Ctx:
     mesh: str                     # mesh name
     py: str                       # Python name of the gf.Model ("md_thermal")
     mfs: dict = field(default_factory=dict)      # variable/import name -> Python name of its MeshFem
+    transient: bool = False       # solved in time (by the main solver)
+    scheme: dict = field(default_factory=dict)   # its time scheme ({"type": "theta", "theta": 1})
+    t0: float = 0.0               # the time at the start
+    timed: list = field(default_factory=list)    # data depending on t: (name, mf, GWFL expression)
 
     @property
     def m(self) -> str:
@@ -126,6 +130,18 @@ class Ctx:
 
     def value(self, value, kind: str) -> str:
         return gwfl_vec(value, self.dim) if kind == M.VECTOR else gwfl(value)
+
+    def fem_data(self, w, name: str, mf: str, expr: str) -> None:
+        """Data `name` on mf, interpolation of a GWFL expression; updated at
+        each time step if it depends on the time t."""
+        w(f"{self.py}.add_initialized_fem_data({name!r}, {mf}, {self.py}.interpolation({expr!r}, {mf}))")
+        if uses_time(expr):
+            self.timed.append((name, mf, expr))
+
+
+def uses_time(expr: str) -> bool:
+    """Whether a GWFL expression depends on the time t."""
+    return re.search(r"(?<![\w.])t(?![\w(])", str(expr)) is not None
 
 
 def fem_key(model: dict, var: dict, dim: int) -> tuple:
@@ -233,6 +249,8 @@ def _properties(c: Ctx, w: ScriptWriter) -> None:
     defined per selection: plain 'k' can then be used in any expression."""
     for mod in c.md["modules"]:
         for prop in M.MODULE_SPECS[mod["type"]]["properties"]:
+            if not mod["properties"].get(prop):
+                continue                                # (a transient property, not needed)
             pieces = []
             for pc in mod["properties"].get(prop, []):
                 if "material" in pc:
@@ -271,7 +289,7 @@ def _heat_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             data = f"{u}_D{i}_{j}"
             mf = c.mfs[u]
             w(f"# Imposed temperature on {bc['selection']}")
-            w(f"{md}.add_initialized_fem_data({data!r}, {mf}, {md}.interpolation({gwfl(bc['value'])!r}, {mf}))")
+            c.fem_data(w, data, mf, gwfl(bc["value"]))
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
         elif bc["type"] == "heat_flux":
             w(f"# Imposed incoming flux on {bc['selection']}: k grad {u}.n = q")
@@ -355,8 +373,7 @@ def _elasticity_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             data = f"{u}_D{i}_{j}"
             mf = c.mfs[u]
             w(f"# Imposed displacement on {bc['selection']}")
-            w(f"{md}.add_initialized_fem_data({data!r}, {mf}, "
-              f"{md}.interpolation({gwfl_vec(bc['value'], dim)!r}, {mf}))")
+            c.fem_data(w, data, mf, gwfl_vec(bc["value"], dim))
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
         elif bc["type"] == "roller":
             w(f"# Roller on {bc['selection']}: {u}.n = 0, free tangential displacement")
@@ -415,12 +432,9 @@ def _conditions(c: Ctx, w: ScriptWriter) -> None:
             w(f"# {'Normal component' if normal else 'Dirichlet condition'} on {cd['selection']} "
               f"({cd['method']})")
             if normal:
-                w(f"{md}.add_initialized_fem_data({data!r}, mf_data_scalar_{ident(c.md['name'])}, "
-                  f"{md}.interpolation({gwfl(cd['value'])!r}, mf_data_scalar_{ident(c.md['name'])}))")
+                c.fem_data(w, data, f"mf_data_scalar_{ident(c.md['name'])}", gwfl(cd["value"]))
             else:
-                mf = c.mfs[u]
-                w(f"{md}.add_initialized_fem_data({data!r}, {mf}, "
-                  f"{md}.interpolation({c.value(cd['value'], kind)!r}, {mf}))")
+                c.fem_data(w, data, c.mfs[u], c.value(cd["value"], kind))
             deg = int(c.var(u).get("degree", 1))
             name = "add_normal_Dirichlet_condition" if normal else "add_Dirichlet_condition"
             if cd["method"] == "simplification":
@@ -448,6 +462,11 @@ def contexts(model: dict) -> list[Ctx]:
         mesh = M.model_mesh(model, md)
         dim = M.geometry_dim(model, M.geometry_of(model, mesh))
         c = Ctx(model, md, int(dim), mesh["name"], f"md_{ident(md['name'])}")
+        if M.is_transient(model, md):
+            solver = M.main_solver(model)
+            c.transient = True
+            c.scheme = solver["schemes"][md["name"]]
+            c.t0 = M.time_values(model, solver)[0]
         for v in md["variables"]:
             c.mfs[v["name"]] = fem_name(fem_key(model, v, c.dim))
         for im in md["imports"]:
@@ -455,6 +474,29 @@ def contexts(model: dict) -> list[Ctx]:
             c.mfs[im["name"]] = fem_name(fem_key(model, M.by_name(src["variables"], im["variable"]), c.dim))
         out.append(c)
     return out
+
+
+def time_declarations(c: Ctx, w: ScriptWriter) -> None:
+    """In time: the time t of the GWFL expressions (its start value; 0 for
+    a stationary model), the time step and the scheme of each variable with
+    a time derivative:
+    Dot_u from u and the previous values (Previous_u, Previous_Dot_u)."""
+    md = c.py
+    w(f"{md}.set_time({c.t0!r})  # the time t of the expressions")
+    if not c.transient:
+        return
+    w(f"{md}.add_initialized_data('dt__', [1.0])  # the time step (set by the solver)")
+    for u in M.time_variables(c.md):
+        mf = c.mfs[u]
+        theta = float(c.scheme.get("theta", 1.0))
+        w(f"# Time scheme of {u}: theta-method, theta = {theta!r} (the equation written at t_n+1)")
+        w(f"{md}.add_initialized_data('theta_{u}', [{theta!r}])")
+        w(f"{md}.add_initialized_fem_data('{u}__prev', {mf}, np.zeros({mf}.nbdof()))")
+        w(f"{md}.add_initialized_fem_data('{u}__rate', {mf}, np.zeros({mf}.nbdof()))")
+        w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
+        w(f"{md}.add_macro('Previous_Dot_{u}', '{u}__rate')")
+        w(f"{md}.add_macro('Dot_{u}', '({u} - {u}__prev)/(theta_{u}*dt__) "
+          f"- (1 - theta_{u})/theta_{u}*{u}__rate')")
 
 
 def declare_model(c: Ctx, w: ScriptWriter) -> None:
@@ -472,6 +514,7 @@ def declare_model(c: Ctx, w: ScriptWriter) -> None:
         w(f"{md}.add_initialized_fem_data({im['name']!r}, {c.mfs[im['name']]}, "
           f"np.zeros({c.mfs[im['name']]}.nbdof()))")
     coordinates(w, md, c.dim)
+    time_declarations(c, w)
     parameters(c.model, c.md, w, md)
     deg = max([int(v.get("degree", 1)) for v in c.md["variables"]] + [1])
     w("")
@@ -493,6 +536,12 @@ def setup_model(c: Ctx, w: ScriptWriter) -> None:
     for i, mod in enumerate(c.md["modules"], start=1):
         w("")
         MODULES[mod["type"]][1](c, mod, i, w)
+        inertia = M.MODULE_SPECS[mod["type"]].get("inertia")
+        if inertia and c.transient:
+            u = mod[inertia["variable"]]
+            expr = inertia["expr"].replace("{u}", u)
+            w(f"# Time derivative: {expr}")
+            w(f"LINEAR[{c.md['name']!r}] &= add_term({c.py}, {c.mim}, {expr!r})")
     if c.md["terms"]:
         w("")
         _terms(c, w)
@@ -519,6 +568,25 @@ def add_term(md, mim, expr, region=-1, linear='auto'):
     else:
         md.add_nonlinear_term(mim, expr, region)
     return bool(linear)
+
+
+SOLVED = set()
+
+
+def first_solve(name):
+    """Whether a model is solved for the first time."""
+    first = name not in SOLVED
+    SOLVED.add(name)
+    return first
+
+
+def write_pvd(name, series):
+    """A ParaView collection of the VTU files of a series (their times)."""
+    with open(name, 'w', encoding='utf-8') as f:
+        f.write('<?xml version="1.0"?>\\n<VTKFile type="Collection" version="0.1">\\n<Collection>\\n')
+        for t, vtu in zip(series['t'], series['vtu']):
+            f.write(f'  <DataSet timestep="{t!r}" part="0" file="{vtu}"/>\\n')
+        f.write('</Collection>\\n</VTKFile>\\n')
 
 
 def solve(md, R, max_iter=50, max_res=1e-10, check_linear=True):
@@ -566,21 +634,33 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
         if s.get("max_res"):
             args += f", max_res={float(s['max_res'])!r}"
         linear = "True" if s["type"] == "linear" else "False" if s["type"] == "newton" else f"LINEAR[{c.md['name']!r}]"
+        if c.transient:                  # (the linear system checked at the first time step only)
+            linear = f"{linear} and first_solve({c.md['name']!r})"
         w(f"solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
         w.indent = ""
     solver = M.main_solver(model)
     w("")
     w(f"# Solver {solver['name']!r}: {solver['type']} of {', '.join(solver['steps'])}")
+    if solver["type"] == "transient":
+        _transient_code(model, solver, ctxs, w)
+        return
+    _coupled_code(solver, solver["type"], by, w)
+
+
+def _coupled_code(solver: dict, coupling: str, by: dict, w: ScriptWriter) -> None:
+    """The models of a solver solved in sequence, or by staggered iterations
+    (results['solver'] set; inside the time loop: its indentation)."""
     steps = [f"solve_{ident(n)}" for n in solver["steps"]]
-    if solver["type"] == "sequence":
+    if coupling == "sequence":
         for st in steps:
             w(f"{st}()")
-        w(f"results['solver'] = {{'name': {solver['name']!r}, 'type': 'sequence'}}")
+        w(f"results['solver'] = {{'name': {solver['name']!r}, 'type': {solver['type']!r}}}")
         return
     names = solver["steps"]
+    outer = w.indent
     w(f"history = []")
     w(f"for iteration in range(1, {int(solver['max_iter'])} + 1):")
-    w.indent = "    "
+    w.indent = outer + "    "
     w("before = {" + ", ".join(f"{n!r}: {by[n].py}.from_variables().copy()" for n in names) + "}")
     for n, st in zip(names, steps):
         w(f"{st}()")
@@ -593,7 +673,7 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
     w("history.append(float(change))")
     w(f"if change < {float(solver['tolerance'])!r}:")
     w("    break")
-    w.indent = ""
+    w.indent = outer
     w(f"results['solver'] = {{'name': {solver['name']!r}, 'type': 'staggered', 'iterations': iteration, "
       f"'history': history, 'converged': bool(change < {float(solver['tolerance'])!r})}}")
     w("if not results['solver']['converged']:")
@@ -601,8 +681,112 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
       f"after {int(solver['max_iter'])} iterations')")
 
 
+def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
+    """The time loop: the initial values, then at each time step the time
+    and the data depending on it set, the models solved (in sequence or by
+    staggered iterations), the previous values shifted; the results saved
+    every save.every steps (VTU files and a .pvd collection, the scalar
+    results as series)."""
+    t0, t1, dt = M.time_values(model, solver)
+    n = max(1, int(round((t1 - t0) / dt)))
+    every = int(solver["save"]["every"])
+    cs = [c for c in ctxs if c.md["name"] in solver["steps"]]
+    by = {c.md["name"]: c for c in ctxs}
+    w(f"T_START, T_END, N_STEPS = {t0!r}, {t1!r}, {n}   # time step {(t1 - t0) / n!r}")
+    w("")
+    w("def set_time(t, dt):")
+    w('    """The time and the time step of the models, the data depending on t."""')
+    for c in cs:
+        w(f"    {c.py}.set_time(t)")
+        w(f"    {c.py}.set_variable('dt__', [dt])")
+        for name, mf, expr in c.timed:
+            w(f"    {c.py}.set_variable({name!r}, {c.py}.interpolation({expr!r}, {mf}))")
+    w("")
+    w("def shift():")
+    w('    """After a time step: the previous values (Previous_u, Previous_Dot_u)."""')
+    lines = 0
+    for c in cs:
+        for u in M.time_variables(c.md):
+            w(f"    {c.py}.set_variable('{u}__rate', {c.py}.interpolation('Dot_{u}', {c.mfs[u]}))")
+            w(f"    {c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
+            lines += 1
+    if not lines:
+        w("    pass")
+    w("")
+    w("SERIES = {" + ", ".join(f"{c.md['name']!r}: {{'t': [], 'vtu': []}}" for c in cs) + "}")
+    w("def save(k, t):")
+    w('    """The results at a saved time: the fields (a VTU file each), the scalars."""')
+    for c in cs:
+        name = c.md["name"]
+        stem = Path(c.md["vtu"]).stem if c.md.get("vtu") else None
+        vtu = f"f'{stem}_{{k:05d}}.vtu'" if stem else "None"
+        w(f"    post_{ident(name)}({vtu})")
+        w(f"    R, S = results['models'][{name!r}], SERIES[{name!r}]")
+        w("    S['t'].append(t)")
+        if stem:
+            w("    S['vtu'].append(R['vtu'])")
+        w("    for key, value in list(R.items()) + [(q, v) for q, v in R.get('quantities', {}).items()]:")
+        w("        if isinstance(value, float) and key not in ('time_s', 'relative_residual'):")
+        w("            S.setdefault(key, []).append(value)")
+    w("")
+    w("# The initial values")
+    for c in cs:
+        for v in c.md["variables"]:
+            u, mf = v["name"], c.mfs[v["name"]]
+            init = c.value(v.get("initial", 0.0), M.variable_kind(v))
+            w(f"{c.py}.set_variable({u!r}, {c.py}.interpolation({init!r}, {mf}))")
+            if u in M.time_variables(c.md):
+                w(f"{c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
+    w("set_time(T_START, (T_END - T_START) / N_STEPS)")
+    for c in cs:
+        tv = M.time_variables(c.md)
+        if tv and float(c.scheme.get("theta", 1.0)) < 1.0:
+            w(f"# The initial time derivative of {', '.join(tv)} (needed when theta < 1): an implicit")
+            w("# Euler step of a tiny time step from the initial values")
+            eps = "1e-6 * (T_END - T_START) / N_STEPS"
+            w(f"set_time(T_START + {eps}, {eps})")
+            for u in tv:
+                w(f"{c.py}.set_variable('theta_{u}', [1.0])")
+            w(f"solve_{ident(c.md['name'])}()")
+            for u in tv:
+                w(f"{c.py}.set_variable('{u}__rate', ({c.py}.variable({u!r}) - {c.py}.variable('{u}__prev'))"
+                  f" / ({eps}))")
+                w(f"{c.py}.set_variable({u!r}, {c.py}.variable('{u}__prev'))")
+                w(f"{c.py}.set_variable('theta_{u}', [{float(c.scheme['theta'])!r}])")
+            w("set_time(T_START, (T_END - T_START) / N_STEPS)")
+    w("save(0, T_START)")
+    w("")
+    w("# The time steps")
+    w("for k in range(1, N_STEPS + 1):")
+    w.indent = "    "
+    w("t = T_START + k * (T_END - T_START) / N_STEPS")
+    w("set_time(t, (T_END - T_START) / N_STEPS)")
+    _coupled_code(solver, solver["coupling"], by, w)
+    if solver["coupling"] == "staggered":
+        w("if not results['solver']['converged']:")
+        w("    results['warnings'][-1] += f' (at t = {t:g})'")
+    w("shift()")
+    w(f"if k % {every} == 0 or k == N_STEPS:")
+    w("    save(k, t)")
+    w.indent = ""
+    w(f"results['solver'] = {{'name': {solver['name']!r}, 'type': 'transient', 'steps': N_STEPS, "
+      f"'start': T_START, 'end': T_END}}")
+    w("for name, S in SERIES.items():")
+    w("    results['models'][name]['series'] = S")
+    for c in cs:
+        if c.md.get("vtu"):
+            pvd = Path(c.md["vtu"]).with_suffix(".pvd").name
+            w(f"write_pvd({pvd!r}, SERIES[{c.md['name']!r}])")
+            w(f"results['models'][{c.md['name']!r}]['pvd'] = {pvd!r}")
+
+
 def _post(c: Ctx, w: ScriptWriter) -> None:
+    """post_<model>(vtu): its results entries, its fields written to the
+    VTU file vtu (None: not written); called after the solve, or at each
+    saved time."""
     md, name = c.py, c.md["name"]
+    w(f"def post_{ident(name)}(vtu):")
+    w.indent = "    "
     w(f"R = results['models'][{name!r}]")
     w(f"R['mesh'] = {{'name': {c.mesh!r}, 'nb_elements': int({c.m}.nbcvs())}}")
     exports = []
@@ -624,10 +808,10 @@ def _post(c: Ctx, w: ScriptWriter) -> None:
             w(f"{mfv} = gf.MeshFem({c.m}, {c.m}.dim())")
             w(f"{mfv}.set_classical_discontinuous_fem(0)")
             exports += [mfv, f"{md}.interpolation({f['name']!r}, {mfv})", repr(f["name"])]
-    if c.md.get("vtu"):
-        first = exports[0]
-        w(f"{first}.export_to_vtu({c.md['vtu']!r}, " + ", ".join(exports) + ")")
-        w(f"R['vtu'] = {c.md['vtu']!r}")
+    w("if vtu:")
+    w(f"    {exports[0]}.export_to_vtu(vtu, " + ", ".join(exports) + ")")
+    w("    R['vtu'] = vtu")
+    w.indent = ""
 
 
 def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | None = None,
@@ -696,14 +880,17 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
         setup_model(c, w)
     w("MODELS = {" + ", ".join(f"{c.md['name']!r}: {c.py}" for c in ctxs) + "}")
 
-    w.section("Solve")
-    _solver_code(model, ctxs, w)
-
-    w.section("Post-processing")
+    w.section("Post-processing (functions)")
     for c in ctxs:
-        w(f"# Model {c.md['name']!r}")
         _post(c, w)
         w("")
+
+    w.section("Solve")
+    _solver_code(model, ctxs, w)
+    w("")
+    for c in ctxs:
+        if not c.transient:
+            w(f"post_{ident(c.md['name'])}({c.md.get('vtu')!r})")
     w("results['status'] = 'ok'")
     w("results['time_s'] = time.perf_counter() - t0")
     w("with open('results.json', 'w', encoding='utf-8') as f:")

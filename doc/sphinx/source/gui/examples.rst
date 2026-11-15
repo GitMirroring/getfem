@@ -124,6 +124,18 @@ conductivity is that of copper times the section of the wire. The ``length``
 output gives the length of the wire, arcs included; ``heat_out``, the heat
 that leaves it by its ends, balances the heat generated.
 
+.. _gui-example-plate_heating:
+
+Plate heating (``plate_heating.json``)
+--------------------------------------
+
+A transient heat problem: an aluminium plate at 20 °C whose left edge is
+brought to 100 °C (``20 + 80*(1 - exp(-t/tau))``, a function of the time),
+the other edges cooled by the air (convection). The ``transient`` solver
+goes from 0 to 60 s by steps of 1 s (implicit Euler), saving every 5 steps:
+``mean_T``, the mean temperature, rises to nearly 100 °C; ``heat_in``, the
+heat entering by the edge, peaks then decreases.
+
 .. _gui-example-heated_pipe:
 
 Heated pipe (``heated_pipe.json``)

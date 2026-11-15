@@ -40,6 +40,14 @@ Properties:
      - thermal conductivity
      - W/(m·K)
      - ``1.0``
+   * - ``rho``
+     - density
+     - kg/m³
+     - ``1.0``
+   * - ``cp``
+     - specific heat capacity
+     - J/(kg·K)
+     - ``1.0``
 
 Option ``conductivity``: ``isotropic``, ``anisotropic``.
 

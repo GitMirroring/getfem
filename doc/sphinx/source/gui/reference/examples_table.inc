@@ -64,6 +64,11 @@
      - box
      - structured
      - heat_conduction
+   * - :ref:`plate_heating.json <gui-example-plate_heating>`
+     - Plate heating: an aluminium plate, one edge brought to 100 degrees, the others cooled by the air (transient heat)
+     - box
+     - structured
+     - heat_conduction
    * - :ref:`plate_hole_tension.json <gui-example-plate_hole_tension>`
      - Plate with a hole in tension (quarter, symmetry)
      - csg 2D

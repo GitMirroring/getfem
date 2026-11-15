@@ -53,6 +53,9 @@ Variable
    * - Components
      - ``components``
      - one of ``1`` (scalar), ``dim`` (vector)
+   * - Initial value (in time)
+     - ``initial``
+     - number or GWFL expression
 
 Import
 --------
@@ -91,7 +94,7 @@ Module
      - ``conductivity``
      - one of ``isotropic``, ``anisotropic``
 
-Properties: k (thermal conductivity), each given per domain (the last one listed wins).
+Properties: k (thermal conductivity), rho (density, in time), cp (specific heat capacity, in time), each given per domain (the last one listed wins).
 
 Property of a module
 --------------------
@@ -326,7 +329,7 @@ Global solver
      - name
    * - Type
      - ``type``
-     - one of ``sequence``, ``staggered`` (staggered iterations)
+     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))
    * - Models, in order
      - ``steps``
      - list of names

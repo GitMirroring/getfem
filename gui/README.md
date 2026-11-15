@@ -57,7 +57,8 @@ needs is missing (pytest, PySide6, PyVista, Gmsh...).
    (heat conduction)  ──►  (elasticity,          modules, terms, conditions; an import
                             expansion, imports T) passes a result from one to the other
           │                      │
-          └────── solver: sequence or staggered iterations
+          └────── solver: sequence, staggered iterations, or in time
+                  (transient: theta-method, at each step the models in turn)
                      ▼
    run_getfem.py ──► results.json + one .vtu per model
 ```

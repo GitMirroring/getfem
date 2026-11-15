@@ -108,6 +108,5 @@ def save_to_user(material: dict) -> Path:
 def used_properties(model: dict) -> list[str]:
     """The properties asked by the modules of the file (the columns of the
     table of materials), in the order of the catalogue."""
-    used = {p for md in model.get("models", []) for mod in md.get("modules", [])
-            for p in M.MODULE_SPECS.get(mod.get("type"), {}).get("properties", {})}
+    used = {p for md in model.get("models", []) for p in M.model_properties(md)}
     return [p for p in M.PROPERTIES if p in used] + sorted(used - set(M.PROPERTIES))

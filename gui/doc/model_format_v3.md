@@ -159,9 +159,19 @@ otherwise), `newton` (`max_iter`, `max_res`), `linear`; later `transient`
 expression (a GWFL macro), so that it may depend on the variables.
 
 Global (`solvers`): `sequence` (`steps`), `staggered` (`steps`, `max_iter`,
-`tolerance`, `relaxation`); later, nestable: `sweep` (`parameter`, `values`,
-`steps`), `time_loop` (`dt`, `t_end`, `steps`). Without a global solver,
-the models are solved in the order of their imports.
+`tolerance`, `relaxation`), `transient` (`steps`, `time`: `start`, `end`,
+`step`; `coupling`: `sequence` or `staggered` at each time step; `save`:
+`every`; `schemes`: per model, `{"type": "theta", "theta": 1}`); later:
+`sweep` (`parameter`, `values`, `steps`), other schemes (Newmark, HHT).
+Without a global solver, the models are solved in the order of their
+imports.
+
+In time, a module adds its time derivative term (`MODULE_SPECS[...]
+["inertia"]`, written with `Dot_u`); the equation is written at t_{n+1},
+the scheme giving `Dot_u` (and `Dot2_u`) from `u` and the previous values,
+as GWFL macros of data updated after each step (`u__prev`, `u__rate`);
+`t` is the time of the `gf.Model` (`set_time`). A variable starts from
+its `initial` value.
 
 ## Outputs and graphics
 

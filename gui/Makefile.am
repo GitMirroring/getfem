@@ -54,6 +54,7 @@ GUI_TESTS =                                     \
     tests/test_sketch.py                        \
     tests/test_splines.py                       \
     tests/test_transforms.py                    \
+    tests/test_transient.py                     \
     tests/test_work_planes.py
 
 EXTRA_DIST += $(GUI_TESTS)

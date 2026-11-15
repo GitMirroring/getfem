@@ -1000,7 +1000,10 @@ def _model_fields(model, path) -> list[Field]:
                 Field(path + ("fem",), "Finite element", "choice",
                       (("lagrange", "Lagrange (continuous)"), ("lagrange_discontinuous", "discontinuous Lagrange"))),
                 Field(path + ("degree",), "Degree", "choice", tuple((d, str(d)) for d in range(lo, 7))),
-                Field(path + ("components",), "Components", "choice", ((1, "scalar"), ("dim", "vector")))]
+                Field(path + ("components",), "Components", "choice", ((1, "scalar"), ("dim", "vector"))),
+                _value_field(path + ("initial",), "Initial value" + ("" if M.is_transient(model, md) else
+                                                                     " (in time)"), M.variable_kind(v),
+                             M.model_dim(model, md) or 2)]
     if head == "modules":
         if n == 1:
             return [Field(path, "", "info", help="Predefined physics, with their properties per domain, "
@@ -1023,7 +1026,8 @@ def _model_fields(model, path) -> list[Field]:
                                  tuple((x, f"plane {x}" if opt == "plane" else x) for x in values)))
             for key, kind in spec.get("values", {}).items():
                 out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
-            props = ", ".join(f"{p} ({label})" for p, label in spec.get("properties", {}).items())
+            props = ", ".join(f"{p} ({label}{', in time' if p in spec.get('transient_properties', ()) else ''})"
+                              for p, label in spec.get("properties", {}).items())
             out.append(Field(mpath, "", "info", help=f"Properties: {props}, each given per domain "
                              "(the last one listed wins)."))
             return out
@@ -1375,10 +1379,27 @@ def fields(model: dict, path: Path) -> list[Field]:
         s = get_at(model, path, {})
         out = [Field(path + ("name",), "Name", "ident"),
                Field(path + ("type",), "Type", "choice",
-                     (("sequence", "sequence"), ("staggered", "staggered iterations"))),
+                     (("sequence", "sequence"), ("staggered", "staggered iterations"),
+                      ("transient", "transient (in time)")), op="solver_type"),
                Field(path + ("steps",), "Models, in order", "names",
                      _choices(m.get("name") for m in model.get("models", [])))]
-        if s.get("type") == "staggered":
+        if s.get("type") == "transient":
+            out += [Field(path + ("time", "start"), "Start time", "value"),
+                    Field(path + ("time", "end"), "End time", "value"),
+                    Field(path + ("time", "step"), "Time step", "value"),
+                    Field(path + ("save", "every"), "Save every (steps)", "int"),
+                    Field(path + ("coupling",), "Coupling at each step", "choice",
+                          (("sequence", "the models in turn"), ("staggered", "staggered iterations")),
+                          op="solver_type")]
+            for name in s.get("steps", []):
+                out.append(Field(path + ("schemes", name, "theta"), f"Theta of {name}", "number",
+                                 help="The theta-method: 1, implicit Euler (robust, first order); 0.5, "
+                                      "Crank-Nicolson (second order, may oscillate)"))
+            out.append(Field(path, "", "info", help="At each time step, the models are solved in turn (or "
+                             "by staggered iterations); the time t may appear in the expressions, Dot_T is "
+                             "the time derivative of T. The variables start from their initial value; the "
+                             "results are saved every few steps (a VTU file each, a .pvd collection)."))
+        if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
             out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
                     Field(path + ("tolerance",), "Tolerance (relative change)", "number"),
                     Field(path + ("relaxation",), "Relaxation", "number")]
@@ -2190,6 +2211,24 @@ def apply(model: dict, f: Field, value) -> Path | None:
             else:
                 src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
         return None
+    if f.op == "solver_type":                # its type or its coupling; in time: its settings
+        s = get_at(model, key[:-1])
+        s[key[-1]] = value
+        if s["type"] == "transient":
+            s.setdefault("time", {"start": 0.0, "end": 1.0, "step": 0.1})
+            s.setdefault("save", {"every": 1})
+            s.setdefault("coupling", "sequence")
+            s.setdefault("schemes", {})
+            for name in s.get("steps", []):
+                s["schemes"].setdefault(name, {"type": "theta", "theta": 1.0})
+        else:
+            for k in ("time", "save", "coupling", "schemes"):
+                s.pop(k, None)
+        if s["type"] == "staggered" or s.get("coupling") == "staggered":
+            s.setdefault("max_iter", 20)
+            s.setdefault("tolerance", 1e-6)
+            s.setdefault("relaxation", 1.0)
+        return None
     if f.op == "boundary_of":                # another volume: its faces kept if it has that selection
         src = get_at(model, key[:-1])
         src["geometry"] = value
@@ -2307,6 +2346,8 @@ def apply(model: dict, f: Field, value) -> Path | None:
                     im["model"] = value
         for s in model.get("solvers", []):
             s["steps"] = [value if x == old else x for x in s.get("steps", [])]
+            if old in s.get("schemes", {}):
+                s["schemes"][value] = s["schemes"].pop(old)
     elif f.op == "rename_material":
         old = get_at(model, key)
         set_at(model, key, value)

@@ -125,6 +125,47 @@ by an **import**, on the same mesh for now::
 Without a global solver, the models are solved in an order compatible with
 their imports. See ``examples/thermoelastic_plate.json``.
 
+Transient problems
+------------------
+
+A ``transient`` global solver solves its models in time, from a start time
+to an end time by a fixed time step::
+
+  {"name": "heating", "type": "transient", "steps": ["heat"],
+   "time": {"start": 0, "end": 60, "step": 1}, "save": {"every": 5},
+   "coupling": "sequence", "schemes": {"heat": {"type": "theta", "theta": 1}}}
+
+A module whose equation has a time derivative adds it in time: the heat
+conduction adds :math:`\rho c_p \partial T/\partial t` (the term
+``rho*cp*Dot_T*Test_T``), and its properties ``rho`` and ``cp`` are then
+required (they are not needed by a stationary model). The equation is
+written at :math:`t_{n+1}`, as for a stationary model, the scheme giving
+the time derivative ``Dot_T`` from ``T`` and the previous values
+``Previous_T``, ``Previous_Dot_T``: the :math:`\theta`-method,
+:math:`\dot T_{n+1} = (T_{n+1} - T_n)/(\theta \Delta t) - (1 -
+\theta)/\theta\, \dot T_n` (:math:`\theta = 1`: implicit Euler, robust,
+first order, the default; :math:`\theta = 1/2`: Crank-Nicolson, second
+order, may oscillate; then the initial time derivative is computed first).
+``Dot_T`` and ``Previous_T`` may appear in the terms of the model.
+
+- The variables start from their **initial** value (a number or an
+  expression of the coordinates and the parameters; 0 by default).
+- The time ``t`` may appear in the expressions (sources, conditions,
+  terms): the imposed values depending on it are interpolated again at
+  each time step.
+- At each time step, the models of the solver are solved in turn
+  (``coupling``: ``sequence``) or by staggered iterations (``staggered``,
+  with ``max_iter``, ``tolerance``, ``relaxation``), each one taking the
+  current variables of the others by its imports; a model without time
+  derivative (an elasticity) is then quasi-static.
+- The results are saved every ``save.every`` steps and at the end: a |vtu|
+  file each (``heat_00005.vtu``...), a ParaView collection ``heat.pvd``,
+  and the scalar results (outputs, extrema) as series of the saved times
+  (``series`` in the results); the final values are those shown as for a
+  stationary model.
+
+See ``examples/plate_heating.json``.
+
 Outputs
 -------
 

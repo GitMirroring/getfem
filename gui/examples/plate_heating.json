@@ -1,0 +1,55 @@
+{
+  "format_version": 3,
+  "name": "Plate heating: an aluminium plate, one edge brought to 100 degrees, the others cooled by the air (transient heat)",
+  "parameters": [
+    {"name": "L", "value": 0.05, "description": "side of the plate (m)"},
+    {"name": "tau", "value": 10, "description": "time constant of the heating of the edge (s)"},
+    {"name": "h_air", "value": 10, "description": "convection coefficient of the air (W/(m2 K))"}
+  ],
+  "materials": [
+    {"name": "aluminium", "properties": {"k": 237, "rho": 2700, "cp": 897}}
+  ],
+  "geometries": [
+    {
+      "name": "plate",
+      "source": {"type": "box", "origin": [0, 0], "size": ["L", "L"]},
+      "selections": {}
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "plate", "mesher": "structured", "divisions": [20, 20]}],
+  "models": [
+    {
+      "name": "heat",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2, "initial": 20}],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "conductivity": "isotropic",
+          "properties": {
+            "k": [{"selection": "all", "material": "aluminium"}],
+            "rho": [{"selection": "all", "material": "aluminium"}],
+            "cp": [{"selection": "all", "material": "aluminium"}]
+          },
+          "sources": [],
+          "conditions": [
+            {"type": "temperature", "selection": "xmin", "value": "20 + 80*(1 - exp(-t/tau))"},
+            {"type": "convection", "selection": "xmax", "h": "h_air", "T_ext": 20},
+            {"type": "convection", "selection": "ymin", "h": "h_air", "T_ext": 20},
+            {"type": "convection", "selection": "ymax", "h": "h_air", "T_ext": 20}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "mean_T", "expr": "T/sqr(L)", "selection": "all"},
+        {"name": "heat_in", "expr": "k*Grad_T.Normal", "selection": "xmin"}
+      ],
+      "vtu": "heat.vtu"
+    }
+  ],
+  "solvers": [
+    {"name": "heating", "type": "transient", "steps": ["heat"],
+     "time": {"start": 0, "end": 60, "step": 1}, "save": {"every": 5},
+     "schemes": {"heat": {"type": "theta", "theta": 1}}}
+  ]
+}
