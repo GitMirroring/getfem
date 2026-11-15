@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
                  versions=None):
         super().__init__()
         self.versions = versions        # splash.GetfemVersion, or None
+        self.result_series: dict = {}   # model in time -> [(t, VTU file)] of its saved times
+        self.time_index = None          # the saved time shown (None: the last one)
         self.jobs = JobRunner(python, self)
         self.jobs.output.connect(self._job_output)
         self.jobs.meshFinished.connect(self._mesh_finished)
@@ -117,6 +119,7 @@ class MainWindow(QMainWindow):
         self.viewer.edgeClicked.connect(self._edge_clicked)
         self.viewer.handleClicked.connect(self._handle_clicked)
         self.viewer.fieldEdgesToggled.connect(self._field_edges_toggled)
+        self.viewer.timeChanged.connect(self._time_changed)
         self.viewer.exportRequested.connect(lambda: self.export_view())
         self.viewer.field_edges_saved = True
         self.viewer.regionClicked.connect(self._region_clicked)
@@ -566,10 +569,11 @@ class MainWindow(QMainWindow):
         """What the results table shows: one model, or all of them (its
         quantities prefixed by the model name)."""
         r = self.results or {}
-        models = r.get("models", {})
+        models = {m: self._at_time(mr) for m, mr in r.get("models", {}).items()}
         if mname is not None:
             out = dict(models.get(mname, {}))
             out["status"] = r.get("status")
+            out["curves"] = self._curves({mname: models.get(mname, {})})
             return out
         out = {"status": r.get("status"), "time_s": r.get("time_s")}
         solver = r.get("solver", {})
@@ -583,6 +587,39 @@ class MainWindow(QMainWindow):
             for k, v in mr.items():
                 if k.startswith(("max_", "min_")):
                     out[f"{k}" if len(models) == 1 else f"{k} ({m})"] = v
+        times = [mr["time"] for mr in models.values() if "time" in mr]
+        if times:
+            out["time"] = times[0]
+        out["curves"] = self._curves(models)
+        return out
+
+    @staticmethod
+    def _curves(models: dict) -> dict:
+        """The scalar results in time, as curves: {label: (t, values)}."""
+        out = {}
+        for m, mr in models.items():
+            series = mr.get("series") or {}
+            t = series.get("t", [])
+            if len(t) < 2:
+                continue
+            for key, values in series.items():
+                if key not in ("t", "vtu") and isinstance(values, list) and len(values) == len(t):
+                    out[key if len(models) == 1 else f"{m}.{key}"] = (t, values)
+        return out
+
+    def _at_time(self, mr: dict) -> dict:
+        """The results of a model at the saved time shown (in time: its
+        quantities and extrema then, and its time)."""
+        series = mr.get("series")
+        if not series or self.time_index is None or len(series.get("t", [])) < 2:
+            return mr
+        k = min(self.time_index, len(series["t"]) - 1)
+        out = dict(mr)
+        out["time"] = series["t"][k]
+        out["quantities"] = {q: series[q][k] for q in mr.get("quantities", {}) if q in series}
+        for key in mr:
+            if key.startswith(("max_", "min_")) and key in series:
+                out[key] = series[key][k]
         return out
 
     def _result_target(self, path):
@@ -712,8 +749,14 @@ class MainWindow(QMainWindow):
             view = {"isolines": s.get("isolines", 0), "bands": s.get("bands", False),
                     "cmap": s.get("cmap"), "clim": s.get("range"), "arrows": s.get("arrows"),
                     "cut": s.get("cut"), "edges": bool(s.get("edges", False))}
+            times = self.result_times(mname)
+            if times:
+                k = len(times) - 1 if self.time_index is None else min(self.time_index, len(times) - 1)
+                status += f" — t = {times[k]:g}"
             self.viewer.show_field(file, name, s.get("component"), warp,
                                    s.get("scale") or 1.0, status=status, view=view)
+            if times:
+                self.viewer.set_times(times, k)
         except Exception as exc:  # noqa: BLE001 (unreadable or unexpected file)
             self.viewer.show_message(f"Cannot display {name}: {exc}")
 
@@ -1643,14 +1686,42 @@ class MainWindow(QMainWindow):
         self.refresh(select=(E.RESULTS,) + target if target and target[1] else (E.RESULTS,))
 
     def _read_result_files(self, workdir: Path) -> None:
-        """The VTU file of each model and its fields."""
+        """The VTU file of each model and its fields; in time, the files of
+        the saved times (the last one shown first)."""
         self.result_files, self.result_fields = {}, {}
+        self.result_series, self.time_index = {}, None
         for mname, mr in (self.results or {}).get("models", {}).items():
             if not mr.get("vtu"):
                 continue
             file = workdir / mr["vtu"]
             self.result_files[mname] = file
             self.result_fields[mname] = self._read_fields(file)
+            series = mr.get("series", {})
+            if len(series.get("vtu", [])) > 1:
+                self.result_series[mname] = [(t, workdir / f) for t, f in zip(series["t"], series["vtu"])]
+
+    def result_times(self, mname=None) -> list[float]:
+        """The saved times of the results (of a model; of the first one in
+        time), [] for a stationary result."""
+        series = self.result_series.get(mname) if mname else next(iter(self.result_series.values()), None)
+        return [t for t, _ in series] if series else []
+
+    def _time_changed(self, k: int) -> None:
+        """Another saved time: the files of the models in time, the node shown again."""
+        self.time_index = k
+        for mname, series in self.result_series.items():
+            self.result_files[mname] = series[min(k, len(series) - 1)][1]
+        path = self.current_path()
+        if path and path[:1] == (E.RESULTS,):
+            target = self._result_target(path)
+            if len(path) < 3:
+                self.props.show_results(self._results_summary(path[1] if len(path) == 2 else None),
+                                        self.results_stale, [("cmd:compute", "Compute again")]
+                                        if self.results_stale else [])
+            if target is not None and target[1] is not None:
+                self._show_field(*target)
+        elif path and path[:1] == ("models",) and len(path) == 4 and path[2] == "graphics":
+            self._show_graphic_node(path)
 
     def _read_fields(self, file: Path) -> dict[str, int]:
         if not file.exists():
@@ -1666,6 +1737,7 @@ class MainWindow(QMainWindow):
     def _load_previous_results(self):
         """Results of an earlier session (marked out of date if the model changed since)."""
         self.results, self.result_files, self.result_fields = None, {}, {}
+        self.result_series, self.time_index = {}, None
         self.results_model, self.results_stale = None, False
         f = self.workdir / "results.json"
         used = self.workdir / "model_used.json"

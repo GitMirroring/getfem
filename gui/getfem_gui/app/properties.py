@@ -742,7 +742,7 @@ class PropertiesPanel(QScrollArea):
     def show_results(self, results: dict, stale: bool, actions):
         self._build_empty()
         self._title("Results" + (" (out of date)" if stale else ""))
-        rows = [(k, results[k]) for k in ("status", "nb_dofs", "time_s", "relative_residual")
+        rows = [(k, results[k]) for k in ("status", "time", "nb_dofs", "time_s", "relative_residual")
                 if k in results]
         rows += [(k, v) for k, v in results.items()
                  if (k.startswith("max_") or k.startswith("min_")) and isinstance(v, (int, float))]
@@ -760,8 +760,35 @@ class PropertiesPanel(QScrollArea):
         table.resizeColumnsToContents()
         table.horizontalHeader().setStretchLastSection(True)
         self.layout_.addWidget(table)
+        if results.get("curves"):
+            self._curves(results["curves"])
         self._messages(results.get("warnings", []))
         self._buttons(actions)
+
+    def _curves(self, curves: dict) -> None:
+        """The scalar results in time: one chosen, its curve."""
+        from .plot import LinePlot
+        row = QHBoxLayout()
+        row.addWidget(QLabel("In time:"))
+        combo = QComboBox()
+        combo.setObjectName("curve")
+        for name in curves:
+            combo.addItem(name)
+        row.addWidget(combo, 1)
+        self.layout_.addLayout(row)
+        plot = LinePlot()
+        plot.setObjectName("curve_plot")
+        self.layout_.addWidget(plot)
+
+        def show(name):
+            if name in curves:
+                t, v = curves[name]
+                plot.set_data(t, v, "t", name)
+        combo.currentTextChanged.connect(show)
+        quantities = [n for n in curves if not n.split(".")[-1].startswith(("min_", "max_"))]
+        if quantities:
+            combo.setCurrentText(quantities[0])
+        show(combo.currentText())
 
     def show_result_field(self, name: str, ncomp: int, settings: dict, can_warp: bool,
                           vectors: tuple = (), planar: bool = True, graphic: dict | None = None,

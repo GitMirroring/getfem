@@ -34,8 +34,15 @@ gives another view of a field, with bands or its own cut line, say). They
 come back when the file is reopened, and changing them does not make the
 results out of date.
 
+Results in time (a ``transient`` solver, see :ref:`gui-models`) show the
+last saved time first; a **time bar** under the view chooses another one
+(the slider, or *Play*: one after the other), for every field and graphic.
+The table of the *Results* node then gives the values at that time, and
+*In time* plots a scalar result (an output, an extremum) against the time.
+
 The fields are also in the |vtu| files of the working folder, to be opened
-with ParaView, for instance.
+with ParaView, for instance; in time, one per saved time, gathered by a
+``.pvd`` collection.
 
 Exporting the view
 ^^^^^^^^^^^^^^^^^^

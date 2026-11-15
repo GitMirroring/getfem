@@ -220,6 +220,61 @@ def test_example():
     assert max(S["heat_in"]) > 10000 and "heat.pvd" in files
 
 
+def test_window():
+    """The results in time in the window: the time bar of the view (the
+    last time first; another time: its file, its values in the table), the
+    curves of the scalar results; hidden elsewhere."""
+    try:
+        import getfem  # noqa: F401
+        from PySide6.QtWidgets import QApplication, QComboBox
+    except ImportError:
+        return
+    import os
+    import shutil
+    import time
+    os.environ.update(QT_QPA_PLATFORM=os.environ.get("QT_QPA_PLATFORM", "offscreen"), GETFEM_GUI_NO_3D="",
+                      GETFEM_GUI_OFFSCREEN_3D="1")
+    from getfem_gui.app.plot import LinePlot
+    from getfem_gui.app.window import MainWindow
+    app = QApplication.instance() or QApplication([])
+
+    def wait(condition, timeout=120.0):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            app.processEvents()
+            if condition():
+                return True
+            time.sleep(0.01)
+        return False
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "plate_heating.json"
+        shutil.copy(Path(__file__).resolve().parents[1] / "examples" / "plate_heating.json", path)
+        win = MainWindow(str(path))
+        try:
+            v = win.viewer
+            win.compute()
+            assert wait(lambda: win.results is not None and not win.jobs.running), win.log.toPlainText()
+            assert win.current_path() == (E.RESULTS, "heat", "T")
+            assert win.result_times("heat") == [5.0 * k for k in range(13)]
+            assert not v.time_bar.isHidden() and v.time_label.text() == "t = 60  (13/13)"
+            assert v.status.text().endswith("t = 60") and win.result_files["heat"].name == "heat_00060.vtu"
+            v.time_slider.setValue(2)
+            assert win.result_files["heat"].name == "heat_00010.vtu" and v.status.text().endswith("t = 10")
+            win.select((E.RESULTS,))
+            table = win.props.findChild(object, "results_table")
+            rows = {table.item(i, 0).text(): table.item(i, 1).text() for i in range(table.rowCount())}
+            assert rows["time"] == "10" and 40 < float(rows["∫ mean_T"]) < 50
+            combo = win.props.findChild(QComboBox, "curve")
+            assert combo.currentText() == "mean_T" and len(win.props.findChild(LinePlot, "curve_plot").x) == 13
+            v.play_button.setChecked(True)
+            assert wait(lambda: not v.play_button.isChecked(), 30) and v.time_slider.value() == 12
+            win.select(("models", 0))
+            assert v.time_bar.isHidden()
+        finally:
+            win.setWindowModified(False)
+            win.close()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

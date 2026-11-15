@@ -36,7 +36,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QMenu, QSpinBox, QToolButton, QVBoxLayout, QWidget)
+                               QMenu, QSlider, QSpinBox, QToolButton, QVBoxLayout, QWidget)
 
 
 def prepare_opengl() -> None:
@@ -251,6 +251,7 @@ class Viewer(QWidget):
     exportRequested = Signal()            # the Export button: the window asks where
     dimensionEdited = Signal(str, int, str)   # a dimension of the polygon edited: kind, side or vertex, text
     dimensionsToggled = Signal(bool)      # the Dimensions button of the drawing bar
+    timeChanged = Signal(int)             # the saved time shown (its index), by the time bar
 
     PICK_PIXELS = 7                       # click tolerance
     def __init__(self, parent=None):
@@ -320,6 +321,7 @@ class Viewer(QWidget):
         layout.addLayout(bar)
         self._build_draw_bar(layout)
         self._build_result_bar(layout)
+        self._build_time_bar(layout)
         self.edges = {"mesh": True, "field": False}   # element edges, per kind of display
         self._last = None
         self._shown_key = None
@@ -368,6 +370,7 @@ class Viewer(QWidget):
         if self._tool == "line":
             self.cut_button.setChecked(False)
         self.result_bar.hide()
+        self.set_times(None, 0)
         self._show_quality_controls(False)
         self.edges_button.setVisible(False)
         if self.cut_panel is not None:
@@ -1282,6 +1285,74 @@ class Viewer(QWidget):
         self.plotter.render()
 
     # -------------------------------------------------------------- results: cut line, probe
+
+    # -------------------------------------------------------------- results in time
+
+    def _build_time_bar(self, layout):
+        """The saved times of a transient result: a slider, the time, Play."""
+        self.time_bar = QWidget()
+        row = QHBoxLayout(self.time_bar)
+        row.setContentsMargins(4, 0, 4, 2)
+        self.play_button = QToolButton()
+        self.play_button.setText("Play")
+        self.play_button.setObjectName("play")
+        self.play_button.setCheckable(True)
+        self.play_button.setToolTip("Show the saved times one after the other")
+        self.play_button.toggled.connect(self._play)
+        row.addWidget(self.play_button)
+        self.time_slider = QSlider(Qt.Orientation.Horizontal)
+        self.time_slider.setObjectName("time")
+        self.time_slider.setToolTip("The saved time shown (Left, Right: the previous, the next one)")
+        self.time_slider.valueChanged.connect(self._time_moved)
+        row.addWidget(self.time_slider, 1)
+        self.time_label = QLabel("")
+        self.time_label.setObjectName("time_label")
+        self.time_label.setMinimumWidth(110)
+        row.addWidget(self.time_label)
+        layout.addWidget(self.time_bar)
+        self.time_bar.hide()
+        self.times: list[float] = []
+        self._play_timer = QTimer(self)
+        self._play_timer.setInterval(400)
+        self._play_timer.timeout.connect(self._next_time)
+
+    def set_times(self, times, index: int) -> None:
+        """The saved times of the result shown (none: the bar hidden), the
+        one shown."""
+        self.times = list(times or [])
+        if len(self.times) < 2:
+            self.play_button.setChecked(False)
+            self.time_bar.hide()
+            return
+        self.time_slider.blockSignals(True)
+        self.time_slider.setRange(0, len(self.times) - 1)
+        self.time_slider.setValue(max(0, min(index, len(self.times) - 1)))
+        self.time_slider.blockSignals(False)
+        self._time_label()
+        self.time_bar.show()
+
+    def _time_label(self) -> None:
+        k = self.time_slider.value()
+        self.time_label.setText(f"t = {self.times[k]:g}  ({k + 1}/{len(self.times)})")
+
+    def _time_moved(self, k: int) -> None:
+        if self.times:
+            self._time_label()
+            self.timeChanged.emit(k)
+
+    def _play(self, on: bool) -> None:
+        if on:
+            if self.time_slider.value() >= self.time_slider.maximum():
+                self.time_slider.setValue(0)
+            self._play_timer.start()
+        else:
+            self._play_timer.stop()
+
+    def _next_time(self) -> None:
+        if self.time_slider.value() >= self.time_slider.maximum():
+            self.play_button.setChecked(False)
+        else:
+            self.time_slider.setValue(self.time_slider.value() + 1)
 
     def _build_result_bar(self, layout):
         self.result_bar = QWidget()
