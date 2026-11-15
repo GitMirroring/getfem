@@ -102,16 +102,16 @@ _RG = re.compile(r"RG_\w+\[('[^']*')\]")
 
 
 def gwfl_terms(model: dict, md_index: int, mod_index: int) -> list[str]:
-    """The GWFL terms that the script adds for a module (and its macros,
-    its imposed values), one per line: 'expr', 'expr  (rhs) on sel',
-    'name := expr', 'u = data on sel  (Dirichlet)'. [] if the model cannot
-    be generated now."""
+    """The GWFL terms that the script adds for the equation of a module (its
+    macros, its terms, its sources; not its boundary conditions), one per
+    line: 'expr', 'expr  on sel  (right-hand side)', 'name := expr'. [] if
+    the model cannot be generated now."""
     from . import codegen, parameters as P
     try:
         r = P.resolved(M.with_defaults(model))
         ctxs = codegen.contexts(r)
         c = ctxs[md_index]
-        mod = r["models"][md_index]["modules"][mod_index]
+        mod = dict(r["models"][md_index]["modules"][mod_index], conditions=[])     # (the equation only)
         w = codegen.ScriptWriter()
         declare, setup, _ = codegen.MODULES[mod["type"]]
         declare(c, mod, mod_index + 1, w)

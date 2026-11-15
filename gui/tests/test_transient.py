@@ -298,7 +298,7 @@ def test_module_form():
     assert "<b>Stationary.</b>" in eq and "−div(k ∇T) = f" in eq and "xmin" not in eq     # (no conditions)
     assert "rho (density)" not in fields and E.field_value(m, fields["k (thermal conductivity)"]) == 1.0
     terms = fields["GWFL terms of the script"].help.splitlines()
-    assert "k*Grad_T.Grad_Test_T" in terms and "T = T_D1_1  on xmin  (Dirichlet)" in terms
+    assert "k*Grad_T.Grad_Test_T" in terms and not any("xmin" in x for x in terms)    # (no conditions)
     E.apply(m, fields["In time"], True)
     s = m["solvers"][0]
     assert s["type"] == "transient" and s["steps"] == ["heat"] and M.validate(m) == []
