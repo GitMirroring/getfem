@@ -14,8 +14,8 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""What a module solves, for the form of its node: the equation (HTML,
-with its data: properties per domain, sources, conditions) and the GWFL
+"""What a module solves, for the form of its node: the equation (HTML; its
+boundary conditions and data are in the form and the tree) and the GWFL
 terms that the generated script adds for it (read from the code generated
 for the module, so that they are those of the script).
 """
@@ -37,19 +37,6 @@ def _v(value) -> str:
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return html.escape(str(value))
-
-
-def _pieces(mod: dict, prop: str) -> str:
-    out = []
-    for pc in mod.get("properties", {}).get(prop, []):
-        what = f"material {html.escape(pc['material'])}" if "material" in pc else _v(pc.get("value"))
-        out.append(f"{what} on {html.escape(str(pc.get('selection')))}")
-    return "; ".join(out) or "<i>not given</i>"
-
-
-def _sources(mod: dict, name: str) -> str:
-    out = [f"{_v(src.get('value'))} on {html.escape(str(src.get('selection')))}" for src in mod.get("sources", [])]
-    return f"{name} = " + ("; ".join(out) if out else "0")
 
 
 def equation(model: dict, md: dict, mod: dict) -> str:
@@ -81,63 +68,28 @@ def _heat(model: dict, md: dict, mod: dict) -> str:
     timed = M.in_time(mod) and M.is_transient(model, md)
     lhs = f"ρ c<sub>p</sub> ∂{T}/∂t − " if timed else "−"
     k = "k" if mod.get("conductivity", "isotropic") == "isotropic" else "K"
-    lines = [f"{lhs}{DIV}({k} {NABLA}{T}) = f &nbsp; in Ω"]
-    for bc in mod.get("conditions", []):
-        sel = html.escape(str(bc.get("selection")))
-        t = bc.get("type")
-        if t == "temperature":
-            lines.append(f"{T} = {_v(bc.get('value'))} &nbsp; on {sel}")
-        elif t == "heat_flux":
-            lines.append(f"{k} {NABLA}{T}·n = {_v(bc.get('value'))} &nbsp; on {sel} (incoming flux)")
-        elif t == "convection":
-            lines.append(f"−{k} {NABLA}{T}·n = h ({T} − T<sub>ext</sub>), h = {_v(bc.get('h'))}, "
-                         f"T<sub>ext</sub> = {_v(bc.get('T_ext'))} &nbsp; on {sel}")
-    lines.append(f"{k} {NABLA}{T}·n = 0 &nbsp; on the rest of the boundary")
-    data = [f"{k} ({'conductivity' if k == 'k' else 'conductivity tensor'}): {_pieces(mod, 'k')}",
-            _sources(mod, "f")]
-    if timed:
-        data += [f"ρ (density): {_pieces(mod, 'rho')}", f"c<sub>p</sub> (specific heat): {_pieces(mod, 'cp')}"]
-    return _time(model, md, mod) + _block(lines, data)
+    return _time(model, md, mod) + _block([f"{lhs}{DIV}({k} {NABLA}{T}) = f &nbsp; in Ω"])
 
 
 def _elasticity(model: dict, md: dict, mod: dict) -> str:
     u = html.escape(mod.get("variable", "u"))
-    dim = M.model_dim(model, md) or 2
     expansion = any(m.get("type") == "thermal_expansion" and m.get("displacement") == mod.get("variable")
                     for m in md.get("modules", []))
-    lines = [f"−{DIV} σ({u}) = f &nbsp; in Ω",
-             "σ = λ tr(ε) I + 2μ ε" + (" − β α (T − T<sub>ref</sub>) I" if expansion else "")
-             + f", &nbsp; ε = ({NABLA}{u} + {NABLA}{u}<sup>T</sup>)/2"]
-    for bc in mod.get("conditions", []):
-        sel = html.escape(str(bc.get("selection")))
-        t = bc.get("type")
-        if t == "fixed":
-            lines.append(f"{u} = 0 &nbsp; on {sel}")
-        elif t == "displacement":
-            lines.append(f"{u} = {_v(bc.get('value'))} &nbsp; on {sel}")
-        elif t == "roller":
-            lines.append(f"{u}·n = 0, (σn)<sub>t</sub> = 0 &nbsp; on {sel}")
-        elif t == "traction":
-            lines.append(f"σn = {_v(bc.get('value'))} &nbsp; on {sel}")
-        elif t == "pressure":
-            lines.append(f"σn = −p n, p = {_v(bc.get('value'))} &nbsp; on {sel}")
-    lines.append("σn = 0 &nbsp; on the rest of the boundary")
-    plane = (f", plane {mod.get('plane', 'strain')}" if dim == 2 else "")
-    data = [f"λ, μ from E (Young's modulus): {_pieces(mod, 'E')} and ν (Poisson's ratio): "
-            f"{_pieces(mod, 'nu')}{plane}", _sources(mod, "f")]
-    return _block(lines, data)
+    dim = M.model_dim(model, md) or 2
+    plane = f" (plane {mod.get('plane', 'strain')})" if dim == 2 else ""
+    return _block([f"−{DIV} σ({u}) = f &nbsp; in Ω",
+                   "σ = λ tr(ε) I + 2μ ε" + (" − β α (T − T<sub>ref</sub>) I" if expansion else "")
+                   + f", &nbsp; ε = ({NABLA}{u} + {NABLA}{u}<sup>T</sup>)/2",
+                   f"λ, μ: from E and ν{plane}"])
 
 
 def _expansion(model: dict, md: dict, mod: dict) -> str:
     T, u = html.escape(str(mod.get("temperature"))), html.escape(str(mod.get("displacement")))
-    lines = [f"σ({u}) gets − β α ({T} − T<sub>ref</sub>) I, &nbsp; β = 3λ + 2μ (in 3D)"]
-    data = [f"α (expansion coefficient): {_pieces(mod, 'alpha')}", f"T<sub>ref</sub> = {_v(mod.get('T_ref'))}"]
-    return _block(lines, data)
+    return _block([f"σ({u}) gets − β α ({T} − T<sub>ref</sub>) I, &nbsp; β = 3λ + 2μ (in 3D)"])
 
 
-def _block(lines, data) -> str:
-    eq = "<br>".join(lines)
-    return (f"<p style='margin-left: 8px'>{eq}</p><p>with " + "<br>".join(data) + "</p>")
+def _block(lines) -> str:
+    return "<p style='margin-left: 8px'>" + "<br>".join(lines) + "</p>"
 
 
 # ---------------------------------------------------------------- the GWFL terms of the script

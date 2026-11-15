@@ -265,8 +265,11 @@ def test_window():
             assert win.result_times("heat") == [5.0 * k for k in range(13)]
             assert not v.time_bar.isHidden() and v.time_label.text() == "t = 60  (13/13)"
             assert v.status.text().endswith("t = 60") and win.result_files["heat"].name == "heat_00060.vtu"
+            lo, hi = v.plotter.actors["field"].mapper.scalar_range
+            assert abs(lo - 20) < 1e-6 and 99 < hi <= 100.01                  # over all the times
             v.time_slider.setValue(2)
             assert win.result_files["heat"].name == "heat_00010.vtu" and v.status.text().endswith("t = 10")
+            assert tuple(v.plotter.actors["field"].mapper.scalar_range) == (lo, hi)    # the same colors
             win.select((E.RESULTS,))
             table = win.props.findChild(object, "results_table")
             rows = {table.item(i, 0).text(): table.item(i, 1).text() for i in range(table.rowCount())}
@@ -292,7 +295,8 @@ def test_module_form():
     fields = {f.label: f for f in E.fields(m, path)}
     assert fields["In time"].kind == "bool" and not E.field_value(m, fields["In time"])
     eq = fields["Equation"].help
-    assert "<b>Stationary.</b>" in eq and "−div(k ∇T) = f" in eq and "T = 0 &nbsp; on xmin" in eq
+    assert "<b>Stationary.</b>" in eq and "−div(k ∇T) = f" in eq and "xmin" not in eq     # (no conditions)
+    assert "rho (density)" not in fields and E.field_value(m, fields["k (thermal conductivity)"]) == 1.0
     terms = fields["GWFL terms of the script"].help.splitlines()
     assert "k*Grad_T.Grad_Test_T" in terms and "T = T_D1_1  on xmin  (Dirichlet)" in terms
     E.apply(m, fields["In time"], True)
@@ -301,6 +305,7 @@ def test_module_form():
     fields = {f.label: f for f in E.fields(m, path)}
     assert "ρ c<sub>p</sub> ∂T/∂t − div(k ∇T) = f" in fields["Equation"].help
     assert "by the solver main: from t = 0 to 1, step 0.1" in fields["Equation"].help
+    assert {"rho (density)", "cp (specific heat capacity)"} <= set(fields)
     assert fields["GWFL terms of the script"].help.splitlines()[-1] == "rho*cp*Dot_T*Test_T"
     E.apply(m, fields["In time"], False)
     assert M.validate(m) == [] and "quasi-static" in equations.equation(m, m["models"][0],

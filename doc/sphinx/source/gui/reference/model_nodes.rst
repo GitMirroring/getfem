@@ -96,28 +96,12 @@ Module
    * - In time
      - ``transient``
      - true or false. Solved in time (with its time derivative), by a transient solver (one is set up when checked); unchecked: stationary (at each time step, in a transient solver)
-
-Properties: k (thermal conductivity), rho (density, in time), cp (specific heat capacity, in time), each given per domain (the last one listed wins); sources and conditions below.
-
-Property of a module
---------------------
-
-.. list-table::
-   :header-rows: 1
-   :widths: 20 20 60
-
-   * - Field
-     - Key
-     - Value
-   * - Domain
-     - ``selection``
-     - one of ``all``
-   * - Given by
-     - ``(the node)``
-     - one of ``value`` (a value), ``material:steel`` (material steel)
    * - k (thermal conductivity)
-     - ``value``
-     - number or GWFL expression
+     - ``properties.k.0``
+     - one of ``value`` (a value), ``material:steel`` (material steel). thermal conductivity
+   * -
+     - ``properties.k.0.value``
+     - number or GWFL expression. thermal conductivity
 
 Source of a module
 ------------------

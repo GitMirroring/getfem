@@ -753,6 +753,8 @@ class MainWindow(QMainWindow):
             if times:
                 k = len(times) - 1 if self.time_index is None else min(self.time_index, len(times) - 1)
                 status += f" — t = {times[k]:g}"
+                if view["clim"] is None:                 # the same colors at every time
+                    view["clim"] = self._time_range(mname, name, s.get("component"))
             self.viewer.show_field(file, name, s.get("component"), warp,
                                    s.get("scale") or 1.0, status=status, view=view)
             if times:
@@ -1705,6 +1707,24 @@ class MainWindow(QMainWindow):
         time), [] for a stationary result."""
         series = self.result_series.get(mname) if mname else next(iter(self.result_series.values()), None)
         return [t for t, _ in series] if series else []
+
+    def _time_range(self, mname, name, component):
+        """The range of a field (its component, its magnitude) over the
+        saved times of a model (cached), so that its colors do not change."""
+        key = (mname, name, component, tuple(str(f) for _, f in self.result_series.get(mname, [])))
+        cache = self.__dict__.setdefault("_time_ranges", {})
+        if key not in cache:
+            from . import scene
+            lo, hi = np.inf, -np.inf
+            for _, f in self.result_series.get(mname, []):
+                try:
+                    v, _ = scene.values(scene.read(f), name, component)
+                except (OSError, KeyError, ValueError):
+                    continue
+                if v.size:
+                    lo, hi = min(lo, float(np.nanmin(v))), max(hi, float(np.nanmax(v)))
+            cache[key] = (lo, hi) if lo < hi else None
+        return cache[key]
 
     def _time_changed(self, k: int) -> None:
         """Another saved time: the files of the models in time, the node shown again."""

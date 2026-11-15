@@ -44,7 +44,7 @@ def test_tree_and_fields_of_every_node():
         model = M.load(ex)
         root = E.tree(model, result_fields={"heat": ["T"]})
         kinds = {n.kind for n in root.walk()}
-        assert {"geometry", "mesh", "model", "module", "variable", "property"} <= kinds, ex.name
+        assert {"geometry", "mesh", "model", "module", "variable"} <= kinds, ex.name
         for node in root.walk():
             for f in E.fields(model, node.path):
                 assert f.kind in ("text", "ident", "value", "vector", "numbers", "ints", "int",
@@ -165,16 +165,22 @@ def test_modules_and_their_variables():
     assert E.get_at(model, new)["temperature"] == "T"
     md["modules"][1]["conditions"] = [{"type": "fixed", "selection": "xmin"}]
     assert M.validate(model) == [], M.validate(model)
-    # a property given by a material, then by a value
+    # a property given by a material, then by a value (in the form of the module)
     piece = MB() + ("properties", "k", 0)
-    f = next(f for f in E.fields(model, piece) if f.op == "piece_source")
+    assert E.find_node(E.tree(model), piece) is None
+    f = next(f for f in E.fields(model, MB()) if f.op == "piece_source" and f.key == piece)
+    assert f.label == "k (thermal conductivity)"
     assert E.field_value(model, f) == "material:aluminium"
     E.apply(model, f, "value")
     assert E.get_at(model, piece) == {"selection": "all", "value": 237.0}
     E.apply(model, f, "material:aluminium")
     assert E.get_at(model, piece) == {"selection": "all", "material": "aluminium"}
     p2 = E.do_action(model, MB(), "add_piece:k")
-    assert p2 == MB() + ("properties", "k", 1) and M.validate(model) == []
+    assert p2 == MB() and M.validate(model) == []
+    labels = [(f.label, f.key[-3:], f.removable) for f in E.fields(model, MB()) if "properties" in f.key]
+    assert labels[:3] == [("k (thermal conductivity) on", ("k", 0, "selection"), False),
+                          ("", ("properties", "k", 0), False), ("k on", ("k", 1, "selection"), True)]
+    assert ("add_piece:rho", "Add a domain for rho") not in E.actions(model, MB())      # (not in time)
 
 
 def test_new_models_from_the_root():

@@ -171,6 +171,48 @@ def unique_name(base: str, used) -> str:
     return f"{base}{i}"
 
 
+def shown_properties(mod: dict) -> list[str]:
+    """The properties of a module in its form (those only needed in time if
+    it is in time)."""
+    spec = M.MODULE_SPECS.get(mod.get("type"), {})
+    return [p for p in spec.get("properties", {})
+            if p not in spec.get("transient_properties", ()) or M.in_time(mod)]
+
+
+def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains) -> list[Field]:
+    """The properties of a module, in its form: per domain (the whole domain
+    first), a value or a material; the domains of a property but the first one
+    removable."""
+    out = []
+    for p in shown_properties(mod):
+        label = spec["properties"][p]
+        pieces = mod.get("properties", {}).get(p, [])
+        mats = [m.get("name") for m in model.get("materials", []) if p in (m.get("properties") or {})]
+        tensor = M.property_kind(mod, p) == M.MATRIX
+        several = len(pieces) > 1 or any(pc.get("selection", M.ALL) != M.ALL for pc in pieces)
+        for j, pc in enumerate(pieces):
+            path = mpath + ("properties", p, j)
+            name = f"{p} ({label})"
+            if several:                          # a row for its domain, then its value
+                out.append(Field(path + ("selection",), f"{p} on" if j else f"{p} ({label}) on", "choice",
+                                 domains, help="The domain of this value (the last one listed wins)",
+                                 remove=path if j else None))
+                name = ""
+            if mats:
+                out.append(Field(path, name, "choice",
+                                 (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
+                                 op="piece_source", help=label))
+                name = ""
+            if "material" not in pc:
+                out.append(Field(path + ("value",), name, "value", help=MATRIX_HELP if tensor else label))
+        if not pieces:
+            out.append(Field(mpath, "", "info", help=f"{p} ({label}): not given (Add a domain for {p})"))
+    if len(domains) > 1:
+        out.append(Field(mpath, "", "info", help="A property may differ per domain (Add a domain): the last "
+                                                 "one listed wins."))
+    return out
+
+
 def _solve_in_time(model: dict, md: dict) -> None:
     """A model solved in time: the main solver made transient (created if
     none: the models in the order of their imports), the model in it."""
@@ -386,11 +428,7 @@ def _module_node(md_path: Path, i: int, mod: dict) -> Node:
     spec = M.MODULE_SPECS.get(mod.get("type"), {})
     path = md_path + ("modules", i)
     node = Node(path, spec.get("label", str(mod.get("type"))), "module")
-    for p in spec.get("properties", {}):
-        for j, pc in enumerate(mod.get("properties", {}).get(p, [])):
-            what = pc["material"] if "material" in pc else format_value(pc.get("value"))
-            node.children.append(Node(path + ("properties", p, j),
-                                      f"{p} = {what} — {pc.get('selection', M.ALL)}", "property"))
+    # (its properties: in its form)
     if spec.get("source") is not None:
         srcs = Node(path + ("sources",), "Sources", "sources")
         for j, s in enumerate(mod.get("sources", [])):
@@ -1058,10 +1096,7 @@ def _model_fields(model, path) -> list[Field]:
                                       "step, in a transient solver)"))
             from . import equations
             out.append(Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod)))
-            props = ", ".join(f"{p} ({label}{', in time' if p in spec.get('transient_properties', ()) else ''})"
-                              for p, label in spec.get("properties", {}).items())
-            out.append(Field(mpath, "", "info", help=f"Properties: {props}, each given per domain "
-                             "(the last one listed wins); sources and conditions below."))
+            out += _property_fields(model, mod, spec, mpath, domains)
             terms = equations.gwfl_terms(model, k, rest[1])
             if terms:
                 out.append(Field(mpath, "GWFL terms of the script", "code", help="\n".join(terms)))
@@ -2790,7 +2825,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out.append(("add_graphic", "Add a graphic"))
     elif rest[:1] == ("modules",) and len(rest) == 2:
         spec = M.MODULE_SPECS.get(get_at(model, path + ("type",)), {})
-        out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in spec.get("properties", {})]
+        out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(get_at(model, path))]
         if spec.get("source") is not None:
             out.append(("add_source", "Add a source"))
         if spec.get("conditions"):
@@ -3219,7 +3254,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         pieces = get_at(model, path).setdefault("properties", {}).setdefault(p, [])
         default = M.MODULE_SPECS[get_at(model, path + ("type",))]["property_defaults"].get(p, 1.0)
         pieces.append({"selection": M.ALL, "value": default})
-        return path + ("properties", p, len(pieces) - 1)
+        return path                                 # (edited in the form of the module)
     if action == "add_source":
         mpath = path[:4]
         mod = get_at(model, mpath)

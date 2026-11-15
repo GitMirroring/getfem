@@ -43,9 +43,12 @@ A module is a predefined physics acting on variables
    another model) with a linear elasticity module: it adds
    :math:`-\beta\alpha(T - T_{ref})I` to the stress.
 
-The **properties** of a module are given per domain selection, by a value
-(a number or an expression, possibly of the variables: a conductivity
-``k(T)`` makes the model nonlinear) or by a material. The **sources** are
+The form of a module shows the equation it solves, its **properties**,
+edited there, and the GWFL terms that the script adds for it. The
+properties are given per domain selection (*Add a domain for k*: the last
+one listed wins), by a value (a number or an expression, possibly of the
+variables: a conductivity ``k(T)`` makes the model nonlinear) or by a
+material. The **sources** (nodes below the module) are
 volume sources per domain selection, the **conditions** apply on boundary
 selections. A boundary without condition is free (zero flux, zero
 traction). The interface warns when nothing fixes the solution (no imposed
@@ -135,9 +138,8 @@ to an end time by a fixed time step::
    "time": {"start": 0, "end": 60, "step": 1}, "save": {"every": 5},
    "coupling": "sequence", "schemes": {"heat": {"type": "theta", "theta": 1}}}
 
-A module whose equation has a time derivative has an **In time** box (in
-the form of the module, which also shows the equation solved, its data and
-the GWFL terms of the script). Checked (``"transient": true``), the module
+A module whose equation has a time derivative has an **In time** box in its
+form. Checked (``"transient": true``), the module
 is solved in time: the heat conduction adds :math:`\rho c_p \partial
 T/\partial t` (the term ``rho*cp*Dot_T*Test_T``), and its properties
 ``rho`` and ``cp`` are then required (they are not needed otherwise); its

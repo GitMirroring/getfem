@@ -384,7 +384,6 @@ def model_nodes() -> str:
         ("Variable", ("models", 0, "variables", 0)),
         ("Import", ("models", 1, "imports", 0)),
         ("Module", ("models", 0, "modules", 0)),
-        ("Property of a module", ("models", 0, "modules", 0, "properties", "k", 0)),
         ("Source of a module", ("models", 0, "modules", 0, "sources", 0)),
         ("Condition of a module", ("models", 0, "modules", 0, "conditions", 0)),
         ("Term", ("models", 0, "terms", 0)),
