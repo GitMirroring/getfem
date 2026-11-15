@@ -114,6 +114,7 @@ class MainWindow(QMainWindow):
         self.props.changed.connect(self.change)
         self.props.action.connect(self._panel_action)
         self.props.removeProperty.connect(self._remove_property)
+        self.props.pieceFocused.connect(self._piece_focused)
         self.props.viewChanged.connect(self._result_view_changed)
         self.viewer = Viewer()
         self.viewer.edgeClicked.connect(self._edge_clicked)
@@ -376,6 +377,23 @@ class MainWindow(QMainWindow):
         item = self.tree.currentItem()
         return item.data(0, PATH_ROLE) if item is not None else ()
 
+    def view_path(self) -> tuple:
+        """The path that the view shows and edits by picking: the current
+        node, or the property piece being edited in the form of the current
+        module (its domain)."""
+        path = self.current_path()
+        piece = getattr(self, "_focus_piece", None)
+        if piece is not None and path and piece[:4] == path and len(path) == 4 \
+                and E.get_at(self.model, piece) is not None:
+            return piece
+        return path
+
+    def _piece_focused(self, piece) -> None:
+        """A property of a module edited in its form: its domain in the view."""
+        if getattr(self, "_focus_piece", None) != tuple(piece):
+            self._focus_piece = tuple(piece)
+            self.update_view()
+
     def refresh(self, select=None, rebuild_panel=True):
         """Rebuild the tree (keeping the expanded nodes), validate, and show the
         node `select` (by default the current one)."""
@@ -505,6 +523,8 @@ class MainWindow(QMainWindow):
         path = self.current_path()
         if path is None:
             return
+        if getattr(self, "_focus_piece", None) is not None and self._focus_piece[:len(path)] != path:
+            self._focus_piece = None
         if path[:1] == (E.RESULTS,):
             self._show_result_node(path)
             return
@@ -1277,7 +1297,7 @@ class MainWindow(QMainWindow):
     def _region_clicked(self, region):
         """A click in a region of the preview: toggles it in the selected
         domain selection, or in the support of the selected item."""
-        path = self.current_path()
+        path = self.view_path()
         if not E.can_pick_regions(self.model, path):
             return
         before = copy.deepcopy(self.model)
@@ -1292,7 +1312,7 @@ class MainWindow(QMainWindow):
         self._undo.append(before)
         self._redo.clear()
         self._update_undo()
-        self._changed(select=path)
+        self._changed(select=self.current_path())
         shape = G.shape_of(P.resolved(self.model)["geometries"][gi]["source"])
         crit = self.model["geometries"][gi]["selections"][name]["criteria"]
         key = sorted(tuple(p) for p in region)
@@ -1302,7 +1322,7 @@ class MainWindow(QMainWindow):
                            + (" (the previous criterion was replaced by picked regions)" if replaced else ""))
 
     def update_view(self):
-        path = self.current_path()
+        path = self.view_path()
         if getattr(self, "_plane_target", None) not in (None, path):    # another node: no more picking
             self._plane_target = None
         if path[:1] == (E.RESULTS,):

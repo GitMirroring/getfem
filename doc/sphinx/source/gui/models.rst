@@ -48,7 +48,9 @@ edited there, and the GWFL terms that the script adds for it. The
 properties are given per domain selection (*Add a domain for k*: the last
 one listed wins), by a value (a number or an expression, possibly of the
 variables: a conductivity ``k(T)`` makes the model nonlinear) or by a
-material. The **sources** (nodes below the module) are
+material. Editing the domain or the value of a property shows its domain in
+the view, where the regions clicked are added to it (or removed). The
+**sources** (nodes below the module) are
 volume sources per domain selection, the **conditions** apply on boundary
 selections. A boundary without condition is free (zero flux, zero
 traction). The interface warns when nothing fixes the solution (no imposed

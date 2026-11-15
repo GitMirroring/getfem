@@ -165,6 +165,8 @@ def test_regions_picked_in_the_window():
     import os
     import shutil
     try:
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QFocusEvent
         from PySide6.QtWidgets import QApplication
     except ImportError:
         return
@@ -175,8 +177,12 @@ def test_regions_picked_in_the_window():
         path = shutil.copy(EXAMPLES / "plate_inclusion.json", tmp)
         win = MainWindow(path)
         try:
-            # the material of the inclusion: its region is highlighted
-            win.select(("models", 0, "modules", 0, "properties", "k", 1))
+            # the material of the inclusion, edited in the form of the module: its region
+            # is highlighted
+            win.select(("models", 0, "modules", 0))
+            piece = ("models", 0, "modules", 0, "properties", "k", 1)
+            QApplication.sendEvent(win.props._fields[piece + ("selection",)], QFocusEvent(QEvent.Type.FocusIn))
+            assert win.view_path() == piece
             last = win.viewer._last
             assert last[0] == "geometry" and callable(last[4]) and last[6] == "regions"
             img = win.viewer.plotter.screenshot(return_img=True)
@@ -199,7 +205,7 @@ def test_regions_picked_in_the_window():
             assert "copper" not in win.model["geometries"][0]["selections"]
             # a material on the whole domain: a new selection, from empty
             E_get(win, ("models", 0, "modules", 0, "properties", "k", 0))["selection"] = "all"
-            win.select(("models", 0, "modules", 0, "properties", "k", 0))
+            win._piece_focused(("models", 0, "modules", 0, "properties", "k", 0))
             win.viewer.pick_world((0.05, 0.05))
             mat = E_get(win, ("models", 0, "modules", 0, "properties", "k", 0))
             assert mat["selection"] == "epoxy"
@@ -492,7 +498,8 @@ def test_3d_geometry_preview():
             last = win.viewer._last
             assert last[0] == "geometry3d" and np.all(last[2])               # the whole boundary
             assert "selected" in win.viewer.plotter.actors
-            win.select(("models", 0, "modules", 0, "properties", "k", 0))
+            win.select(("models", 0, "modules", 0))
+            win._piece_focused(("models", 0, "modules", 0, "properties", "k", 0))
             assert win.viewer._last[2] is True                                # the whole domain
         finally:
             win.setWindowModified(False)

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -94,10 +94,32 @@ def group_label(labels: list[str]) -> str:
     return (" ".join(common) or labels[0].split()[0]).rstrip(":") + "…"
 
 
+def _piece_of(key) -> tuple | None:
+    """The path of the property piece of a module that a field edits."""
+    key = tuple(key)
+    if len(key) >= 7 and key[0] == "models" and key[2] == "modules" and key[4] == "properties":
+        return key[:7]
+    return None
+
+
+class _FocusWatcher(QObject):
+    """Calls back when a widget (or a child) gets the focus or is clicked."""
+
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.callback = callback
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
+            self.callback()
+        return False
+
+
 class PropertiesPanel(QScrollArea):
     changed = Signal(object, object)          # Field, value
     action = Signal(str)                      # editing action identifier, or a window command
     removeProperty = Signal(object)           # Field
+    pieceFocused = Signal(object)             # a property of a module per domain: its path, being edited
     viewChanged = Signal(dict)                # settings of a result field display
 
     def __init__(self, parent=None):
@@ -235,6 +257,11 @@ class PropertiesPanel(QScrollArea):
                 form.addRow(self._vertex_table(model, f, errors))
                 continue
             widget = self._editor(model, f)
+            piece = _piece_of(f.key)
+            if piece is not None:                  # its domain shown (and picked) in the view
+                watcher = _FocusWatcher(widget, lambda p=piece: self.pieceFocused.emit(p))
+                for w in [widget] + widget.findChildren(QWidget):
+                    w.installEventFilter(watcher)
             msgs = E.errors_at(errors, f.key) if f.op != "rename_selection" else []
             if msgs:
                 widget.setStyleSheet(ERROR_STYLE)
