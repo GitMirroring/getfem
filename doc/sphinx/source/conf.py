@@ -149,8 +149,9 @@ add_module_names = False
 #html_theme = 'default'
 
 # A dictionary of options that influence the look and feel of the selected
-# theme. These are theme-specific.
-#html_theme_options = {}
+# theme. These are theme-specific. The default theme (alabaster) shows its
+# own logo option in the sidebar, not html_logo.
+html_theme_options = {'logo': 'logo_getfem_small.png'}
 
 # A list of paths that contain custom themes, either as subdirectories or
 # as zip files, relative to this directory.

@@ -446,7 +446,7 @@ def main():
     print((static / "logo_getfem.svg").relative_to(ROOT))
     small = logo_svg(meshes, tagline=False, edge_opacity=0.35)       # the mesh lighter at small sizes
     render(full, 700, static / "logogetfem.png")                       # index page, LaTeX
-    render(small, 200, static / "logo_getfem_small.png")              # sidebar
+    render(small, 400, static / "logo_getfem_small.png")              # sidebar (shown 200 wide)
     render(full, 700, scilab / "logogetfem.png")
     render(full, 700, scilab / "logogetfemwhitebg.png", rgb=True)
     render(small, 200, scilab / "logo_getfem_small.png")
