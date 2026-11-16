@@ -2647,8 +2647,7 @@ def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
     mesh["mesher"] = mesher
     mesh.update(_default_mesh_params(mesher, dim))
     if mesher in M.FREE_MESHERS:
-        if size is not None:
-            mesh[_size_key(mesher)] = size
+        mesh[_size_key(mesher)] = size if size is not None else M.default_element_size(model, geom or {})
         mesh["order"] = min(order, 2) if mesher == "netgen" else order
         if "layers" in keep:
             mesh["layers"] = keep["layers"]
@@ -3205,6 +3204,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         mesh = {"name": unique_name(name or "mesh", [m.get("name") for m, _ in M.all_meshes(model)]),
                 "geometry": geom["name"], "mesher": mesher}
         mesh.update(_default_mesh_params(mesher, gdim))
+        if mesher in M.FREE_MESHERS:             # of the scale of the geometry
+            mesh[_size_key(mesher)] = M.default_element_size(model, geom)
         meshes.append(mesh)
         return ("meshes", len(meshes) - 1)
     if action.startswith("add_model:"):

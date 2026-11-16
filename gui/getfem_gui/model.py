@@ -738,6 +738,50 @@ def volume_of(model: dict, geom: dict) -> dict | None:
         return None
 
 
+def geometry_extent(model: dict, geom: dict) -> float | None:
+    """The largest side of the bounding box of a geometry (its parameters
+    resolved; that of the volume of a boundary), None when not known (a CAD
+    or mesh file, a curve)."""
+    import numpy as np
+    from . import geometry2d as G, geometry3d as G3, manifold
+    geom = meshed_geometry(model, geom)
+    try:
+        sub = {"parameters": model.get("parameters", []), "geometries": [geom]}
+        src = P.resolved(sub)["geometries"][0]["source"]
+        t = src.get("type")
+        if t == "box":
+            return float(max(src["size"]))
+        if t == "csg" and src.get("dim") == 3:
+            lo, hi = G3.bounds(G3.shape_of(src))
+        elif t == "surface" and "parametric" in src:
+            vals, _ = P.values(model)
+            Q, _ = manifold.surface_samples(src, 21)
+            X = manifold.param_surface_points(src, vals, Q[0], Q[1])
+            lo, hi = X.min(axis=1), X.max(axis=1)
+        elif t in ("csg", "surface"):
+            lo, hi = G.bounds(G.shape_of(src))
+        else:
+            return None
+        ext = float(np.max(np.asarray(hi, float) - np.asarray(lo, float)))
+        return ext if np.isfinite(ext) and ext > 0 else None
+    except Exception:          # noqa: BLE001 (an incomplete geometry: no extent)
+        return None
+
+
+def default_element_size(model: dict, geom: dict) -> float:
+    """A first element size for a geometry: about a twentieth of its extent
+    (a tenth in 3D, a volume), a round number (0.1 when its extent is not
+    known)."""
+    import math
+    ext = geometry_extent(model, geom)
+    if not ext:
+        return 0.1
+    solid = geometry_dim(model, geom) == 3 and topological_dim(model, meshed_geometry(model, geom)) == 3
+    h = ext / (10 if solid else 20)
+    e = 10 ** math.floor(math.log10(h))
+    return float(f"{max(m for m in (1, 2, 5) if m * e <= h * (1 + 1e-9)) * e:.3g}")
+
+
 def meshed_geometry(model: dict, geom: dict) -> dict:
     """The geometry that the mesher meshes for a geometry: the volume of a
     boundary (its faces then extracted), the geometry itself otherwise."""
@@ -1518,6 +1562,13 @@ def _validate_mesh(model, mesh, where, errors):
         _check_positive(mesh.get("h"), f"{where}.h", errors)
     elif mesher in ("gmsh", "netgen"):
         _check_positive(mesh.get("size"), f"{where}.size", errors)
+    if mesher in FREE_MESHERS:                  # an element size of the scale of the geometry
+        key = "h" if mesher == "getfem" else "size"
+        h = mesh.get(key)
+        ext = geometry_extent(model, geom) if isinstance(h, (int, float)) and h > 0 else None
+        if ext and h > ext / 2:
+            errors.append(f"{where}.{key}: {h:g} is too large for the geometry (of size {ext:.3g}): "
+                          f"about {default_element_size(model, geom):g} expected")
     if mesher in ("getfem", "gmsh") and mesh.get("order", 1) not in (1, 2, 3):
         errors.append(f"{where}.order: 1, 2 or 3 expected")
     if mesher == "netgen" and mesh.get("order", 1) not in (1, 2):

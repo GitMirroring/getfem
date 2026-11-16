@@ -39,7 +39,11 @@ listed in :ref:`gui-ref-meshers`.
 A new mesh of a box is structured; those of the other geometries use
 |gmsh| (or the mesher chosen by ``GETFEM_GUI_DEFAULT_MESHER``). When a
 geometry changes its kind of source, its meshes change their mesher if
-needed, with an equivalent element size.
+needed, with an equivalent element size. The element size of a new mesh is
+of the scale of its geometry: a round number about a twentieth of its
+extent (a tenth for a solid; that of the solid for the boundary of a
+solid). A size larger than half the geometry is an error, the meshers
+failing on it.
 
 The **geometric order** 2 gives curved elements, which follow the circles
 and the curved surfaces. They are drawn curved, the meshes as the results:

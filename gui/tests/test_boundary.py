@@ -265,6 +265,22 @@ def test_preview():
             win.close()
 
 
+def test_element_size():
+    """A new mesh: an element size of the scale of the geometry (the volume
+    of a boundary: a tenth of its extent, a round number); a size larger
+    than the geometry: an error (the meshers fail on it)."""
+    m = M.load(Path(__file__).resolve().parents[1] / "examples" / "pin_fin_heat_sink_3d.json")
+    assert M.geometry_extent(m, m["geometries"][0]) == 0.03 and M.default_element_size(m, m["geometries"][0]) == 0.002
+    path = E.do_action(m, ("geometries",), "add_geometry:boundary")
+    mesh = E.get_at(m, E.do_action(m, path, "add_mesh"))
+    assert mesh["h" if mesh["mesher"] == "getfem" else "size"] == 0.002
+    E._change_mesher(m, mesh, "getfem")
+    mesh["h"] = 0.1
+    assert any("0.1 is too large for the geometry (of size 0.03): about 0.002 expected" in e for e in M.validate(m))
+    m2 = M.default_model()                           # 2D: a twentieth
+    assert M.default_element_size(m2, m2["geometries"][0]) == 0.05
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
