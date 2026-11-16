@@ -55,7 +55,8 @@ class GetfemVersion(QObject):
         self._proc.finished.connect(self._done)
         self._proc.errorOccurred.connect(
             lambda err: err == QProcess.ProcessError.FailedToStart and self._done())
-        self._proc.start(python or sys.executable, ["-c", _VERSION_SCRIPT])
+        from .jobs import start
+        start(self._proc, python or sys.executable, ["-c", _VERSION_SCRIPT])
 
     def _done(self, *args):
         if self.version is not None:

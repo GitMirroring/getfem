@@ -366,7 +366,7 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard():
             event.ignore()
             return
-        self.jobs.stop()
+        self.jobs.stop(wait=True)
         self.checker.cancel()
         self.viewer.close_plotter()
         event.accept()

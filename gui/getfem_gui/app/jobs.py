@@ -21,12 +21,34 @@ interrupted."""
 
 from __future__ import annotations
 
+import atexit
 import copy
+import weakref
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from .. import gwfl, mesher, model as M, runner
+
+_LIVE: "weakref.WeakSet[QProcess]" = weakref.WeakSet()     # the processes started
+
+
+def start(proc: QProcess, program: str, args: list) -> None:
+    """Starts a process, stopped when Python exits if still running (not
+    destroyed while running: a window not closed, a check under way)."""
+    _LIVE.add(proc)
+    proc.start(program, args)
+
+
+@atexit.register
+def _stop_all() -> None:
+    for proc in list(_LIVE):
+        try:
+            if proc.state() != QProcess.ProcessState.NotRunning:
+                proc.kill()
+                proc.waitForFinished(2000)
+        except RuntimeError:          # (already deleted with its parent)
+            pass
 
 
 class JobRunner(QObject):
@@ -70,10 +92,15 @@ class JobRunner(QObject):
         self._meshes, self._pending = {}, list(names[1:])
         self._start_mesh(model, names[0], workdir, False, then_solve=True)
 
-    def stop(self) -> None:
+    def stop(self, wait: bool = False) -> None:
+        """Stops the computation running (wait: until its process has ended,
+        as when the window closes: not destroyed while running)."""
         if self._proc is not None:
             self._stopped = True
-            self._proc.kill()
+            proc = self._proc
+            proc.kill()
+            if wait:
+                proc.waitForFinished(3000)
 
     # -------------------------------------------------------------- internals
 
@@ -129,7 +156,7 @@ class JobRunner(QObject):
         proc.errorOccurred.connect(self._error)
         self._proc = proc
         self.runningChanged.emit(True)
-        proc.start(job.command[0], job.command[1:])
+        start(proc, job.command[0], job.command[1:])
 
     def _read_stdout(self):
         text = bytes(self._proc.readAllStandardOutput()).decode("utf-8", "replace")
@@ -201,7 +228,7 @@ class GwflChecker(QObject):
         proc.errorOccurred.connect(lambda err, p=proc: err == QProcess.ProcessError.FailedToStart
                                    and self._done(p))
         self._proc = proc
-        proc.start(job["command"][0], job["command"][1:])
+        start(proc, job["command"][0], job["command"][1:])
 
     def cancel(self) -> None:
         if self._proc is not None:
