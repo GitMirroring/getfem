@@ -125,7 +125,7 @@ class Splash(QSplashScreen):
         p.fillRect(0, cls.H - 6, cls.W, 6, QColor("#1f6f78"))       # accent band
         logo = QPixmap(str(LOGO))
         if not logo.isNull():
-            w = 190
+            w = 220
             h = w * logo.height() / logo.width()
             p.drawPixmap(QRectF(cls.W - w - 24, 22, w, h), logo, QRectF(logo.rect()))
 

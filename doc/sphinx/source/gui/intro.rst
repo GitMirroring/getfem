@@ -77,8 +77,11 @@ Icon and launcher
 -----------------
 
 The interface has its own icon (a tripod in plane elasticity, computed by the
-interface itself: ``gui/tools/make_icon.py`` rebuilds it), shown by the bar
-of the running applications:
+interface itself: ``gui/tools/make_icon.py`` rebuilds it), which is also the
+mark of the logo of |gf| (``gui/tools/make_logo.py`` builds the logo, its
+letters "FEM" meshed in quadrangles, triangles and both, for the
+documentation, the Scilab help and the start-up window). The icon is shown
+by the bar of the running applications:
 
 * on macOS, the Dock shows it while the interface runs. The name in the
   menu bar and under the icon is "GetFEM GUI" when ``pyobjc`` is installed

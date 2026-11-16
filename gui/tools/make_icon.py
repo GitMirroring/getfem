@@ -17,7 +17,7 @@
 """Builds the icon of the application (getfem_gui/app/resources/icon_*.png):
 a tripod in plane elasticity, its three ends fixed, its hole pulled down,
 computed by the interface itself (GetFEM mesher, P2) and colored by the
-displacement, on a light blue disc.
+displacement (viridis), on a light blue disc.
 
     cd gui && python tools/make_icon.py        (needs getfem, pyvista, Pillow)
 """
@@ -69,7 +69,7 @@ def render(vtu, N=1024):
     g.point_data["s"] = np.linalg.norm(np.asarray(g.point_data["u"]), axis=1) ** 0.7
     pl = pv.Plotter(off_screen=True, window_size=(N, N))
     pl.set_background("white")
-    pl.add_mesh(g, scalars="s", cmap="jet", show_scalar_bar=False, lighting=False)
+    pl.add_mesh(g, scalars="s", cmap="viridis", show_scalar_bar=False, lighting=False)
     pl.add_mesh(g.extract_feature_edges(boundary_edges=True, feature_edges=False, manifold_edges=False),
                 color="#1c2b44", line_width=4)
     pl.view_xy()
