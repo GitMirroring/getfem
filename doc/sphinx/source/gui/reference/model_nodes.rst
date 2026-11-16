@@ -102,6 +102,9 @@ Module
    * -
      - ``properties.k.0.value``
      - number or GWFL expression. thermal conductivity
+   * - f (volume source)
+     - ``sources.0.value``
+     - number or GWFL expression
 
 Source of a module
 ------------------

@@ -43,16 +43,17 @@ A module is a predefined physics acting on variables
    another model) with a linear elasticity module: it adds
    :math:`-\beta\alpha(T - T_{ref})I` to the stress.
 
-The form of a module shows the equation it solves, its **properties**,
-edited there, and the GWFL terms that the script adds for it. The
-properties are given per domain selection (*Add a domain for k*: the last
-one listed wins), by a value (a number or an expression, possibly of the
-variables: a conductivity ``k(T)`` makes the model nonlinear) or by a
-material. Editing the domain or the value of a property shows its domain in
-the view, where the regions clicked are added to it (or removed). The
-**sources** (nodes below the module) are
-volume sources per domain selection, the **conditions** apply on boundary
-selections. A boundary without condition is free (zero flux, zero
+The form of a module shows the equation it solves, its **properties** and
+its **source** :math:`f`, edited there, and the GWFL terms that the script
+adds for it. The properties are given per domain selection (*Add a domain
+for k*: the last one listed wins), by a value (a number or an expression,
+possibly of the variables: a conductivity ``k(T)`` makes the model
+nonlinear) or by a material. The source is 0 by default, a value or an
+expression of the coordinates, the time, the variables; *Add a domain for f*
+gives sources on domain selections, which add up. Editing the domain or the
+value of a property or of a source shows its domain in the view, where the
+regions clicked are added to it (or removed). The **conditions** (nodes
+below the module) apply on boundary selections. A boundary without condition is free (zero flux, zero
 traction). The interface warns when nothing fixes the solution (no imposed
 temperature, no displacement constraint).
 

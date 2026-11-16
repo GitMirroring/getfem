@@ -95,10 +95,14 @@ def group_label(labels: list[str]) -> str:
 
 
 def _piece_of(key) -> tuple | None:
-    """The path of the property piece of a module that a field edits."""
+    """The path of the property piece (or the source) of a module that a
+    field edits."""
     key = tuple(key)
     if len(key) >= 7 and key[0] == "models" and key[2] == "modules" and key[4] == "properties":
         return key[:7]
+    if len(key) >= 6 and key[0] == "models" and key[2] == "modules" and key[4] == "sources" \
+            and isinstance(key[5], int):
+        return key[:6]
     return None
 
 

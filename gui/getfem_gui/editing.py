@@ -213,6 +213,30 @@ def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains) -
     return out
 
 
+SOURCE_LABELS = {M.SCALAR: "f (volume source)", M.VECTOR: "f (volume force)"}
+
+
+def _source_fields(mod: dict, spec: dict, mpath: Path, domains, dim: int) -> list[Field]:
+    """The source f of a module, in its form: 0 when none; per domain (each
+    one removable when there are several: they add up)."""
+    kind = spec.get("source")
+    if kind is None:
+        return []
+    label = SOURCE_LABELS.get(kind, "f")
+    srcs = mod.get("sources", [])
+    if not srcs:
+        return [_value_field(mpath + ("sources",), label, kind, dim, op="first_source")]
+    out = []
+    several = len(srcs) > 1 or any(sc.get("selection", M.ALL) != M.ALL for sc in srcs)
+    for j, sc in enumerate(srcs):
+        path = mpath + ("sources", j)
+        if several:
+            out.append(Field(path + ("selection",), f"{label} on" if j == 0 else "f on", "choice", domains,
+                             help="The domain of this source (the sources add up)", remove=path))
+        out.append(_value_field(path + ("value",), "" if several else label, kind, dim))
+    return out
+
+
 def _solve_in_time(model: dict, md: dict) -> None:
     """A model solved in time: the main solver made transient (created if
     none: the models in the order of their imports), the model in it."""
@@ -428,12 +452,7 @@ def _module_node(md_path: Path, i: int, mod: dict) -> Node:
     spec = M.MODULE_SPECS.get(mod.get("type"), {})
     path = md_path + ("modules", i)
     node = Node(path, spec.get("label", str(mod.get("type"))), "module")
-    # (its properties: in its form)
-    if spec.get("source") is not None:
-        srcs = Node(path + ("sources",), "Sources", "sources")
-        for j, s in enumerate(mod.get("sources", [])):
-            srcs.children.append(Node(path + ("sources", j), f"Source — {s.get('selection', M.ALL)}", "source"))
-        node.children.append(srcs)
+    # (its properties and its source: in its form)
     if spec.get("conditions"):
         bcs = Node(path + ("conditions",), "Conditions", "conditions")
         for j, c in enumerate(mod.get("conditions", [])):
@@ -1005,10 +1024,10 @@ def _field_fields(model, path) -> list[Field]:
 MATRIX_HELP = "a matrix [a, b; c, d] (by rows, as in GWFL), a matrix parameter, or a number (times the identity)"
 
 
-def _value_field(key, label, kind, dim) -> Field:
+def _value_field(key, label, kind, dim, op=None) -> Field:
     if kind == M.VECTOR:
-        return Field(key, label, "vector", size=dim)
-    return Field(key, label, "value")
+        return Field(key, label, "vector", size=dim, op=op)
+    return Field(key, label, "value", op=op)
 
 
 _LABELS = {"value": "Value", "h": "Exchange coefficient h", "T_ext": "External temperature",
@@ -1097,6 +1116,7 @@ def _model_fields(model, path) -> list[Field]:
             from . import equations
             out.append(Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod)))
             out += _property_fields(model, mod, spec, mpath, domains)
+            out += _source_fields(mod, spec, mpath, domains, dim)
             terms = equations.gwfl_terms(model, k, rest[1])
             if terms:
                 out.append(Field(mpath, "GWFL terms of the script", "code", help="\n".join(terms)))
@@ -2158,6 +2178,8 @@ def field_value(model: dict, f: Field):
         return f"material:{pc['material']}" if "material" in pc else "value"
     if f.op == "box_dim":
         return len(get_at(model, f.key, []))
+    if f.op == "first_source":                 # no source: 0
+        return [0.0] * f.size if f.kind == "vector" else 0.0
     if f.op == "surface_map":
         return "parametric" in get_at(model, f.key[:-1], {})
     if f.op == "placement":
@@ -2280,6 +2302,9 @@ def apply(model: dict, f: Field, value) -> Path | None:
                 src["parametric"] = {"x": "u", "y": "v", "z": "0"}
             else:
                 src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
+        return None
+    if f.op == "first_source":               # the first source of a module: on the whole domain
+        get_at(model, key[:-1])["sources"] = [{"selection": M.ALL, "value": value}]
         return None
     if f.op == "module_transient":           # in time: a transient solver for its model, rho and cp
         mod = get_at(model, key[:-1])
@@ -2827,7 +2852,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         spec = M.MODULE_SPECS.get(get_at(model, path + ("type",)), {})
         out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(get_at(model, path))]
         if spec.get("source") is not None:
-            out.append(("add_source", "Add a source"))
+            out.append(("add_source", "Add a domain for f"))
         if spec.get("conditions"):
             out.append(("add_bc", "Add a condition"))
         out += [("unfold", "Unfold into terms and conditions")] if _can_unfold(get_at(model, path)) else []
@@ -3261,7 +3286,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         spec = M.MODULE_SPECS[mod["type"]]
         srcs = mod.setdefault("sources", [])
         srcs.append({"selection": M.ALL, "value": _zero(spec.get("source", M.SCALAR), dim)})
-        return mpath + ("sources", len(srcs) - 1)
+        return mpath                                # (edited in the form of the module)
     if action == "add_bc":
         mpath = path[:4]
         mod = get_at(model, mpath)
