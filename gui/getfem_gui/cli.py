@@ -22,6 +22,7 @@
     python -m getfem_gui mesh model.json [-m fine] [-w dir]   # all meshes by default
     python -m getfem_gui generate model.json [-w dir] [-o solve.py]
     python -m getfem_gui run model.json [-w dir]
+    getfem_gui install-desktop [--uninstall]  # Linux: among the applications, with its icon
 """
 
 from __future__ import annotations
@@ -75,6 +76,10 @@ def parser() -> argparse.ArgumentParser:
     pgui.add_argument("model", nargs="?")
     pgui.add_argument("--python", help="Python interpreter that provides GetFEM")
     pgui.add_argument("--no-splash", action="store_true", help="no start-up window (also: environment variable GETFEM_GUI_NO_SPLASH)")
+    pdk = sub.add_parser("install-desktop", help="Linux: install the desktop file and the icon of the interface "
+                                                 "(~/.local/share), which opens it as now (interpreter, PYTHONPATH)")
+    pdk.add_argument("--python", help="Python interpreter that provides GetFEM (given to the interface)")
+    pdk.add_argument("--uninstall", action="store_true", help="remove them")
     return p
 
 
@@ -97,6 +102,13 @@ def main(argv: list[str] | None = None) -> int:
         from .app import main as gui_main
         return gui_main([args.model] if args.model else [], python=args.python,
                         splash=not args.no_splash)
+
+    if args.cmd == "install-desktop":
+        from .app import icon
+        files = icon.install_desktop(python=args.python, uninstall=args.uninstall)
+        for f in files:
+            print(("removed: " if args.uninstall else "written: ") + str(f))
+        return 0
 
     if args.cmd == "new":
         M.save(M.default_model(), args.model)

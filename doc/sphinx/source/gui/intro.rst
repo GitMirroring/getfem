@@ -73,6 +73,32 @@ the one of the interface. A start-up window shows the versions of the
 interface and of |gf| (``--no-splash``, or the environment variable
 ``GETFEM_GUI_NO_SPLASH``, removes it).
 
+Icon and launcher
+-----------------
+
+The interface has its own icon (a tripod in plane elasticity, computed by the
+interface itself: ``gui/tools/make_icon.py`` rebuilds it), shown by the bar
+of the running applications:
+
+* on macOS, the Dock shows it while the interface runs. The name in the
+  menu bar and under the icon is "GetFEM GUI" when ``pyobjc`` is installed
+  (``pip install pyobjc-framework-Cocoa``), "Python" otherwise;
+* on Linux, the window manager receives it with the windows. The dash of
+  GNOME (Ubuntu) shows the icon of the *desktop file* of the application:
+  ::
+
+    getfem_gui install-desktop [--python /path/to/python]
+    getfem_gui install-desktop --uninstall
+
+  writes ``~/.local/share/applications/getfem-gui.desktop`` and the icons
+  in ``~/.local/share/icons/hicolor``. The interface is then also among
+  the applications (it can be pinned to the dash), and opens as it is
+  started now: the same interpreter, the same ``PYTHONPATH`` (where
+  ``getfem`` is found), and the package from the same place. Run it again
+  when one of them changes. The desktop file finds the windows by their
+  class ``GetFEM GUI`` (X11) or their identifier ``getfem-gui``
+  (Wayland).
+
 The tests of the interface are in ``gui/tests`` (``python -m pytest tests``,
 also run by ``make check``, or ``make -C gui check`` for them only);
 those of the window run without a screen.

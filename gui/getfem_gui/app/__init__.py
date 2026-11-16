@@ -79,10 +79,15 @@ def main(argv: list[str] | None = None, python: str | None = None, splash: bool 
 
     if QApplication.instance() is None:
         choose_platform()               # Wayland: X11 (XWayland), for the 3D view inside the window
+    from . import icon
     prepare_opengl()
+    if QApplication.instance() is None:
+        icon.set_macos_name()           # the name in the menu bar and the Dock (with pyobjc)
     app = QApplication.instance() or QApplication([sys.argv[0]])
-    app.setApplicationName("GetFEM GUI")
+    app.setApplicationName(icon.NAME)   # also the class of the windows on X11 (StartupWMClass)
     app.setOrganizationName("GetFEM")
+    app.setDesktopFileName(icon.DESKTOP_ID)     # the app_id of the windows on Wayland
+    app.setWindowIcon(icon.app_icon())  # the Dock (macOS), the task bar, the windows
     app.setStyle("Fusion")
 
     from .splash import DURATION_MS, GetfemVersion, Splash

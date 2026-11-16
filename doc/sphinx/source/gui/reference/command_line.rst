@@ -215,3 +215,23 @@ Open the graphical interface (requires pyside6).
      - Python interpreter that provides GetFEM
    * - ``--no-splash``
      - no start-up window (also: environment variable GETFEM\_GUI\_NO\_SPLASH)
+
+install-desktop
+---------------
+
+Linux: install the desktop file and the icon of the interface (~/.local/share), which opens it as now (interpreter, pythonpath).
+
+.. code-block:: text
+
+   getfem_gui install-desktop [-h] [--python PYTHON] [--uninstall]
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Argument
+     - Meaning
+   * - ``--python``
+     - Python interpreter that provides GetFEM (given to the interface)
+   * - ``--uninstall``
+     - remove them

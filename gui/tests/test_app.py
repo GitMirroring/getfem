@@ -150,6 +150,8 @@ def test_main_with_splash_screen():
                               if isinstance(w, Splash) and w not in before]
             win = next(w for w in app.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible())
             seen["version"] = win.versions.version
+            seen["icon"] = sorted(s.width() for s in app.windowIcon().availableSizes())
+            seen["names"] = (app.applicationName(), app.desktopFileName())
             original = QMessageBox.about
             QMessageBox.about = lambda parent, title, text: seen.setdefault("about", text)
             shown = QMessageBox.exec
@@ -176,6 +178,8 @@ def test_main_with_splash_screen():
     assert True not in hidden["main"] and seen["splash"] == [False]   # closed after about 3 s
     import getfem
     assert seen["version"] == getfem.util_version()
+    assert seen["icon"] == [32, 64, 128, 256, 512]           # the icon of the application
+    assert seen["names"] == ("GetFEM GUI", "getfem-gui")
     assert f"GetFEM GUI 0.1 on GetFEM {seen['version']}" in seen["about"]
     assert "rapid prototyping of complex multiphysics" in seen["about"]
     assert "Help ▸ License" in seen["about"]
@@ -202,6 +206,29 @@ def test_command_line_default():
     with open(Path(__file__).resolve().parents[1] / "pyproject.toml", "rb") as f:
         project = tomllib.load(f)
     assert project["project"]["scripts"]["getfem_gui"] == "getfem_gui.cli:main"
+
+
+def test_install_desktop_file():
+    """getfem_gui install-desktop: the desktop file (its window class and its
+    icon, for the dash of GNOME) and the icons, in ~/.local/share."""
+    from getfem_gui import cli
+    from getfem_gui.app import icon
+    with tempfile.TemporaryDirectory() as d:
+        env = {"XDG_DATA_HOME": d, "PYTHONPATH": "/opt/getfem/site"}
+        files = icon.install_desktop(python="/usr/bin/python3", env=env)
+        desktop = Path(d) / "applications" / "getfem-gui.desktop"
+        assert files[0] == desktop and all(f.is_file() for f in files)
+        text = desktop.read_text()
+        assert "StartupWMClass=GetFEM GUI\n" in text and "Icon=getfem-gui\n" in text
+        exec_ = next(line for line in text.splitlines() if line.startswith("Exec="))
+        assert "/opt/getfem/site" in exec_ and "-m getfem_gui --python /usr/bin/python3 %f" in exec_
+        assert str(Path(cli.__file__).resolve().parents[1]) in exec_     # the package, as now
+        assert (Path(d) / "icons/hicolor/256x256/apps/getfem-gui.png").read_bytes() \
+            == icon.icon_file(256).read_bytes()
+        assert icon.install_desktop(env=env, uninstall=True) == files
+        assert not any(f.exists() for f in files)
+    args = cli.parser().parse_args(cli.with_command(["install-desktop", "--uninstall"]))
+    assert args.cmd == "install-desktop" and args.uninstall
 
 
 def test_main_window_failing():
