@@ -1908,7 +1908,8 @@ def selected_after(action: str, new_path) -> tuple | None:
     """Where to go after an action of creation: in a new constructive
     geometry, on its root (an empty union, to add shapes), or on the profile
     of a new extrusion or revolution, or on the polygon of a new curve or
-    swept surface (the 2D view, to draw it)."""
+    swept surface (the 2D view, to draw it); in a new model of a kind, on
+    its module (its parameters)."""
     if new_path is None:
         return None
     new_path = tuple(new_path)
@@ -1919,6 +1920,9 @@ def selected_after(action: str, new_path) -> tuple | None:
         return new_path + ("source", "shape", "profile")
     if action in ("add_shape:extrusion", "add_shape:revolution"):
         return new_path + ("profile",)
+    if action.startswith("add_model:") and action != "add_model:" and new_path[:1] == ("models",) \
+            and len(new_path) == 2:
+        return new_path + ("modules", 0)        # a new heat, elasticity model: the form of its module
     return new_path
 
 

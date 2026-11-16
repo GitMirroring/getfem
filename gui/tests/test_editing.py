@@ -449,6 +449,18 @@ def test_constructive_geometry_from_nothing():
     assert not [e for e in M.validate(m) if e.startswith(f"geometries[{p3[1]}]")]
 
 
+def test_a_new_model_of_a_kind_on_its_module():
+    """A new heat or elasticity model: then on the form of its module (its
+    parameters); an empty model: on the model."""
+    m = M.default_model()
+    for action in ("add_model:heat_conduction", "add_model:linear_elasticity"):
+        path = E.do_action(m, ("models",), action)
+        after = E.selected_after(action, path)
+        assert after == path + ("modules", 0) and E.find_node(E.tree(m), after).kind == "module"
+    path = E.do_action(m, ("models",), "add_model:")
+    assert E.selected_after("add_model:", path) == path
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
