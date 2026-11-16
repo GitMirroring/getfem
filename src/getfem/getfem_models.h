@@ -1068,8 +1068,11 @@ namespace getfem {
 
     scalar_type get_time();
 
-    void set_time_step(scalar_type dt) { time_step = dt; }
-    scalar_type get_time_step() const { return time_step; }
+    /** Set the time step: also the data "timestep" of the model (of size 1,
+        a reserved name of the assembly language), so that the terms using
+        it are assembled again when it changes. */
+    void set_time_step(scalar_type dt);
+    scalar_type get_time_step() const;
     scalar_type get_init_time_step() const { return init_time_step; }
     int is_time_integration() const { return time_integration; }
     void set_time_integration(int ti) { time_integration = ti; }

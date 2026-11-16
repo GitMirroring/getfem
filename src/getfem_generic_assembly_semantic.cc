@@ -1758,8 +1758,11 @@ namespace getfem {
               pnode->der1 = pnode->der2 = 0;
             }
           }
-        } else if (SPEC_FUNCTIONS.find(name) != SPEC_FUNCTIONS.end()) {
-          // Special function found
+        } else if (SPEC_FUNCTIONS.find(name) != SPEC_FUNCTIONS.end()
+                   && !(name.compare("timestep") == 0
+                        && workspace.variable_exists(name))) {
+          // Special function found (timestep: the data of the model, if
+          // any, set by model::set_time_step; a constant otherwise)
           if (pnode->der1)
             ga_throw_error(pnode->expr, pnode->pos, "Special functions do not "
                            "support derivatives.");

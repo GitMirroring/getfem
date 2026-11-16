@@ -37,7 +37,8 @@ namespace getfem {
     init(); complex_version = comp_version;
     is_linear_ = is_symmetric_ = is_coercive_ = true;
     leading_dim = 0;
-    time_integration = 0; init_step = false; time_step = scalar_type(1);
+    time_integration = 0; init_step = false;
+    set_time_step(scalar_type(1)); // (the data "timestep", from the start)
     add_interpolate_transformation
       ("neighbour_elt", interpolate_transformation_neighbor_instance());
     add_interpolate_transformation
@@ -1142,6 +1143,31 @@ namespace getfem {
       else
         set_real_variable(varname)[0] = t;
     }
+  }
+
+  void model::set_time_step(scalar_type dt) {
+    // The data "timestep" of a real model (a reserved name of the assembly
+    // language: not checked), so that the terms using it are assembled
+    // again when it changes; the assembly language of a complex model has
+    // no data: there, timestep stays a constant of the expressions.
+    static const std::string varname("timestep");
+    time_step = dt;
+    if (is_complex()) return;
+    if (variables.find(varname) == variables.end()) {
+      variables.emplace(varname, var_description(false, false, 0, 0, 1));
+      bgeot::multi_index sizes(1);
+      sizes[0] = 1;
+      variables[varname].qdims = sizes;
+      variables[varname].set_size();
+    }
+    set_real_variable(varname)[0] = dt;
+  }
+
+  scalar_type model::get_time_step() const {
+    static const std::string varname("timestep");
+    if (!is_complex() && variables.find(varname) != variables.end())
+      return real_variable(varname)[0];
+    return time_step;
   }
 
   scalar_type model::get_time() {

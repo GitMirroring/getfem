@@ -25,6 +25,7 @@ optpy = check_levelset.py                               \
         check_mesher_sizes.py                           \
         check_mesher_project.py                         \
         check_mesh_faces.py                             \
+        check_timestep.py                               \
         demo_thermo_elasticity_electrical_coupling.py
 else
 optpy =
@@ -44,6 +45,7 @@ EXTRA_DIST=                                       \
     check_mesher_sizes.py                         \
     check_mesher_project.py                       \
     check_mesh_faces.py                           \
+    check_timestep.py                             \
     check_asm.py                                  \
     check_mumps_ctx.py          		  \
     check_bspline_mesh_fem.py                     \
