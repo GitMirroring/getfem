@@ -485,7 +485,12 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
     w(f"{md}.set_time({c.t0!r})  # the time t of the expressions")
     if not c.transient:
         return
-    w(f"{md}.add_initialized_data('dt__', [1.0])  # the time step (set by the solver)")
+    w(f"{md}.set_time_step(1.0)  # the time step timestep (set by the solver)")
+    w("try:      # (timestep: a data of the model, assembled again when it changes)")
+    w(f"    {md}.variable('timestep')")
+    w("except RuntimeError:")
+    w("    raise RuntimeError('this GetFEM is too old for the transient solver (its time step must be a "
+      "data of the model)') from None")
     for u in M.time_variables(c.md):
         mf = c.mfs[u]
         theta = float(c.scheme.get("theta", 1.0))
@@ -495,7 +500,7 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
         w(f"{md}.add_initialized_fem_data('{u}__rate', {mf}, np.zeros({mf}.nbdof()))")
         w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
         w(f"{md}.add_macro('Previous_Dot_{u}', '{u}__rate')")
-        w(f"{md}.add_macro('Dot_{u}', '({u} - {u}__prev)/(theta_{u}*dt__) "
+        w(f"{md}.add_macro('Dot_{u}', '({u} - {u}__prev)/(theta_{u}*timestep) "
           f"- (1 - theta_{u})/theta_{u}*{u}__rate')")
 
 
@@ -698,7 +703,7 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
     w('    """The time and the time step of the models, the data depending on t."""')
     for c in cs:
         w(f"    {c.py}.set_time(t)")
-        w(f"    {c.py}.set_variable('dt__', [dt])")
+        w(f"    {c.py}.set_time_step(dt)")
         for name, mf, expr in c.timed:
             w(f"    {c.py}.set_variable({name!r}, {c.py}.interpolation({expr!r}, {mf}))")
     w("")

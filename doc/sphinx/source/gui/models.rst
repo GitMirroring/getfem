@@ -227,15 +227,16 @@ and data of the model, updated by the time loop (they can be read in the
 exported script):
 
 - ``T__prev`` and ``T__rate`` (data on the finite element method of ``T``):
-  :math:`U_n` and :math:`\dot U_n`; ``theta_T``; ``dt__``, the time step.
+  :math:`U_n` and :math:`\dot U_n`; ``theta_T``.
 - The macros ``Previous_T`` (``T__prev``), ``Previous_Dot_T`` (``T__rate``)
-  and ``Dot_T``: ``(T - T__prev)/(theta_T*dt__) - (1 - theta_T)/theta_T*T__rate``.
+  and ``Dot_T``: ``(T - T__prev)/(theta_T*timestep) - (1 - theta_T)/theta_T*T__rate``.
   The time derivative term of the module, ``rho*cp*Dot_T*Test_T``, is then an
   ordinary term (linear: assembled with the others).
-- The time ``t`` of the expressions is that of the ``gf.Model``
-  (``set_time``); the imposed values that depend on it (Dirichlet data) are
-  interpolated again at each step. (The time step has its own data
-  ``dt__``: the ``timestep`` of GWFL is not updated in the linear terms.)
+- The time ``t`` and the time step ``timestep`` of the expressions are those
+  of the ``gf.Model`` (``set_time``, ``set_time_step``: data of the model, so
+  that the terms using them are assembled again when they change); the
+  imposed values that depend on the time (Dirichlet data) are interpolated
+  again at each step.
 - The loop: ``set_time(t, dt)`` (the time, the time step, the data depending
   on the time), the models solved (in turn, or by staggered iterations),
   then ``shift()``: ``T__rate`` gets the interpolation of ``Dot_T``,
