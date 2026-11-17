@@ -85,9 +85,11 @@ class JobRunner(QObject):
     def build_mesh(self, model: dict, mesh_name: str, workdir: str | Path, force: bool = False) -> None:
         self._start_mesh(model, mesh_name, workdir, force, then_solve=False)
 
-    def solve(self, model: dict, workdir: str | Path) -> None:
-        """Mesh (if needed) the meshes used by the models, then solve. The
+    def solve(self, model: dict, workdir: str | Path, solver: str | None = None) -> None:
+        """Mesh (if needed) the meshes used by the models, then solve (all the
+        global solvers, or one: solver, after those it starts from). The
         model file must be valid."""
+        self._solver = solver
         names = runner.meshes_needed(model)
         self._meshes, self._pending = {}, list(names[1:])
         self._start_mesh(model, names[0], workdir, False, then_solve=True)
@@ -133,7 +135,8 @@ class JobRunner(QObject):
             self._start_mesh(model, name, self._workdir, False, then_solve=True)
             return
         try:
-            job = runner.prepare_solve(self._model, self._workdir, self._meshes, self.python)
+            job = runner.prepare_solve(self._model, self._workdir, self._meshes, self.python,
+                                       getattr(self, "_solver", None))
         except (ValueError, KeyError, OSError) as exc:
             self.solveFinished.emit(runner.RunResult(False, self._workdir, None,
                                                      stderr=f"RuntimeError: {exc}", mesh=mres))

@@ -135,6 +135,31 @@ by an **import**, on the same mesh for now::
 Without a global solver, the models are solved in an order compatible with
 their imports. See ``examples/thermoelastic_plate.json``.
 
+**Several global solvers** run one after the other (*Compute*), in the
+order of the list. Each one starts from the initial values of the
+variables (``"start": "initial"``, the default) or from the state left by
+the solver before it (``"start": "previous"``: the values of the variables
+and the velocities of those in time; the first solver starts from the
+initial values). A static preload, then a dynamics:
+
+.. code-block:: text
+
+  "solvers": [
+    {"name": "static", "type": "sequence", "steps": ["beam"]},
+    {"name": "preloaded", "type": "transient", "start": "previous", "steps": ["beam"],
+     "time": {"end": 0.4, "step": 0.02}, "schemes": {"beam/u": {"type": "newmark"}}}]
+
+The beam starts at the static equilibrium (its initial acceleration, from
+the equation, is zero) and stays there. Each solver has its results, in
+its folder (``static/``, ``preloaded/``): *Compute* shows those of the last
+one, and the results offer those of each solver computed (*Results of the
+solver ...*). *Compute this solver* (the menu of a solver) runs one of
+them, after those it starts from. A variable may be in time for a solver
+and stationary for another: its time derivatives (``Dot_u``) are zero
+there. The script then has a function per solver; ``python script.py``
+runs them all, ``python script.py --solver preloaded`` one of them (after
+those it starts from).
+
 A step may also solve **some of the variables of a model**: ``"model/u"``
 (or ``"model/u,p"``) solves ``u`` (and ``p``), the other variables of the
 model being given, their current values (a partial resolution). A coupled

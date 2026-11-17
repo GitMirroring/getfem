@@ -80,22 +80,26 @@ def meshes_needed(model: dict) -> list[str]:
 
 
 def prepare_solve(model: dict, workdir: str | Path, meshes: dict[str, mesher.MeshResult],
-                  python: str | None = None) -> SolveJob:
-    """Write the solve script for already built meshes ({name: MeshResult})."""
+                  python: str | None = None, solver: str | None = None) -> SolveJob:
+    """Write the solve script for already built meshes ({name: MeshResult});
+    solver: the global solver to run (after those it starts from), all of
+    them if None."""
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     script = workdir / "run_getfem.py"
     script.write_text(codegen.generate(model, {n: (r.path, r.info) for n, r in meshes.items()}),
                       encoding="utf-8")
-    job = SolveJob(workdir, script, [python or sys.executable, script.name], meshes)
+    args = ["--solver", solver] if solver is not None and len(model.get("solvers", [])) > 1 else []
+    job = SolveJob(workdir, script, [python or sys.executable, script.name] + args, meshes)
     job.results_file.unlink(missing_ok=True)
     return job
 
 
 def run(model: dict, workdir: str | Path, python: str | None = None,
-        timeout: float | None = None, check_gwfl: bool = True) -> RunResult:
+        timeout: float | None = None, check_gwfl: bool = True, solver: str | None = None) -> RunResult:
     """Check the model file (including its GWFL expressions), prepare the
-    meshes used by the models, generate the solve script, run it.
+    meshes used by the models, generate the solve script, run it (all the
+    global solvers, or one: solver, after those it starts from).
 
     `python` selects the interpreter that provides GetFEM
     (by default, the one running getfem_gui).
@@ -115,7 +119,7 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
             return RunResult(False, workdir, None, stderr=f"mesh {name!r}: {mres.error}", mesh=mres)
         meshes[name] = mres
 
-    job = prepare_solve(model, workdir, meshes, python)
+    job = prepare_solve(model, workdir, meshes, python, solver)
     try:
         proc = subprocess.run(job.command, cwd=workdir, capture_output=True, text=True,
                               timeout=timeout)

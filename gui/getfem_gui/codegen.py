@@ -99,6 +99,7 @@ class Ctx:
     mfs: dict = field(default_factory=dict)      # variable/import name -> Python name of its MeshFem
     transient: bool = False       # solved in time (by the main solver)
     schemes: dict = field(default_factory=dict)  # variable in time -> its time scheme
+    zero_time: list = field(default_factory=list)  # stationary here, in time in another global solver
     partial: bool = False         # solved by partial steps (some of its variables at a time)
     t0: float = 0.0               # the time at the start
     timed: list = field(default_factory=list)    # data depending on t: (name, mf, GWFL expression)
@@ -477,6 +478,9 @@ def contexts(model: dict) -> list[Ctx]:
             c.transient = True
             c.schemes = {u: M.scheme_of(model, md, u) for u in M.time_variables(model, md)}
             c.t0 = M.time_values(model, solver)[0]
+        if len(model.get("solvers", [])) > 1:      # (its time derivatives zero here)
+            c.zero_time = [u for u in M.timeable_variables(md)
+                           if u not in c.schemes and M.scheme_anywhere(model, md, u) is not None]
         for v in md["variables"]:
             c.mfs[v["name"]] = fem_name(fem_key(model, v, c.dim))
         for im in md["imports"]:
@@ -495,6 +499,11 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
     again after it by shift())."""
     md = c.py
     w(f"{md}.set_time({c.t0!r})  # the time t of the expressions")
+    for u in c.zero_time:
+        w(f"# {u}: stationary for this solver (in time for another one): its time derivatives are zero")
+        w(f"{md}.add_macro('Previous_{u}', '{u}')")
+        for d in ("Dot", "Previous_Dot") + (("Dot2", "Previous_Dot2") if M.variable_order(c.md, u) == 2 else ()):
+            w(f"{md}.add_macro('{d}_{u}', '0*{u}')")
     if not c.transient:
         return
     w(f"{md}.set_time_step(1.0)  # the time step timestep (set by the solver)")
@@ -687,7 +696,7 @@ def solve(md, R, max_iter=50, max_res=1e-10, check_linear=True):
 '''
 
 
-def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
+def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool = False) -> None:
     """solve_<model>() for each model, and the main solver."""
     by = {c.md["name"]: c for c in ctxs}
     for c in ctxs:
@@ -729,7 +738,7 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
     w("")
     w(f"# Solver {solver['name']!r}: {solver['type']} of {', '.join(map(str, solver['steps']))}")
     if solver["type"] == "transient":
-        _transient_code(model, solver, ctxs, w)
+        _transient_code(model, solver, ctxs, w, previous)
         return
     _coupled_code(solver, solver["type"], by, w)
 
@@ -770,7 +779,7 @@ def _coupled_code(solver: dict, coupling: str, by: dict, w: ScriptWriter) -> Non
       f"after {int(solver['max_iter'])} iterations')")
 
 
-def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
+def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool = False) -> None:
     """The time loop: the initial values, then at each time step the time
     and the data depending on it set, the models solved (in sequence or by
     staggered iterations), the previous values shifted; the results saved
@@ -852,19 +861,26 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
         w("    for md, name, value in kept:")
         w("        md.set_variable(name, value)")
     w("")
-    w("# The initial values")
+    w("# The initial values" + (": the state left by the previous solver" if previous else ""))
     for c in cs:
         for v in c.md["variables"]:
             u, mf = v["name"], c.mfs[v["name"]]
             kind = M.variable_kind(v)
             zero = [0.0] * c.dim if kind == M.VECTOR else 0.0
             init = c.value(v.get("initial", zero), kind)
-            w(f"{c.py}.set_variable({u!r}, {c.py}.interpolation({init!r}, {mf}))")
+            if previous:
+                w(f"{c.py}.set_variable({u!r}, state[{c.md['name']!r}][{u!r}])")
+            else:
+                w(f"{c.py}.set_variable({u!r}, {c.py}.interpolation({init!r}, {mf}))")
             if u in c.schemes:
                 w(f"{c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
                 if c.schemes[u].get("type") == "bdf2":
                     w(f"{c.py}.set_variable('{u}__prev2', {c.py}.variable({u!r}))")
-                if M.SCHEME_ORDER[c.schemes[u]["type"]] == 2:
+                if M.SCHEME_ORDER[c.schemes[u]["type"]] == 2 and previous:   # its velocity, if in time before
+                    vel = c.value(v.get("initial_velocity", zero), kind)
+                    w(f"{c.py}.set_variable('{u}__rate', state[{c.md['name']!r}].get('{u}__rate', "
+                      f"{c.py}.interpolation({vel!r}, {mf})))")
+                elif M.SCHEME_ORDER[c.schemes[u]["type"]] == 2:
                     vel = c.value(v.get("initial_velocity", zero), kind)
                     w(f"{c.py}.set_variable('{u}__rate', {c.py}.interpolation({vel!r}, {mf}))  # initial velocity")
     w("set_time(T_START, (T_END - T_START) / N_STEPS)")
@@ -1000,6 +1016,9 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
     """Solve script for already prepared meshes: meshes = {name: (file, info)}
     (see mesher.ensure_mesh). standalone: the script follows the meshing
     script (runner.export_script), which defines m_<mesh> and RG_<mesh>.
+    With several global solvers, each one is a function solver_<name>(state)
+    and the script runs them in order, or one (--solver name) after those it
+    starts from; each one writes its files in its folder.
     Raises ValueError if the model is invalid."""
     errors = M.validate(model)
     if errors:
@@ -1007,12 +1026,20 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
     model = P.resolved(M.with_defaults(model))
     meshes = meshes or {}
     ctxs = contexts(model)
+    several = len(model.get("solvers", [])) > 1
     w = ScriptWriter()
     w("#!/usr/bin/env python3")
     w(f"# GetFEM script generated by getfem_gui on {_dt.datetime.now():%Y-%m-%d %H:%M}")
     w(f"# File: {model.get('name', '')}; models: {', '.join(c.md['name'] for c in ctxs)}")
     w("# This script is standalone: it can be read, modified and run again by hand.")
+    if several:
+        names = [s["name"] for s in model["solvers"]]
+        w(f"# Global solvers: {', '.join(names)}, run in this order; one of them only (after those it")
+        w("# starts from): python this_script.py --solver NAME. Each one writes its files in its folder.")
     w("import json")
+    if several:
+        w("import os")
+        w("import sys")
     w("import time")
     w("")
     w("import numpy as np")
@@ -1020,10 +1047,85 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
     for line in HELPERS.splitlines():
         w(line)
     w("")
-    w("t0 = time.perf_counter()")
-    w(f"results = {{'name': {model.get('name', '')!r}, 'status': 'error', 'models': {{"
-      + ", ".join(f"{c.md['name']!r}: {{}}" for c in ctxs) + "}}")
+    if not several:
+        w("t0 = time.perf_counter()")
+        w(f"results = {{'name': {model.get('name', '')!r}, 'status': 'error', 'models': {{"
+          + ", ".join(f"{c.md['name']!r}: {{}}" for c in ctxs) + "}}")
+    _shared(model, meshes, standalone, ctxs, w)
+    if not several:
+        _body(model, ctxs, w)
+        w("with open('results.json', 'w', encoding='utf-8') as f:")
+        w("    json.dump(results, f, indent=2, ensure_ascii=False)")
+        w("dofs = sum(r.get('nb_dofs', 0) for r in results['models'].values())")
+        w("print(f\"solved: {dofs} unknowns, {results['time_s']:.2f} s (results in results.json)\")")
+        return w.text()
+    for s in model["solvers"]:
+        view = M.solver_first(model, s["name"])
+        vctxs = contexts(view)
+        start = s.get("start", "initial")
+        w.section(f"Global solver {s['name']!r} ({s['type']}, from "
+                  + ("the state left by the previous solver)" if start == "previous" else "the initial values)"))
+        inner = ScriptWriter()
+        inner("t0 = time.perf_counter()")
+        inner("SOLVED.clear()")
+        inner(f"results = {{'name': {model.get('name', '')!r}, 'status': 'error', 'models': {{"
+              + ", ".join(f"{c.md['name']!r}: {{}}" for c in vctxs) + "}}")
+        _body(view, vctxs, inner, previous=start == "previous")
+        inner("state = {}   # the state left: the values of the variables, the velocities of those in time")
+        for c in vctxs:
+            inner(f"state[{c.md['name']!r}] = {{v: {c.py}.variable(v) for v in "
+                  f"{[v['name'] for v in c.md['variables']]!r}}}")
+            for u in c.schemes:
+                inner(f"state[{c.md['name']!r}]['{u}__rate'] = {c.py}.variable('{u}__rate')")
+        inner("return results, state")
+        w(f"def solver_{ident(s['name'])}(state=None):")
+        w(f'    """The global solver {s["name"]!r}: its models declared, solved, post-processed; returns its')
+        w('    results and the state it leaves."""')
+        for line in inner.lines:
+            w(("    " + line) if line else "")
+        w("")
+    w.section("Run the global solvers")
+    w("SOLVERS = {" + ", ".join(f"{s['name']!r}: (solver_{ident(s['name'])}, {s.get('start', 'initial')!r})"
+                                for s in model["solvers"]) + "}")
+    w(f"ORDER = {names!r}")
+    w("def chain(name):")
+    w('    """The solver named, after those it starts from."""')
+    w("    i = j = ORDER.index(name)")
+    w("    while j > 0 and SOLVERS[ORDER[j]][1] == 'previous':")
+    w("        j -= 1")
+    w("    return ORDER[j:i + 1]")
+    w("run = chain(sys.argv[sys.argv.index('--solver') + 1]) if '--solver' in sys.argv else ORDER")
+    w("t_all = time.perf_counter()")
+    w("everything, state = {}, None")
+    w("for name in run:")
+    w("    os.makedirs(name, exist_ok=True)")
+    w("    here = os.getcwd()")
+    w("    os.chdir(name)")
+    w("    try:")
+    w("        r, state = SOLVERS[name][0](state if SOLVERS[name][1] == 'previous' else None)")
+    w("    finally:")
+    w("        os.chdir(here)")
+    w("    for mr in r['models'].values():           # (the files: in the folder of the solver)")
+    w("        if mr.get('vtu'):")
+    w("            mr['vtu'] = f\"{name}/{mr['vtu']}\"")
+    w("        if mr.get('series', {}).get('vtu'):")
+    w("            mr['series']['vtu'] = [f'{name}/{f}' for f in mr['series']['vtu']]")
+    w("    r['solver_name'] = name")
+    w("    everything[name] = r")
+    w("results = dict(everything[run[-1]])     # the last one run; each one in 'solvers'")
+    w("results['solvers'] = everything")
+    w("results['run'] = run")
+    w("results['time_s'] = time.perf_counter() - t_all")
+    w("results['status'] = 'ok' if all(r['status'] == 'ok' for r in everything.values()) else 'error'")
+    w("with open('results.json', 'w', encoding='utf-8') as f:")
+    w("    json.dump(results, f, indent=2, ensure_ascii=False)")
+    w("print(f\"solved: {', '.join(run)}, {results['time_s']:.2f} s (results in results.json)\")")
+    return w.text()
 
+
+def _shared(model: dict, meshes: dict, standalone: bool, ctxs: list[Ctx], w: ScriptWriter) -> None:
+    """The meshes, their integration methods, the finite element methods
+    (shared by all the global solvers)."""
     w.section("Meshes, prepared by the meshing step" if not standalone else "Meshes, built above")
     integ: dict[str, int] = {}
     for c in ctxs:
@@ -1051,6 +1153,11 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
             w(f"{py} = gf.MeshFem(m_{ident(mesh)}, {qdim})")
             w(f"{py}.set_classical_{'discontinuous_' if fem == 'lagrange_discontinuous' else ''}fem({degree})")
 
+
+def _body(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool = False) -> None:
+    """The models (for the main global solver of model), their
+    post-processing, the resolution. previous: from the state left by the
+    previous solver (state: {model: {variable: values}})."""
     w("LINEAR = {}")
     if any(c.partial for c in ctxs):
         w("MULTIPLIERS = {}   # the multipliers of the variables (disabled with them in a partial step)")
@@ -1071,15 +1178,15 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
         w("")
 
     w.section("Solve")
-    _solver_code(model, ctxs, w)
+    if previous and not M.main_solver(model).get("type") == "transient":
+        w("# from the state left by the previous solver")
+        for c in ctxs:
+            for v in c.md["variables"]:
+                w(f"{c.py}.set_variable({v['name']!r}, state[{c.md['name']!r}][{v['name']!r}])")
+    _solver_code(model, ctxs, w, previous)
     w("")
     for c in ctxs:
         if not c.transient:
             w(f"post_{ident(c.md['name'])}({c.md.get('vtu')!r})")
     w("results['status'] = 'ok'")
     w("results['time_s'] = time.perf_counter() - t0")
-    w("with open('results.json', 'w', encoding='utf-8') as f:")
-    w("    json.dump(results, f, indent=2, ensure_ascii=False)")
-    w("dofs = sum(r.get('nb_dofs', 0) for r in results['models'].values())")
-    w("print(f\"solved: {dofs} unknowns, {results['time_s']:.2f} s (results in results.json)\")")
-    return w.text()

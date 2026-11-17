@@ -343,6 +343,9 @@ Transient global solver
    * - Name
      - ``name``
      - name
+   * - Start from
+     - ``start``
+     - one of ``initial`` (the initial values), ``previous`` (the state left by the previous solver). The initial values of the variables (the solver can run alone), or the state left by the solver before it (the values of the variables, the velocities of those in time: a preload, then a dynamics)
    * - Type
      - ``type``
      - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))

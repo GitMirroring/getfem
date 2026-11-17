@@ -183,7 +183,12 @@ Models
               isolines, bands, cmap, range, arrows, cut}
 Global solvers: {"name", "type": "sequence" | "staggered", "steps":
 [steps], "max_iter", "tolerance", "relaxation"}; without any, the models are
-solved in an order compatible with their imports. A step is a model name
+solved in an order compatible with their imports. Several global solvers run
+one after the other (Compute; a single one: Compute this solver), each one
+from the initial values ("start": "initial", the default) or from the state
+left by the one before it ("start": "previous": the values of the
+variables, the velocities of those in time); each one has its results. A
+step is a model name
 (all its variables solved) or "model/u,v" (a partial resolution: u and v
 solved, the other variables of the model given: disabled, with their
 multipliers); each variable of a model of the steps is solved by one of
@@ -870,6 +875,17 @@ def scheme_of(model: dict, md: dict, u: str) -> dict | None:
     return None if sc.get("type") == "stationary" else scheme_with_defaults(sc)
 
 
+def scheme_anywhere(model: dict, md: dict, u: str) -> dict | None:
+    """The time scheme of a variable in the first global solver that solves
+    it in time (None: stationary for all of them)."""
+    for s in model.get("solvers", []):
+        if isinstance(s, dict) and isinstance(s.get("name"), str):
+            sc = scheme_of(solver_first(model, s["name"]), md, u)
+            if sc is not None:
+                return sc
+    return None
+
+
 def time_variables(model: dict, md: dict) -> list[str]:
     """The variables of a model in time (with a time derivative)."""
     return [u for u in timeable_variables(md) if scheme_of(model, md, u) is not None]
@@ -954,6 +970,12 @@ def scheme_label(sc: dict | None) -> str:
         return f"Newmark β = {float(sc['beta']):g}, γ = {float(sc['gamma']):g}"
     th = float(sc.get("theta", 1.0))
     return {1.0: "implicit Euler", 0.5: "Crank-Nicolson"}.get(th, f"θ-method θ = {th:g}")
+
+
+# where a global solver starts from: the initial values of the variables, or
+# the state left by the solver before it (its values; the velocities of
+# those in time)
+SOLVER_STARTS = {"initial": "the initial values", "previous": "the state left by the previous solver"}
 
 
 def main_solver(model: dict) -> dict:
@@ -2008,7 +2030,42 @@ def _check_int(v, lo, hi, where, errors) -> bool:
 
 
 def validate(model: dict) -> list[str]:
-    """Return the list of errors (empty if the model is valid)."""
+    """Return the list of errors (empty if the model is valid). With several
+    global solvers, the models are checked for each one too (a variable in
+    time for one of them: its transient properties needed)."""
+    errors = _validate(model)
+    if not errors:
+        for s in model.get("solvers", [])[1:]:
+            if isinstance(s, dict) and isinstance(s.get("name"), str):
+                for e in _validate(solver_first(model, s["name"])):
+                    if e.startswith("models[") and e + f" (solver {s['name']})" not in errors:
+                        errors.append(e + f" (solver {s['name']})")
+    return errors
+
+
+def solver_first(model: dict, name: str) -> dict:
+    """The model as seen by one of its global solvers: that solver first (the
+    one the code of a resolution is generated for, see main_solver)."""
+    solvers = model.get("solvers", [])
+    first = [s for s in solvers if s.get("name") == name]
+    return dict(model, solvers=first + [s for s in solvers if s.get("name") != name])
+
+
+def solver_chain(model: dict, name: str | None = None) -> list[str]:
+    """The global solvers to run: all of them in order (name None), or the
+    one named and those it starts from ("start": "previous", back to one
+    starting from the initial values)."""
+    names = [s["name"] for s in model.get("solvers", [])]
+    if name is None:
+        return names
+    i = names.index(name)
+    j = i
+    while j > 0 and model["solvers"][j].get("start", "initial") == "previous":
+        j -= 1
+    return names[j:i + 1]
+
+
+def _validate(model: dict) -> list[str]:
     errors: list[str] = []
     if model.get("format_version") != FORMAT_VERSION:
         errors.append(f"format_version: {FORMAT_VERSION} expected, got {model.get('format_version')!r}")
@@ -2095,6 +2152,10 @@ def validate(model: dict) -> list[str]:
             errors.append(f"{where}.name: name {s['name']!r} used more than once")
         if s.get("type") not in GLOBAL_SOLVERS:
             errors.append(f"{where}.type: {', '.join(GLOBAL_SOLVERS)} expected, got {s.get('type')!r}")
+        if s.get("start", "initial") not in SOLVER_STARTS:
+            errors.append(f"{where}.start: {', '.join(SOLVER_STARTS)} expected")
+        elif i == 0 and s.get("start") == "previous":
+            errors.append(f"{where}.start: the first solver starts from the initial values")
         steps = s.get("steps", [])
         if not isinstance(steps, list) or not steps:
             errors.append(f"{where}.steps: list of steps expected (model names, or model/variables)")

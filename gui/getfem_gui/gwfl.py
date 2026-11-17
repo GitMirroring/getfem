@@ -180,9 +180,11 @@ def check_script(model: dict, items: list[dict]) -> str:
             else:
                 w(f"md.add_initialized_fem_data({name!r}, mf{i}, np.zeros(mf{i}.nbdof()))")
         codegen.coordinates(w, "md", dim)
-        if M.is_transient(model, md):
+        # (in time for one of the global solvers at least: the same names, zero when stationary)
+        anywhere = {u: M.scheme_anywhere(model, md, u) for u in M.timeable_variables(md)}
+        if any(anywhere.values()):
             c.transient = True
-            c.schemes = {u: M.scheme_of(model, md, u) for u in M.time_variables(model, md)}
+            c.schemes = {u: sc for u, sc in anywhere.items() if sc is not None}
         codegen.time_declarations(c, w)
         codegen.parameters(model, md, w, "md")
         w("# fields and properties: their names, with a representative value")

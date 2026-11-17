@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
         self._update_marks()
         if self._compute_after_check:
             self._compute_after_check = False
-            self.compute()
+            self.compute(getattr(self, "_compute_solver", None))
 
     def _iter_items(self):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
@@ -548,8 +548,7 @@ class MainWindow(QMainWindow):
         target = self._result_target(path)
         if len(path) < 3:
             data = self._results_summary(path[1] if len(path) == 2 else None)
-            self.props.show_results(data, self.results_stale,
-                                    [("cmd:compute", "Compute again")] if self.results_stale else [])
+            self.props.show_results(data, self.results_stale, self._results_actions())
             if target is not None:
                 self._show_field(*target)
             return
@@ -585,6 +584,28 @@ class MainWindow(QMainWindow):
                                      graphic=graphic if graphic_path is not None else None,
                                      field_names=tuple(known))
 
+    def _results_actions(self) -> list[tuple[str, str]]:
+        """The actions of the results: Compute again (out of date); several
+        global solvers computed: the results of each one."""
+        out = [("cmd:compute", "Compute again")] if self.results_stale else []
+        shown = (self.results or {}).get("solver_name")
+        for name in (getattr(self, "results_all", None) or {}).get("solvers", {}):
+            if name != shown:
+                out.append((f"cmd:results_of:{name}", f"Results of the solver {name}"))
+        return out
+
+    def show_solver_results(self, name: str) -> None:
+        """Show the results of one of the global solvers computed."""
+        everything = getattr(self, "results_all", None) or {}
+        if name not in everything.get("solvers", {}):
+            return
+        self.results = dict(everything, **everything["solvers"][name])
+        self.__dict__.pop("_time_ranges", None)
+        self._read_result_files(getattr(self, "_results_dir", None) or Path(self.workdir))
+        self.state.setText(f"Results of the solver {name}")
+        target = self._result_target((E.RESULTS,))
+        self.refresh(select=(E.RESULTS,) + target if target and target[1] else (E.RESULTS,))
+
     def _results_summary(self, mname=None) -> dict:
         """What the results table shows: one model, or all of them (its
         quantities prefixed by the model name)."""
@@ -596,6 +617,8 @@ class MainWindow(QMainWindow):
             out["curves"] = self._curves({mname: models.get(mname, {})})
             return out
         out = {"status": r.get("status"), "time_s": r.get("time_s")}
+        if r.get("solver_name"):
+            out["global solver"] = r["solver_name"]
         solver = r.get("solver", {})
         if solver.get("type") == "staggered":
             out["iterations"] = solver.get("iterations")
@@ -1441,6 +1464,8 @@ class MainWindow(QMainWindow):
             actions = actions + [("cmd:export_geometry", "Export...")]
         if path[:1] == ("models",) and len(path) == 2 or path == ("solvers",):
             actions = actions + [("cmd:compute", "Compute")]
+        if path[:1] == ("solvers",) and len(path) == 2 and len(self.model.get("solvers", [])) > 1:
+            actions = actions + [("cmd:compute_solver", "Compute this solver")]
         return actions
 
     def menu_actions(self, path, adding_only=False) -> list[tuple[str, str]]:
@@ -1532,6 +1557,12 @@ class MainWindow(QMainWindow):
             return
         if ident == "cmd:compute":
             self.compute()
+            return
+        if ident == "cmd:compute_solver":
+            self.compute(E.get_at(self.model, path + ("name",)))
+            return
+        if ident.startswith("cmd:results_of:"):
+            self.show_solver_results(ident[len("cmd:results_of:"):])
             return
         if ident == "cmd:export_mesh":
             self.export_mesh(E.get_at(self.model, path + ("name",)))
@@ -1644,7 +1675,10 @@ class MainWindow(QMainWindow):
         self.bottom.setCurrentWidget(self.log)
         self.jobs.build_mesh(self.model, name, self.workdir, force=False)
 
-    def compute(self):
+    def compute(self, solver: str | None = None):
+        """Solve: all the global solvers in order, or one (after those it
+        starts from)."""
+        self._compute_solver = solver
         if self.jobs.running or not self._check():
             return
         if self._gwfl_key != self._model_key():   # expressions not checked yet
@@ -1655,7 +1689,7 @@ class MainWindow(QMainWindow):
         if not self._check_gwfl():
             return
         self.bottom.setCurrentWidget(self.log)
-        self.jobs.solve(self.model, self.workdir)
+        self.jobs.solve(self.model, self.workdir, getattr(self, "_compute_solver", None))
 
     def _mesh_finished(self, mres):
         if self._discard_job:
@@ -1684,6 +1718,8 @@ class MainWindow(QMainWindow):
             return
         r = res.results
         self.results = r
+        self.results_all = r                    # (several global solvers: the results of each one)
+        self._results_dir = res.workdir
         self._read_result_files(res.workdir)
         self.results_model = _results_key(self.jobs.model)
         self.results_stale = _results_key(self.model) != self.results_model
@@ -1756,8 +1792,7 @@ class MainWindow(QMainWindow):
             target = self._result_target(path)
             if len(path) < 3:
                 self.props.show_results(self._results_summary(path[1] if len(path) == 2 else None),
-                                        self.results_stale, [("cmd:compute", "Compute again")]
-                                        if self.results_stale else [])
+                                        self.results_stale, self._results_actions())
             if target is not None and target[1] is not None:
                 self._show_field(*target)
         elif path and path[:1] == ("models",) and len(path) == 4 and path[2] == "graphics":
@@ -1791,6 +1826,7 @@ class MainWindow(QMainWindow):
         if r.get("status") != "ok":
             return
         self.results = r
+        self.results_all, self._results_dir = r, self.workdir
         self.results_model = used_model
         self.results_stale = _results_key(self.model) != used_model
         self._read_result_files(self.workdir)

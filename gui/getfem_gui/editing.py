@@ -1553,11 +1553,17 @@ def fields(model: dict, path: Path) -> list[Field]:
         return out
 
     if path == ("solvers",):
-        return [Field(path, "", "info", help="Global solvers chain the models (the first one is run "
-                      "by Compute). Without any, the models are solved in the order of their imports.")]
+        return [Field(path, "", "info", help="Global solvers chain the models; several run one after the "
+                      "other (Compute), each one from the initial values or from the state left by the one "
+                      "before it, each one with its results (Compute this solver: one of them, after those "
+                      "it starts from). Without any, the models are solved in the order of their imports.")]
     if path[0] == "solvers" and n == 2:
         s = get_at(model, path, {})
-        out = [Field(path + ("name",), "Name", "ident"),
+        start = [Field(path + ("start",), "Start from", "choice", tuple(M.SOLVER_STARTS.items()),
+                       op="solver_start", help="The initial values of the variables (the solver can run alone), "
+                       "or the state left by the solver before it (the values of the variables, the "
+                       "velocities of those in time: a preload, then a dynamics)")] if path[1] > 0 else []
+        out = [Field(path + ("name",), "Name", "ident")] + start + [
                Field(path + ("type",), "Type", "choice",
                      (("sequence", "sequence"), ("staggered", "staggered iterations"),
                       ("transient", "transient (in time)")), op="solver_type"),
@@ -2311,6 +2317,8 @@ def field_value(model: dict, f: Field):
         return get_at(model, f.key, "linear")
     if f.op == "constraint_shape":
         return ",".join(str(i) for i in get_at(model, f.key, []))
+    if f.op == "solver_start":
+        return get_at(model, f.key, "initial")
     if f.op in ("scheme_type", "scheme_param"):     # (the default scheme of the variable if not given)
         return M.scheme_with_defaults(get_at(model, f.key[:-1]) or _default_of(model, f.key[:-1])).get(f.key[-1])
     return get_at(model, f.key)
@@ -2471,6 +2479,13 @@ def _apply(model: dict, f: Field, value) -> Path | None:
             for pc in mod.get("properties", {}).get(prop, []):
                 if "value" in pc:
                     pc["value"] = to_matrix(pc["value"], dim) if value == tval else to_scalar(pc["value"])
+        return None
+    if f.op == "solver_start":
+        s = get_at(model, key[:-1])
+        if value == "initial":
+            s.pop("start", None)               # (the default)
+        else:
+            s["start"] = value
         return None
     if f.op == "scheme_param":
         sc = get_at(model, key[:-2]).setdefault(key[-2], _default_of(model, key[:-1]))
@@ -3400,10 +3415,12 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
                             mod[role] = v["name"]
         models.append(new)
         return ("models", len(models) - 1)
-    if action == "add_solver":
+    if action == "add_solver":             # the first: all the models; then: a copy of the last one
         solvers = model.setdefault("solvers", [])
-        solvers.append({"name": unique_name(name or "solver", [s.get("name") for s in solvers]),
-                        "type": "sequence", "steps": M.solve_order(model)})
+        new = copy.deepcopy(solvers[-1]) if solvers else {"type": "sequence", "steps": M.solve_order(model)}
+        new.pop("start", None)
+        new["name"] = unique_name(name or "solver", [s.get("name") for s in solvers])
+        solvers.append(new)
         return ("solvers", len(solvers) - 1)
     base = ("models", path[1]) if md is not None else ()
     mesh_name = (M.model_mesh(model, md) or (model.get("meshes") or [{}])[0]).get("name", "mesh") \
@@ -3511,6 +3528,8 @@ def remove_at(model: dict, path: Path) -> None:
         parent.pop(path[-1], None)
     if len(path) > 6:                       # (a piece of a property: the other modules too)
         _share_property(model, path[:6])
+    if path[:1] == ("solvers",) and len(path) == 2 and model.get("solvers"):
+        model["solvers"][0].pop("start", None)          # (the first one: from the initial values)
 
 
 # ------------------------------------------------------------------ graphics
