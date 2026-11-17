@@ -132,9 +132,28 @@ Plate heating (``plate_heating.json``)
 A transient heat problem: an aluminium plate at 20 °C whose left edge is
 brought to 100 °C (``20 + 80*(1 - exp(-t/tau))``, a function of the time),
 the other edges cooled by the air (convection). The ``transient`` solver
-goes from 0 to 60 s by steps of 1 s (implicit Euler), saving every 5 steps:
+goes from 0 to 60 s by steps of 1 s (BDF2, second order), saving every 5 steps:
 ``mean_T``, the mean temperature, rises to nearly 100 °C; ``heat_in``, the
 heat entering by the edge, peaks then decreases.
+
+.. _gui-example-beam_vibration:
+
+Beam vibration (``beam_vibration.json``)
+----------------------------------------
+
+Elastodynamics: a steel cantilever (1 m x 5 cm, plane strain), fixed at its
+left end, struck at its tip by a force pulse of 5 ms (the traction
+``-q_tip*sqr(sin(pi*t/tp))*Heaviside(tp - t)``, a function of the time). The
+``transient`` solver follows it for 0.1 s by steps of 0.5 ms with the
+generalized-:math:`\alpha` scheme (:math:`\rho_\infty = 0.9`), from rest
+(the initial acceleration from the equation: zero here). The tip then
+oscillates at the first bending frequency of the beam: a period of about
+22.8 ms (:math:`2\pi/\omega_1`, :math:`\omega_1 = 3.516 \sqrt{E' I/(\rho A
+L^4)}`, :math:`E' = E/(1 - \nu^2)` in plane strain); after the pulse, the
+energy (``kinetic_energy`` plus ``strain_energy``: ``energy``) stays
+constant within 0.1 % (the scheme only damps the high frequencies). The
+*In time* curves of the results show them; the VTU files, the deformed
+beam.
 
 .. _gui-example-heated_pipe:
 

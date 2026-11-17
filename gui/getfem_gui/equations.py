@@ -57,7 +57,8 @@ def _time(model: dict, md: dict, mod: dict) -> str:
         sc = M.scheme_of(model, md, M.inertia_variable(mod))
         return (f"<p><b>In time</b>, by the solver {html.escape(s['name'])}: from t = {_v(t.get('start', 0))} "
                 f"to {_v(t.get('end'))}, step {_v(t.get('step'))}, {html.escape(M.scheme_label(sc))}; "
-                f"from the initial value of the variable{where}.</p>")
+                f"from the initial value{' and velocity' if M.SCHEME_ORDER.get(sc['type']) == 2 else ''} "
+                f"of the variable{where}.</p>")
     if M.is_transient(model, md):
         return (f"<p><b>Stationary</b> at each time step of the solver {html.escape(s['name'])} "
                 f"(quasi-static: no time derivative){where}.</p>")
@@ -78,7 +79,22 @@ def _elasticity(model: dict, md: dict, mod: dict) -> str:
                     for m in md.get("modules", []))
     dim = M.model_dim(model, md) or 2
     plane = f" (plane {mod.get('plane', 'strain')})" if dim == 2 else ""
-    return _block([f"−{DIV} σ({u}) = f &nbsp; in Ω",
+    if M.in_time(model, md, mod):
+        from .codegen import _is_zero
+        props = mod.get("properties", {})
+        mass = not _is_zero(props.get("alpha_M"))
+        stiff = not _is_zero(props.get("beta_K"))
+        first = f"ρ ∂²{u}/∂t²" + (f" + α<sub>M</sub> ρ ∂{u}/∂t" if mass else "") + f" − {DIV} " \
+            + (f"(σ({u}) + β<sub>K</sub> σ<sub>e</sub>(∂{u}/∂t))" if stiff else f"σ({u})")
+        damping = mass or stiff
+        lines = [first + " = f &nbsp; in Ω"]
+        if damping:
+            lines.append("Rayleigh damping α<sub>M</sub> M + β<sub>K</sub> K" + (" (σ<sub>e</sub>: the elastic "
+                         "stress, without thermal expansion)" if stiff else ""))
+        return _time(model, md, mod) + _block(lines + [
+            "σ = λ tr(ε) I + 2μ ε" + (" − β α (T − T<sub>ref</sub>) I" if expansion else "")
+            + f", &nbsp; ε = ({NABLA}{u} + {NABLA}{u}<sup>T</sup>)/2", f"λ, μ: from E and ν{plane}"])
+    return _time(model, md, mod) + _block([f"−{DIV} σ({u}) = f &nbsp; in Ω",
                    "σ = λ tr(ε) I + 2μ ε" + (" − β α (T − T<sub>ref</sub>) I" if expansion else "")
                    + f", &nbsp; ε = ({NABLA}{u} + {NABLA}{u}<sup>T</sup>)/2",
                    f"λ, μ: from E and ν{plane}"])
@@ -122,6 +138,9 @@ def gwfl_terms(model: dict, md_index: int, mod_index: int) -> list[str]:
             u = mod[inertia["variable"]]
             w(f"# Time derivative (Dot_{u}: by the scheme)")
             w(f"add_term(md, mim, {inertia['expr'].replace('{u}', u)!r})")
+            for prop, dexpr in inertia.get("damping", {}).items():
+                if not codegen._is_zero(mod.get("properties", {}).get(prop)):
+                    w(f"add_term(md, mim, {dexpr.replace('{u}', u)!r})")
     except Exception:          # noqa: BLE001 (the model is not complete: no terms to show)
         return []
     out = []

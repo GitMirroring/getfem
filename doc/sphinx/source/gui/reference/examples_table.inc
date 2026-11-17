@@ -14,6 +14,11 @@
      - box
      - structured
      - heat_conduction
+   * - :ref:`beam_vibration.json <gui-example-beam_vibration>`
+     - Beam vibration: a steel cantilever struck at its tip by a short force pulse (elastodynamics, generalized-alpha)
+     - box
+     - structured
+     - linear_elasticity
    * - :ref:`block_with_hole_3d.json <gui-example-block_with_hole_3d>`
      - Block with a hole, heated inside (3D)
      - csg 3D

@@ -366,12 +366,12 @@ Transient global solver
      - one of ``sequence`` (the models in turn), ``staggered`` (staggered iterations)
    * - Scheme of T (heat)
      - ``schemes.heat/T.type``
-     - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), theta-method or BDF2
+     - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), or a scheme of the order of its time derivative (theta-method, BDF2)
    * - Theta of T
      - ``schemes.heat/T.theta``
-     - number or expression of parameters. The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson (second order, may oscillate)
+     - number or expression of parameters. The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson (second order, may oscillate) (]0, 1])
    * - Scheme of S (other)
      - ``schemes.other/S.type``
-     - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), theta-method or BDF2
+     - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), or a scheme of the order of its time derivative (theta-method, BDF2)
 
 At each time step, the models are solved in turn (or by staggered iterations), every equation written at the new time; the scheme of each variable in time gives its time derivative (Dot\_T for T) from its value and the previous ones; the time t may appear in the expressions. The variables start from their initial value; the results are saved every few steps (a VTU file each, a .pvd collection).

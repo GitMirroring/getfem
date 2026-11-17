@@ -242,6 +242,27 @@ def _source_fields(mod: dict, spec: dict, mpath: Path, domains, dim: int) -> lis
     return out
 
 
+_SCHEME_HELP = {
+    "theta": {"theta": "The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson "
+                       "(second order, may oscillate)"},
+    "newmark": {"beta": "Newmark's beta: 1/4 with gamma = 1/2, the average acceleration (second order, "
+                        "unconditionally stable, no numerical damping)",
+                "gamma": "Newmark's gamma: 1/2 (second order); more damps, at first order"},
+    "hht": {"alpha": "HHT-alpha: 0 is Newmark's average acceleration; down to -1/3, more numerical damping of "
+                     "the high frequencies (second order, unconditionally stable)"},
+    "generalized_alpha": {"rho_inf": "The spectral radius at infinity: 1, no numerical damping (Newmark's "
+                                     "average acceleration); 0, the high frequencies damped at once (second "
+                                     "order, unconditionally stable, optimal dissipation)"},
+}
+
+
+def _default_of(model: dict, scheme_path: tuple) -> dict:
+    """The default scheme of the variable of a scheme (its path: (..., "schemes", "model/variable"))."""
+    name, _, u = scheme_path[-1].partition("/")
+    md = M.model_by_name(model, name)
+    return M.default_scheme(M.variable_order(md, u) if md else 1)
+
+
 def _fill_schemes(model: dict, s: dict) -> None:
     """A transient solver: a time scheme for each variable of its models
     which may have a time derivative (implicit Euler if none yet); the
@@ -250,7 +271,7 @@ def _fill_schemes(model: dict, s: dict) -> None:
     for name in s.get("steps", []):
         md = M.model_by_name(model, name)
         for u in M.timeable_variables(md) if md else []:
-            schemes.setdefault(M.scheme_key(name, u), dict(M.DEFAULT_SCHEME))
+            schemes.setdefault(M.scheme_key(name, u), M.default_scheme(M.variable_order(md, u)))
     _time_properties(model)
 
 
@@ -1090,7 +1111,10 @@ def _model_fields(model, path) -> list[Field]:
                 Field(path + ("components",), "Components", "choice", ((1, "scalar"), ("dim", "vector"))),
                 _value_field(path + ("initial",), "Initial value" + ("" if M.is_transient(model, md) else
                                                                      " (in time)"), M.variable_kind(v),
-                             M.model_dim(model, md) or 2)]
+                             M.model_dim(model, md) or 2)] + (
+            [_value_field(path + ("initial_velocity",), "Initial velocity", M.variable_kind(v),
+                          M.model_dim(model, md) or 2)]
+            if M.variable_order(md, v.get("name")) == 2 and M.is_transient(model, md) else [])
     if head == "modules":
         if n == 1:
             return [Field(path, "", "info", help="Predefined physics, with their properties per domain, "
@@ -1485,15 +1509,24 @@ def fields(model: dict, path: Path) -> list[Field]:
                 md = M.model_by_name(model, name)
                 for u in M.timeable_variables(md) if md else []:
                     key = M.scheme_key(name, u)
-                    sc = s.get("schemes", {}).get(key) or M.DEFAULT_SCHEME
+                    order = M.variable_order(md, u)
+                    sc = s.get("schemes", {}).get(key) or M.default_scheme(order)
                     out.append(Field(path + ("schemes", key, "type"), f"Scheme of {u} ({name})", "choice",
-                                     tuple(M.SCHEMES.items()), op="scheme_type",
+                                     tuple((k, M.SCHEMES[k]) for k in M.schemes_for(order)), op="scheme_type",
                                      help="The time scheme of the variable: stationary (no time derivative, "
-                                          "the equation solved at each time), theta-method or BDF2"))
-                    if sc.get("type", "theta") == "theta":
-                        out.append(Field(path + ("schemes", key, "theta"), f"Theta of {u}", "number",
-                                         op="scheme_theta", help="The theta-method: 1, implicit Euler (robust, first order); "
-                                              "0.5, Crank-Nicolson (second order, may oscillate)"))
+                                          "the equation solved at each time), or a scheme of the order of its "
+                                          "time derivative" + (" (theta-method, BDF2)" if order == 1 else
+                                                               " (Newmark, HHT-alpha, generalized-alpha)")))
+                    for prm, (_d, lo, hi, open_lo) in M.SCHEME_PARAMETERS.get(sc.get("type"), {}).items():
+                        out.append(Field(path + ("schemes", key, prm), f"{M.PARAMETER_LABELS[prm]} of {u}",
+                                         "number", op="scheme_param", help=_SCHEME_HELP[sc["type"]][prm]
+                                         + f" ({']' if open_lo else '['}{lo:.4g}, {hi:.4g}])"))
+                    if M.SCHEME_ORDER.get(sc.get("type")) == 2:
+                        out.append(Field(path + ("schemes", key, "initial_acceleration"),
+                                         f"Initial acceleration of {u}", "choice",
+                                         tuple(M.INITIAL_ACCELERATIONS.items()), op="scheme_param",
+                                         help="From the equation at the start time (M a0 = -G: all the other "
+                                              "terms at the initial displacement and velocity), or zero"))
             out.append(Field(path, "", "info", help="At each time step, the models are solved in turn (or "
                              "by staggered iterations), every equation written at the new time; the scheme "
                              "of each variable in time gives its time derivative (Dot_T for T) from its "
@@ -2204,8 +2237,8 @@ def field_value(model: dict, f: Field):
         return get_at(model, f.key, "linear")
     if f.op == "constraint_shape":
         return ",".join(str(i) for i in get_at(model, f.key, []))
-    if f.op in ("scheme_type", "scheme_theta"):    # (implicit Euler if not given)
-        return (get_at(model, f.key[:-1]) or M.DEFAULT_SCHEME).get(f.key[-1], 1.0)
+    if f.op in ("scheme_type", "scheme_param"):     # (the default scheme of the variable if not given)
+        return M.scheme_with_defaults(get_at(model, f.key[:-1]) or _default_of(model, f.key[:-1])).get(f.key[-1])
     return get_at(model, f.key)
 
 
@@ -2323,16 +2356,16 @@ def apply(model: dict, f: Field, value) -> Path | None:
     if f.op == "first_source":               # the first source of a module: on the whole domain
         get_at(model, key[:-1])["sources"] = [{"selection": M.ALL, "value": value}]
         return None
-    if f.op == "scheme_type":                # the scheme of a variable: theta given, rho and cp if in time
+    if f.op == "scheme_type":                # the scheme of a variable: its parameters, rho... if in time
         sc = get_at(model, key[:-2]).setdefault(key[-2], {})
         sc.clear()
-        sc["type"] = value
-        if value == "theta":
-            sc["theta"] = 1.0
+        sc.update(M.scheme_with_defaults({"type": value}))
         _time_properties(model)
         return None
-    if f.op == "scheme_theta":
-        get_at(model, key[:-2]).setdefault(key[-2], dict(M.DEFAULT_SCHEME))["theta"] = value
+    if f.op == "scheme_param":
+        sc = get_at(model, key[:-2]).setdefault(key[-2], _default_of(model, key[:-1]))
+        sc.update(M.scheme_with_defaults(sc))
+        sc[key[-1]] = value
         return None
     if f.op == "solver_steps":               # its models; in time: the schemes of their variables
         s = get_at(model, key[:-1])

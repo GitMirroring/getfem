@@ -138,6 +138,21 @@ def test_bdf2():
     assert M.scheme_coefficients({"type": "theta", "theta": 0.5}) == M.scheme_coefficients({"type": "bdf2"}, True)
 
 
+def test_derivative_in_outputs():
+    """Dot_T in an output is the time derivative at the saved time (the one
+    kept by the scheme): here d(mean)/dt = -pi^2 mean."""
+    try:
+        import getfem  # noqa: F401
+    except ImportError:
+        return
+    for sc in ({"type": "theta", "theta": 0.5}, {"type": "bdf2"}):
+        m = bar(end=0.1, step=0.0025, n=60, scheme=sc)
+        m["models"][0]["outputs"].append({"name": "rate", "expr": "Dot_T", "selection": "all"})
+        S = run(m)[0]["models"]["heat"]["series"]
+        ratio = np.array(S["rate"]) / np.array(S["mean"])
+        assert np.allclose(ratio, -np.pi ** 2, rtol=2e-3), (sc, ratio)
+
+
 def test_schemes_per_variable():
     """A scheme per variable: T in time (BDF2), S stationary at each time
     (-div(grad S) = T, T imported: quasi-static, following T)."""

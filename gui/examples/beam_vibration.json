@@ -1,0 +1,59 @@
+{
+  "format_version": 3,
+  "name": "Beam vibration: a steel cantilever struck at its tip by a short force pulse (elastodynamics, generalized-alpha)",
+  "parameters": [
+    {"name": "L", "value": 1, "description": "length of the beam (m)"},
+    {"name": "h", "value": 0.05, "description": "height of the beam (m)"},
+    {"name": "q_tip", "value": 2e6, "description": "peak traction of the pulse on the tip (Pa)"},
+    {"name": "tp", "value": 0.005, "description": "duration of the pulse (s)"}
+  ],
+  "materials": [
+    {"name": "steel", "properties": {"E": 210e9, "nu": 0.3, "rho": 7800}}
+  ],
+  "geometries": [
+    {
+      "name": "beam",
+      "source": {"type": "box", "origin": [0, 0], "size": ["L", "h"]},
+      "selections": {}
+    }
+  ],
+  "meshes": [{"name": "mesh", "geometry": "beam", "mesher": "structured", "divisions": [40, 4]}],
+  "models": [
+    {
+      "name": "beam",
+      "variables": [{"name": "u", "mesh": "mesh", "fem": "lagrange", "degree": 2, "components": "dim"}],
+      "modules": [
+        {
+          "type": "linear_elasticity",
+          "variable": "u",
+          "plane": "strain",
+          "properties": {
+            "E": [{"selection": "all", "material": "steel"}],
+            "nu": [{"selection": "all", "material": "steel"}],
+            "rho": [{"selection": "all", "material": "steel"}],
+            "alpha_M": [{"selection": "all", "value": 0}],
+            "beta_K": [{"selection": "all", "value": 0}]
+          },
+          "sources": [],
+          "conditions": [
+            {"type": "fixed", "selection": "xmin"},
+            {"type": "traction", "selection": "xmax",
+             "value": [0, "-q_tip*sqr(sin(pi*t/tp))*Heaviside(tp - t)"]}
+          ]
+        }
+      ],
+      "outputs": [
+        {"name": "tip_deflection", "expr": "u(2)/h", "selection": "xmax"},
+        {"name": "kinetic_energy", "expr": "0.5*rho*Dot_u.Dot_u", "selection": "all"},
+        {"name": "strain_energy", "expr": "0.5*sigma:eps", "selection": "all"},
+        {"name": "energy", "expr": "0.5*rho*Dot_u.Dot_u + 0.5*sigma:eps", "selection": "all"}
+      ],
+      "vtu": "beam.vtu"
+    }
+  ],
+  "solvers": [
+    {"name": "vibration", "type": "transient", "steps": ["beam"],
+     "time": {"start": 0, "end": 0.1, "step": 0.0005}, "save": {"every": 4},
+     "schemes": {"beam/u": {"type": "generalized_alpha", "rho_inf": 0.9}}}
+  ]
+}

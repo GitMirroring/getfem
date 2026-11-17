@@ -495,6 +495,9 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
       "data of the model)') from None")
     for u, sc in c.schemes.items():
         mf = c.mfs[u]
+        if M.SCHEME_ORDER[sc["type"]] == 2:
+            _second_order_declarations(c, u, sc, w)
+            continue
         first = list(M.scheme_coefficients(sc, first=True))
         w(f"# Time scheme of {u}: {M.scheme_label(sc)} (the equation written at t_n+1),")
         w(f"#   Dot_{u} = (c0*{u} + c1*Previous_{u} + c2*{u}__prev2)/timestep + c3*Previous_Dot_{u}")
@@ -509,6 +512,46 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
         prev2 = f" + {u}__scheme(3)*{u}__prev2" if two else ""
         w(f"{md}.add_macro('Dot_{u}', '({u}__scheme(1)*{u} + {u}__scheme(2)*{u}__prev{prev2})/timestep "
           f"+ {u}__scheme(4)*{u}__rate')")
+
+
+def _second_order_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> None:
+    """A second order scheme: the previous displacement, velocity,
+    acceleration (and memory) of u, the macros Dot2_u, Dot_u and
+    u__inertia (the acceleration of the inertia term), their coefficients
+    in the data u__acc, u__vel, u__inertia_c (second_order_coefficients)."""
+    md, mf = c.py, c.mfs[u]
+    k = M.second_order_coefficients(sc)
+    b, g, am, af = M.second_order_parameters(sc)
+    mem = k["inertia"][3] != 0.0
+    w(f"# Time scheme of {u}: {M.scheme_label(sc)} (beta = {b:.6g}, gamma = {g:.6g}, alpha_m = {am:.6g}, "
+      f"alpha_f = {af:.6g});")
+    w("#   the equation written at t_n+1, the inertia with the acceleration")
+    w(f"#   ((1 - alpha_m) Dot2_{u} + alpha_m Previous_Dot2_{u} - alpha_f {u}__mem)/(1 - alpha_f), {u}__mem its "
+      "value at the previous step")
+    w(f"{md}.add_initialized_data('{u}__acc', {k['acc']!r})  # Dot2_{u}: A0, A1, A2")
+    w(f"{md}.add_initialized_data('{u}__vel', {k['vel']!r})  # Dot_{u}: V0, V1, V2")
+    w(f"{md}.add_initialized_data('{u}__inertia_c', {k['inertia']!r})  # {u}__inertia: I0, I1, I2, I3")
+    for name in ("prev", "rate", "rate2") + (("mem",) if mem else ()):
+        w(f"{md}.add_initialized_fem_data('{u}__{name}', {mf}, np.zeros({mf}.nbdof()))")
+    w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
+    w(f"{md}.add_macro('Previous_Dot_{u}', '{u}__rate')")
+    w(f"{md}.add_macro('Previous_Dot2_{u}', '{u}__rate2')")
+    d = f"({u} - {u}__prev)"
+    w(f"{md}.add_macro('Dot2_{u}', '{u}__acc(1)*{d}/sqr(timestep) + {u}__acc(2)*{u}__rate/timestep "
+      f"+ {u}__acc(3)*{u}__rate2')")
+    w(f"{md}.add_macro('Dot_{u}', '{u}__vel(1)*{d}/timestep + {u}__vel(2)*{u}__rate "
+      f"+ {u}__vel(3)*timestep*{u}__rate2')")
+    m = f" + {u}__inertia_c(4)*{u}__mem" if mem else ""
+    w(f"{md}.add_macro('{u}__inertia', '{u}__inertia_c(1)*{d}/sqr(timestep) + {u}__inertia_c(2)*{u}__rate/timestep "
+      f"+ {u}__inertia_c(3)*{u}__rate2{m}')")
+
+
+def _is_zero(pieces) -> bool:
+    """A property zero everywhere (its values all the number 0)."""
+    try:
+        return bool(pieces) and all("material" not in pc and float(pc.get("value")) == 0.0 for pc in pieces)
+    except (TypeError, ValueError):
+        return False
 
 
 def declare_model(c: Ctx, w: ScriptWriter) -> None:
@@ -554,6 +597,11 @@ def setup_model(c: Ctx, w: ScriptWriter) -> None:
             expr = inertia["expr"].replace("{u}", u)
             w(f"# Time derivative: {expr}")
             w(f"LINEAR[{c.md['name']!r}] &= add_term({c.py}, {c.mim}, {expr!r})")
+            for prop, dexpr in inertia.get("damping", {}).items():
+                if not _is_zero(mod.get("properties", {}).get(prop)):
+                    dexpr = dexpr.replace("{u}", u)
+                    w(f"# Damping ({prop}): {dexpr}")
+                    w(f"LINEAR[{c.md['name']!r}] &= add_term({c.py}, {c.mim}, {dexpr!r})")
     if c.md["terms"]:
         w("")
         _terms(c, w)
@@ -720,6 +768,15 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
     lines = 0
     for c in cs:
         for u, sc in c.schemes.items():
+            if M.SCHEME_ORDER[sc["type"]] == 2:          # (all from the values before the shift)
+                mem = M.second_order_coefficients(sc)["inertia"][3] != 0.0
+                names = [("rate", f"Dot_{u}"), ("rate2", f"Dot2_{u}")] + ([("mem", f"{u}__inertia")] if mem else [])
+                w(f"    new = [{', '.join(f'{c.py}.interpolation({e!r}, {c.mfs[u]})' for _, e in names)}]")
+                for j, (n, _) in enumerate(names):
+                    w(f"    {c.py}.set_variable('{u}__{n}', new[{j}])")
+                w(f"    {c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
+                lines += 1
+                continue
             w(f"    {c.py}.set_variable('{u}__rate', {c.py}.interpolation('Dot_{u}', {c.mfs[u]}))")
             if sc.get("type") == "bdf2":
                 w(f"    {c.py}.set_variable('{u}__prev2', {c.py}.variable('{u}__prev'))")
@@ -733,8 +790,23 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
         w("    pass")
     w("")
     w("SERIES = {" + ", ".join(f"{c.md['name']!r}: {{'t': [], 'vtu': []}}" for c in cs) + "}")
+    post = []                    # the coefficients giving the derivatives at the saved time (after shift)
+    for c in cs:
+        for u, sc in c.schemes.items():
+            if M.SCHEME_ORDER[sc["type"]] == 2:
+                post += [(c.py, f"{u}__acc", [0.0, 0.0, 1.0]), (c.py, f"{u}__vel", [0.0, 1.0, 0.0]),
+                         (c.py, f"{u}__inertia_c", [0.0, 0.0, 1.0, 0.0])]
+            else:
+                post.append((c.py, f"{u}__scheme", [0.0, 0.0, 0.0, 1.0]))
+    if post:
+        w("# at a saved time (after shift), Dot_u (Dot2_u) are the derivatives kept: Previous_Dot_u...")
+        w("AT_SAVE = [" + ", ".join(f"({py}, {n!r}, {v!r})" for py, n, v in post) + "]")
     w("def save(k, t):")
     w('    """The results at a saved time: the fields (a VTU file each), the scalars."""')
+    if post:
+        w("    kept = [(md, name, md.variable(name)) for md, name, _ in AT_SAVE]")
+        w("    for md, name, value in AT_SAVE:")
+        w("        md.set_variable(name, value)")
     for c in cs:
         name = c.md["name"]
         stem = Path(c.md["vtu"]).stem if c.md.get("vtu") else None
@@ -747,23 +819,33 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
         w("    for key, value in list(R.items()) + [(q, v) for q, v in R.get('quantities', {}).items()]:")
         w("        if isinstance(value, float) and key not in ('time_s', 'relative_residual'):")
         w("            S.setdefault(key, []).append(value)")
+    if post:
+        w("    for md, name, value in kept:")
+        w("        md.set_variable(name, value)")
     w("")
     w("# The initial values")
     for c in cs:
         for v in c.md["variables"]:
             u, mf = v["name"], c.mfs[v["name"]]
-            init = c.value(v.get("initial", 0.0), M.variable_kind(v))
+            kind = M.variable_kind(v)
+            zero = [0.0] * c.dim if kind == M.VECTOR else 0.0
+            init = c.value(v.get("initial", zero), kind)
             w(f"{c.py}.set_variable({u!r}, {c.py}.interpolation({init!r}, {mf}))")
             if u in c.schemes:
                 w(f"{c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
                 if c.schemes[u].get("type") == "bdf2":
                     w(f"{c.py}.set_variable('{u}__prev2', {c.py}.variable({u!r}))")
+                if M.SCHEME_ORDER[c.schemes[u]["type"]] == 2:
+                    vel = c.value(v.get("initial_velocity", zero), kind)
+                    w(f"{c.py}.set_variable('{u}__rate', {c.py}.interpolation({vel!r}, {mf}))  # initial velocity")
     w("set_time(T_START, (T_END - T_START) / N_STEPS)")
     for c in cs:
-        tv = list(c.schemes)
-        if any(M.scheme_needs_rate(sc) for sc in c.schemes.values()):
+        _initial_accelerations(c, by, w)
+    for c in cs:
+        tv = [u for u, sc in c.schemes.items() if M.SCHEME_ORDER[sc["type"]] == 1]
+        if any(M.scheme_needs_rate(c.schemes[u]) for u in tv):
             w(f"# The initial time derivative of {', '.join(tv)} (needed by the first step of "
-              + ", ".join(sorted({M.scheme_label(sc) for sc in c.schemes.values() if M.scheme_needs_rate(sc)}))
+              + ", ".join(sorted({M.scheme_label(c.schemes[u]) for u in tv if M.scheme_needs_rate(c.schemes[u])}))
               + "):")
             w("# an implicit Euler step of a tiny time step from the initial values")
             eps = "1e-6 * (T_END - T_START) / N_STEPS"
@@ -801,6 +883,53 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
             pvd = Path(c.md["vtu"]).with_suffix(".pvd").name
             w(f"write_pvd({pvd!r}, SERIES[{c.md['name']!r}])")
             w(f"results['models'][{c.md['name']!r}]['pvd'] = {pvd!r}")
+
+
+def _initial_accelerations(c: Ctx, by: dict, w: ScriptWriter) -> None:
+    """The initial acceleration of the second order variables of a model:
+    M a0 = -G(u0, v0, t0) (G: all the terms but the inertia): r = -G
+    assembled without inertia at the initial values (the residual; F - K U0
+    for a linear model, whose right-hand side is F), then (M/eps^2 + K) dU =
+    r (eps = 1e-6 dt): dU = eps^2 a0 + O(eps^4), with no difference of
+    values (no cancellation); the memory of HHT and generalized-alpha starts
+    from it. Or zero ("initial_acceleration": "zero")."""
+    two = {u: sc for u, sc in c.schemes.items() if M.SCHEME_ORDER[sc["type"]] == 2}
+    if not two:
+        return
+    md = c.py
+    mems = [u for u, sc in two.items() if M.second_order_coefficients(sc)["inertia"][3] != 0.0]
+    solved = [u for u, sc in two.items() if sc.get("initial_acceleration", "equation") == "equation"]
+    if solved:
+        w(f"# The initial acceleration of {', '.join(solved)}: M a0 = -G(u0, v0, t0) (all the terms but the")
+        w("# inertia, at the initial values): r = -G assembled without inertia (F - K U0 if linear), then")
+        w("# (M/eps^2 + K) dU = r: dU = eps^2 a0 + O(eps^4), no difference of values")
+        for im in c.md["imports"]:
+            w(f"{md}.set_variable({im['name']!r}, {by[im['model']].py}.variable({im['variable']!r}))")
+        w("EPS = 1e-6 * (T_END - T_START) / N_STEPS")
+        w("set_time(T_START, EPS)")
+        for u in solved:                      # no inertia, Dot_u = v0
+            w(f"{md}.set_variable('{u}__acc', [0.0, 0.0, 0.0])")
+            w(f"{md}.set_variable('{u}__vel', [0.0, 1.0, 0.0])")
+            w(f"{md}.set_variable('{u}__inertia_c', [0.0, 0.0, 0.0, 0.0])")
+        w(f"{md}.assembly('build_all')")
+        w(f"r = {md}.rhs()")
+        w(f"if LINEAR[{c.md['name']!r}]:      # (a linear model: its right-hand side F, not its residual)")
+        w(f"    r = r - {md}.tangent_matrix().mult({md}.from_variables())")
+        for u in solved:                      # the inertia (u - u_n)/eps^2
+            w(f"{md}.set_variable('{u}__acc', [1.0, 0.0, 0.0])")
+            w(f"{md}.set_variable('{u}__inertia_c', [1.0, 0.0, 0.0, 0.0])")
+        w(f"{md}.assembly('build_matrix')")
+        w(f"dU = gf.linsolve_superlu({md}.tangent_matrix(), r)[0]")
+        for u in solved:
+            k = M.second_order_coefficients(two[u])
+            w(f"i0, n = {md}.interval_of_variable({u!r})")
+            w(f"{md}.set_variable('{u}__rate2', dU[i0:i0 + n] / EPS**2)")
+            w(f"{md}.set_variable('{u}__acc', {k['acc']!r})")
+            w(f"{md}.set_variable('{u}__vel', {k['vel']!r})")
+            w(f"{md}.set_variable('{u}__inertia_c', {k['inertia']!r})")
+        w("set_time(T_START, (T_END - T_START) / N_STEPS)")
+    for u in mems:
+        w(f"{md}.set_variable('{u}__mem', {md}.variable('{u}__rate2'))  # the memory: G_0 = -M a0")
 
 
 def _post(c: Ctx, w: ScriptWriter) -> None:

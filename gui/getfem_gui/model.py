@@ -166,7 +166,8 @@ Models
 ------
 - variables : {"name", "mesh", "fem": "lagrange" | "lagrange_discontinuous",
                "degree": 1..6, "components": 1 | "dim" | n, "initial": value
-               at the start of a transient solver (0 by default)}
+               at the start of a transient solver (0 by default),
+               "initial_velocity": the same, second order in time}
 - modules   : predefined physics, see MODULE_SPECS (properties per domain
               selection, given by a value or a material; sources;
               conditions of the module)
@@ -191,15 +192,21 @@ Transient solver: {"name", "type": "transient", "steps": [model names],
 solved at each time step, in turn. The solver chooses the time scheme of
 each variable which may have a time derivative (that of a module with one,
 MODULE_SPECS[...]["inertia"]: rho*cp*Dot_T*Test_T for the heat), keyed by
-"model name/variable name" ({"type": "theta", "theta": 1} if missing):
-{"type": "stationary"} (no time derivative: quasi-static, the equation
-solved at each time), {"type": "theta", "theta": ...} or {"type": "bdf2"}
-(SCHEMES). In time, a module adds its time derivative and its transient
-properties (rho, cp) are required. Every equation is written at t_{n+1}
-and the scheme gives Dot_u from u: Dot_u = (c0 u + c1 Previous_u +
-c2 u_{n-1})/dt + c3 Previous_Dot_u (scheme_coefficients). A variable
-starts from its "initial" value (0 by default). The time is t in the
-expressions (0 for a stationary model).
+"model name/variable name" (default_scheme if missing): {"type":
+"stationary"} (no time derivative: quasi-static, the equation solved at
+each time), or a scheme of the order of its time derivative (SCHEMES,
+SCHEME_ORDER, their parameters SCHEME_PARAMETERS): first order (the heat:
+"theta", "bdf2"), second order (the elastodynamics: "newmark", "hht",
+"generalized_alpha", with "initial_acceleration": "equation" | "zero").
+In time, a module adds its time derivative and its transient properties
+(rho, cp; rho and the Rayleigh damping alpha_M, beta_K) are required. Every
+equation is written at t_{n+1} and the scheme gives the time derivatives
+from u: first order, Dot_u = (c0 u + c1 Previous_u + c2 u_{n-1})/dt + c3
+Previous_Dot_u (scheme_coefficients); second order, Dot2_u, Dot_u and the
+modified acceleration of the inertia term (second_order_coefficients). A
+variable starts from its "initial" value (0 by default) and, second order,
+its "initial_velocity" (0 by default). The time is t in the expressions (0
+for a stationary model).
 
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
@@ -276,13 +283,52 @@ FEMS = ("lagrange", "lagrange_discontinuous")
 SOLVER_TYPES = ("auto", "linear", "newton")
 GLOBAL_SOLVERS = ("sequence", "staggered", "transient")
 COUPLINGS = ("sequence", "staggered")         # of the models at each time step
-# The time schemes of a variable with a first time derivative (Dot_u).
+# The time schemes of a variable with a time derivative: first order (Dot_u,
+# the heat), second order (Dot2_u, the elastodynamics); or stationary.
 SCHEMES = {
     "stationary": "stationary (no time derivative: quasi-static)",
     "theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)",
     "bdf2": "BDF2 (second order; its first step: Crank-Nicolson)",
+    "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration)",
+    "hht": "HHT-alpha (Hilber-Hughes-Taylor, numerical damping)",
+    "generalized_alpha": "generalized-alpha (Chung-Hulbert, numerical damping)",
 }
-DEFAULT_SCHEME = {"type": "theta", "theta": 1.0}
+SCHEME_ORDER = {"theta": 1, "bdf2": 1, "newmark": 2, "hht": 2, "generalized_alpha": 2}
+# the parameters of the schemes: (default, lower bound, upper bound, lower bound excluded)
+SCHEME_PARAMETERS = {
+    "theta": {"theta": (1.0, 0.0, 1.0, True)},
+    "newmark": {"beta": (0.25, 0.0, 0.5, True), "gamma": (0.5, 0.5, 1.0, False)},
+    "hht": {"alpha": (-0.05, -1 / 3, 0.0, False)},
+    "generalized_alpha": {"rho_inf": (0.8, 0.0, 1.0, False)},
+}
+PARAMETER_LABELS = {"theta": "Theta", "beta": "Beta", "gamma": "Gamma", "alpha": "Alpha",
+                    "rho_inf": "Spectral radius at infinity (rho_inf)"}
+INITIAL_ACCELERATIONS = {"equation": "from the equation at the start time",
+                         "zero": "zero (at rest)"}
+DEFAULT_SCHEME = {"type": "theta", "theta": 1.0}           # (first order)
+
+
+def default_scheme(order: int) -> dict:
+    """The time scheme of a variable in time, if not chosen: implicit Euler
+    (first order), Newmark average acceleration (second order)."""
+    if order == 2:
+        return {"type": "newmark", "beta": 0.25, "gamma": 0.5}
+    return dict(DEFAULT_SCHEME)
+
+
+def schemes_for(order: int) -> list[str]:
+    """The schemes offered to a variable whose time derivative has this order."""
+    return ["stationary"] + [k for k, o in SCHEME_ORDER.items() if o == order]
+
+
+def scheme_with_defaults(sc: dict) -> dict:
+    """A scheme with its missing parameters."""
+    out = dict(sc)
+    for p, (default, *_r) in SCHEME_PARAMETERS.get(sc.get("type"), {}).items():
+        out.setdefault(p, default)
+    if SCHEME_ORDER.get(sc.get("type")) == 2:
+        out.setdefault("initial_acceleration", "equation")
+    return out
 DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
 COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
 
@@ -345,8 +391,17 @@ MODULE_SPECS = {
     "linear_elasticity": {
         "label": "Linear elasticity",
         "variables": {"variable": {"name": "u", "kind": VECTOR, "degree": 2, "label": "displacement"}},
-        "properties": {"E": "Young's modulus", "nu": "Poisson's ratio"},
-        "property_defaults": {"E": 1.0, "nu": 0.3},
+        "properties": {"E": "Young's modulus", "nu": "Poisson's ratio", "rho": "density",
+                       "alpha_M": "mass damping (Rayleigh, 1/s)", "beta_K": "stiffness damping (Rayleigh, s)"},
+        "property_defaults": {"E": 1.0, "nu": 0.3, "rho": 1.0, "alpha_M": 0.0, "beta_K": 0.0},
+        # the inertia, written with the acceleration of the scheme (u__inertia: Dot2_u for
+        # Newmark, modified for HHT and generalized-alpha), and the Rayleigh damping
+        # alpha_M M + beta_K K (each term only if its coefficient is not zero)
+        "inertia": {"order": 2, "variable": "variable", "expr": "rho*{u}__inertia.Test_{u}",
+                    "damping": {"alpha_M": "alpha_M*rho*Dot_{u}.Test_{u}",
+                                "beta_K": "beta_K*(lambda_L*Trace(Sym(Grad(Dot_{u})))*Id(meshdim) "
+                                          "+ 2*mu_L*Sym(Grad(Dot_{u}))):Grad_Test_{u}"}},
+        "transient_properties": ("rho", "alpha_M", "beta_K"),
         "options": {"plane": ("strain", "stress")},
         "values": {},
         "source": VECTOR,
@@ -747,6 +802,14 @@ def inertia_variable(mod: dict) -> str | None:
     return mod.get(inertia["variable"], MODULE_SPECS[mod["type"]]["variables"][inertia["variable"]]["name"])
 
 
+def variable_order(md: dict, u: str) -> int:
+    """The order of the time derivative of a variable (0: none)."""
+    for mod in md.get("modules", []):
+        if inertia_variable(mod) == u:
+            return int(MODULE_SPECS[mod["type"]]["inertia"].get("order", 1))
+    return 0
+
+
 def timeable_variables(md: dict) -> list[str]:
     """The variables of a model which may have a time derivative (those of
     the modules with one), whatever their scheme."""
@@ -763,8 +826,9 @@ def scheme_of(model: dict, md: dict, u: str) -> dict | None:
     transient solver or the variable stationary)."""
     if not is_transient(model, md) or u not in timeable_variables(md):
         return None
-    sc = main_solver(model).get("schemes", {}).get(scheme_key(md["name"], u)) or DEFAULT_SCHEME
-    return None if sc.get("type") == "stationary" else sc
+    sc = main_solver(model).get("schemes", {}).get(scheme_key(md["name"], u)) \
+        or default_scheme(variable_order(md, u))
+    return None if sc.get("type") == "stationary" else scheme_with_defaults(sc)
 
 
 def time_variables(model: dict, md: dict) -> list[str]:
@@ -788,6 +852,44 @@ def scheme_coefficients(sc: dict, first: bool = False) -> tuple[float, float, fl
     return (1.0 / th, -1.0 / th, 0.0, -(1.0 - th) / th)
 
 
+def second_order_parameters(sc: dict) -> tuple[float, float, float, float]:
+    """(beta, gamma, alpha_m, alpha_f) of a second order scheme: Newmark
+    (alpha_m = alpha_f = 0), HHT-alpha (alpha_m = 0, alpha_f = -alpha, beta =
+    (1 - alpha)^2/4, gamma = 1/2 - alpha), generalized-alpha from rho_inf
+    (Chung and Hulbert: alpha_m = (2 rho_inf - 1)/(rho_inf + 1), alpha_f =
+    rho_inf/(rho_inf + 1), gamma = 1/2 - alpha_m + alpha_f, beta = (1 -
+    alpha_m + alpha_f)^2/4)."""
+    sc = scheme_with_defaults(sc)
+    if sc["type"] == "hht":
+        a = float(sc["alpha"])
+        return (1 - a) ** 2 / 4, 0.5 - a, 0.0, -a
+    if sc["type"] == "generalized_alpha":
+        r = float(sc["rho_inf"])
+        am, af = (2 * r - 1) / (r + 1), r / (r + 1)
+        return (1 - am + af) ** 2 / 4, 0.5 - am + af, am, af
+    return float(sc["beta"]), float(sc["gamma"]), 0.0, 0.0
+
+
+def second_order_coefficients(sc: dict) -> dict[str, list[float]]:
+    """The coefficients of a second order scheme (the equation written at
+    t_{n+1}; u_n, v_n, a_n: the previous displacement, velocity and
+    acceleration, m_n the memory of the previous step):
+    - "acc": a_{n+1} = A0 (u - u_n)/dt^2 + A1 v_n/dt + A2 a_n (Newmark);
+    - "vel": v_{n+1} = V0 (u - u_n)/dt + V1 v_n + V2 dt a_n;
+    - "inertia": the acceleration of the inertia term, I0 (u - u_n)/dt^2 +
+      I1 v_n/dt + I2 a_n + I3 m_n, that is ((1 - alpha_m) a_{n+1} + alpha_m
+      a_n - alpha_f m_n)/(1 - alpha_f), and m_{n+1} is it: the
+      generalized-alpha scheme M a_{n+1-alpha_m} + G_{n+1-alpha_f} = 0 (G:
+      all the other terms) written M Atilde_{n+1} + G_{n+1} = 0, G_n =
+      -M m_n."""
+    b, g, am, af = second_order_parameters(sc)
+    A = [1 / b, -1 / b, 1 - 1 / (2 * b)]
+    V = [g * A[0], 1 + g * A[1], (1 - g) + g * A[2]]
+    k = (1 - am) / (1 - af)
+    inertia = [k * A[0], k * A[1], k * A[2] + am / (1 - af), -af / (1 - af)]
+    return {"acc": A, "vel": V, "inertia": inertia}
+
+
 def scheme_needs_rate(sc: dict) -> bool:
     """Whether a scheme needs the initial time derivative (c3 != 0 at the
     first step)."""
@@ -800,6 +902,15 @@ def scheme_label(sc: dict | None) -> str:
         return "stationary"
     if sc.get("type") == "bdf2":
         return "BDF2"
+    if SCHEME_ORDER.get(sc.get("type")) == 2:
+        sc = scheme_with_defaults(sc)
+        if sc["type"] == "hht":
+            return f"HHT-α α = {float(sc['alpha']):g}"
+        if sc["type"] == "generalized_alpha":
+            return f"generalized-α ρ∞ = {float(sc['rho_inf']):g}"
+        if (float(sc["beta"]), float(sc["gamma"])) == (0.25, 0.5):
+            return "Newmark (average acceleration)"
+        return f"Newmark β = {float(sc['beta']):g}, γ = {float(sc['gamma']):g}"
     th = float(sc.get("theta", 1.0))
     return {1.0: "implicit Euler", 0.5: "Crank-Nicolson"}.get(th, f"θ-method θ = {th:g}")
 
@@ -2010,12 +2121,18 @@ def _validate_transient(model, s, where, steps, errors) -> None:
         md = model_by_name(model, name) if name in steps else None
         if md is None or u not in timeable_variables(md):
             continue                    # (a model no longer solved, a variable no longer in time: ignored)
-        if not isinstance(sc, dict) or sc.get("type", "theta") not in SCHEMES:
-            errors.append(f"{w}.type: {', '.join(SCHEMES)} expected")
-        elif sc.get("type", "theta") == "theta":
-            th = sc.get("theta", 1.0)
-            if isinstance(th, bool) or not isinstance(th, (int, float)) or not 0 < th <= 1:
-                errors.append(f"{w}.theta: number in ]0, 1] expected")
+        offered = schemes_for(variable_order(md, u))
+        if not isinstance(sc, dict) or sc.get("type", offered[1]) not in offered:
+            errors.append(f"{w}.type: {', '.join(offered)} expected")
+            continue
+        sc = dict(sc, type=sc.get("type", offered[1]))
+        for prm, (_d, lo, hi, open_lo) in SCHEME_PARAMETERS.get(sc["type"], {}).items():
+            x = sc.get(prm, _d)
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or x > hi or x < lo or (open_lo and x == lo):
+                errors.append(f"{w}.{prm}: number in {']' if open_lo else '['}{lo:.4g}, {hi:.4g}] expected")
+        if SCHEME_ORDER.get(sc["type"]) == 2 and sc.get("initial_acceleration", "equation") \
+                not in INITIAL_ACCELERATIONS:
+            errors.append(f"{w}.initial_acceleration: {', '.join(INITIAL_ACCELERATIONS)} expected")
 
 
 def _where(model, key, item, owner) -> str:
@@ -2087,8 +2204,9 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     dim = geometry_dim(model, geom)
     var_kinds = {v.get("name"): variable_kind(v) for v in variables}
     for i, v in enumerate(variables):                  # the initial values (of a transient model)
-        if "initial" in v:
-            _check_value(v["initial"], f"{w}.variables[{i}].initial", errors, var_kinds[v.get("name")], dim)
+        for key in ("initial", "initial_velocity"):
+            if key in v:
+                _check_value(v[key], f"{w}.variables[{i}].{key}", errors, var_kinds[v.get("name")], dim)
 
     # --- Imports
     known_kinds = dict(var_kinds)
@@ -2408,9 +2526,9 @@ def with_defaults(model: dict) -> dict:
             for name in s.get("steps", []):
                 md = model_by_name(m, name)
                 for u in timeable_variables(md) if md else []:
-                    sc = schemes.setdefault(scheme_key(name, u), dict(DEFAULT_SCHEME))
-                    if sc.setdefault("type", "theta") == "theta":
-                        sc.setdefault("theta", 1.0)
+                    sc = schemes.setdefault(scheme_key(name, u), default_scheme(variable_order(md, u)))
+                    if sc.get("type") in SCHEME_PARAMETERS or SCHEME_ORDER.get(sc.get("type")) == 2:
+                        sc.update(scheme_with_defaults(sc))
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s["coupling"] == "staggered"):
             s.setdefault("max_iter", 20)
             s.setdefault("tolerance", 1e-6)

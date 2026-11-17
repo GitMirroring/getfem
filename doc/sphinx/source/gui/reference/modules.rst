@@ -113,6 +113,18 @@ Properties:
      - Poisson's ratio
      - 1
      - ``0.3``
+   * - ``rho``
+     - density
+     - kg/m³
+     - ``1.0``
+   * - ``alpha_M``
+     - mass damping (Rayleigh, 1/s)
+     -
+     - ``0.0``
+   * - ``beta_K``
+     - stiffness damping (Rayleigh, s)
+     -
+     - ``0.0``
 
 Option ``plane``: ``strain``, ``stress`` (2D models only).
 

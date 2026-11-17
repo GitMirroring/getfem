@@ -35,6 +35,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from getfem_gui import docref, model as M, runner  # noqa: E402
@@ -139,6 +141,17 @@ def test_examples_quoted_results():
     assert _close(q["heat_out"], 500 * L * W, 1e-3)                    # the heat received leaves by the rim
     q = _solve("plate_heating.json")["heat"]                          # in time: the final values
     assert 95 < q["mean_T"] < 100 and q["heat_in"] > 0
+    with tempfile.TemporaryDirectory() as tmp:                        # elastodynamics
+        res = runner.run(M.load(EXAMPLES / "beam_vibration.json"), tmp)
+    assert res.ok, res.error
+    S = res.results["models"]["beam"]["series"]
+    t, d, e = (np.array(S[k]) for k in ("t", "tip_deflection", "energy"))
+    after = t > 0.0051                                                  # after the pulse
+    cross = t[after][1:][np.sign(d[after][1:]) != np.sign(d[after][:-1])]
+    E, nu, rho, h, L = 210e9 / (1 - 0.3 ** 2), 0.3, 7800, 0.05, 1.0    # the first bending mode
+    w1 = 3.516 * math.sqrt(E * h ** 3 / 12 / (rho * h * L ** 4))
+    assert _close(2 * np.mean(np.diff(cross)), 2 * math.pi / w1, 3e-2)
+    assert abs(e[-1] / e[after][0] - 1) < 1e-3
     q = _solve("heated_pipe.json")["heat"]
     R, L = 0.05, 0.6                                                    # the tube; heated on a half
     assert _close(q["area"], 2 * math.pi * R * L, 1e-4) and _close(q["heated_area"], math.pi * R * L, 1e-4)

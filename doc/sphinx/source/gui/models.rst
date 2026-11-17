@@ -145,31 +145,64 @@ Whether a variable is solved in time, and how, is a choice of the solver,
 not of the physics: the same model may be solved stationary by one solver
 and in time by another. The solver lists the variables of its models which
 may have a time derivative (those of the modules with one: the temperature
-of a heat conduction) and gives each one its **time scheme**
-(``schemes``, keyed by ``model/variable``; its form shows a *Scheme of T*
-choice for each):
+of a heat conduction, first order; the displacement of a linear elasticity,
+second order) and gives each one its **time scheme** (``schemes``, keyed by
+``model/variable``; its form shows a *Scheme of T* choice for each, and the
+parameters of the scheme):
 
 - ``{"type": "stationary"}``: no time derivative, the equation solved at
   each time step (quasi-static: a heat conduction following imposed values
-  that depend on the time, a potential driven by a temperature in time);
-- ``{"type": "theta", "theta": 1}``: the :math:`\theta`-method,
-  :math:`\theta = 1` implicit Euler (the default when a model is added to a
-  transient solver), :math:`\theta = 1/2` Crank-Nicolson;
-- ``{"type": "bdf2"}``: BDF2, second order, its first step by
-  Crank-Nicolson.
+  that depend on the time, an elasticity driven by a temperature in time);
+- first order (the heat):
+
+  - ``{"type": "theta", "theta": 1}``: the :math:`\theta`-method,
+    :math:`\theta = 1` implicit Euler (the default), :math:`\theta = 1/2`
+    Crank-Nicolson;
+  - ``{"type": "bdf2"}``: BDF2, second order, its first step by
+    Crank-Nicolson;
+
+- second order (the elastodynamics):
+
+  - ``{"type": "newmark", "beta": 0.25, "gamma": 0.5}``: Newmark's scheme,
+    by default the average acceleration (second order, unconditionally
+    stable, no numerical damping: the energy is conserved; the default);
+  - ``{"type": "hht", "alpha": -0.05}``: HHT-:math:`\alpha`
+    (Hilber-Hughes-Taylor), :math:`\alpha \in [-1/3, 0]`: second order,
+    unconditionally stable, a numerical damping of the high frequencies
+    growing as :math:`\alpha` decreases (:math:`\alpha = 0`: the average
+    acceleration);
+  - ``{"type": "generalized_alpha", "rho_inf": 0.8}``: the
+    generalized-:math:`\alpha` scheme (Chung and Hulbert), given by the
+    spectral radius at infinity :math:`\rho_\infty \in [0, 1]`: second
+    order, unconditionally stable, the optimal damping of the high
+    frequencies for a given accuracy of the low ones (:math:`\rho_\infty =
+    1`: the average acceleration, no damping; :math:`\rho_\infty = 0`: the
+    high frequencies damped at once);
+  - each with ``"initial_acceleration"``: ``"equation"`` (the default:
+    from the equation at the start time, :math:`M a_0 = -G(u_0, v_0,
+    t_0)`) or ``"zero"`` (at rest).
 
 In time, the heat conduction adds :math:`\rho c_p \partial T/\partial t`
 (the term ``rho*cp*Dot_T*Test_T``), and its properties ``rho`` and ``cp``
-are then required (they are not needed otherwise; they are given a default
-value when the variable goes into time). The form of the module shows where
-it stands: stationary, or in time with its scheme. ``Dot_T`` and
-``Previous_T`` may appear in the terms of the model. Since every equation is
+are then required; the linear elasticity adds the inertia :math:`\rho
+\partial^2 u/\partial t^2` (``rho*u__inertia.Test_u``, see below) and,
+optionally, a Rayleigh damping :math:`\alpha_M M + \beta_K K`: its
+properties ``rho``, ``alpha_M`` (1/s) and ``beta_K`` (s; 0 by default, no
+term then) are then required. These properties are not needed otherwise;
+they are given a default value when the variable goes into time. The form
+of the module shows where it stands: stationary, or in time with its
+scheme, and the equation solved. ``Dot_T``, ``Previous_T``, ``Dot_u``,
+``Dot2_u``, ``Previous_Dot_u``... may appear in the terms and the outputs
+of the model (at a saved time, ``Dot_u`` and ``Dot2_u`` in an output are
+the derivatives at that time: a kinetic energy ``0.5*rho*Dot_u.Dot_u``). Since every equation is
 written at the new time (see :ref:`gui-time-schemes`), variables with
 different schemes and stationary variables are solved together without
 difficulty, in one model or in coupled ones.
 
 - The variables start from their **initial** value (a number or an
-  expression of the coordinates and the parameters; 0 by default).
+  expression of the coordinates and the parameters; 0 by default) and,
+  second order in time, their **initial velocity** (``initial_velocity``,
+  0 by default).
 - The time ``t`` may appear in the expressions (sources, conditions,
   terms): the imposed values depending on it are interpolated again at
   each time step.
@@ -185,7 +218,7 @@ difficulty, in one model or in coupled ones.
   (``series`` in the results); the final values are those shown as for a
   stationary model.
 
-See ``examples/plate_heating.json``.
+See ``examples/plate_heating.json`` and ``examples/beam_vibration.json``.
 
 .. _gui-time-schemes:
 
@@ -245,10 +278,60 @@ When the first step needs the initial derivative :math:`\dot U_0`
 equation at :math:`t_0` (an implicit Euler step of a tiny time step from the
 initial values).
 
-The same principle holds for second order equations (elastodynamics, to
-come): :math:`M \ddot U_{n+1} + F(U_{n+1}, t_{n+1}) = 0`, the scheme
-(Newmark, HHT, generalized-:math:`\alpha`) giving the acceleration from
-:math:`U_{n+1}`, the previous displacement, velocity and acceleration.
+**Second order equations** (the elastodynamics), :math:`M \ddot U + G(U,
+\dot U, t) = 0`, :math:`G` gathering all the terms but the inertia
+(stiffness, damping, loads, conditions). Newmark's relations give the
+acceleration and the velocity at :math:`t_{n+1}` as functions of the
+unknown :math:`U_{n+1}` and of :math:`U_n, V_n, A_n`:
+
+.. math::
+
+   A_{n+1} = \frac{U_{n+1} - U_n}{\beta \Delta t^2} - \frac{V_n}{\beta \Delta
+   t} - \frac{1 - 2\beta}{2\beta} A_n, \qquad V_{n+1} = V_n + \Delta t
+   \left((1 - \gamma) A_n + \gamma A_{n+1}\right),
+
+and Newmark's scheme is the equation written at :math:`t_{n+1}`, :math:`M
+A_{n+1} + G_{n+1} = 0`. The generalized-:math:`\alpha` scheme (and HHT,
+:math:`\alpha_m = 0`, :math:`\alpha_f = -\alpha`) weights the terms
+between the two times:
+
+.. math::
+
+   M \left((1 - \alpha_m) A_{n+1} + \alpha_m A_n\right) + (1 - \alpha_f)
+   G_{n+1} + \alpha_f G_n = 0 .
+
+It is written at :math:`t_{n+1}` too, without assembling :math:`G_n` again:
+with a **memory** :math:`m_n` such that :math:`G_n = -M m_n`, dividing by
+:math:`1 - \alpha_f`,
+
+.. math::
+
+   M \tilde A_{n+1} + G_{n+1} = 0, \qquad \tilde A_{n+1} = \frac{(1 -
+   \alpha_m) A_{n+1} + \alpha_m A_n - \alpha_f m_n}{1 - \alpha_f},
+
+and the same equation gives :math:`G_{n+1} = -M \tilde A_{n+1}`: the
+memory is updated by :math:`m_{n+1} = \tilde A_{n+1}`. Only the inertia
+term changes (its acceleration :math:`\tilde A`, the "modified
+acceleration"), :math:`G` is written at :math:`t_{n+1}` as for a
+stationary problem; this is exactly the standard scheme, also for a
+nonlinear :math:`G` and loads depending on the time (they end up weighted
+by :math:`1 - \alpha_f` and :math:`\alpha_f`), provided that the mass
+:math:`M` does not change with the time and that the memory starts from
+:math:`m_0 = A_0`, the acceleration of the equation at :math:`t_0`. The
+parameters: HHT, :math:`\beta = (1 - \alpha)^2/4`, :math:`\gamma = 1/2 -
+\alpha`; generalized-:math:`\alpha` from :math:`\rho_\infty`,
+:math:`\alpha_m = (2\rho_\infty - 1)/(\rho_\infty + 1)`, :math:`\alpha_f =
+\rho_\infty/(\rho_\infty + 1)`, :math:`\gamma = 1/2 - \alpha_m +
+\alpha_f`, :math:`\beta = (1 - \alpha_m + \alpha_f)^2/4`.
+
+**The initial acceleration** :math:`A_0` solves :math:`M A_0 = -G(U_0, V_0,
+t_0)`: the residual :math:`r = -G` is assembled without inertia at the
+initial values, then :math:`(M/\varepsilon^2 + K) \, \delta = r`
+(:math:`\varepsilon = 10^{-6} \Delta t`, :math:`K` the tangent matrix of
+:math:`G`) gives :math:`\delta = \varepsilon^2 A_0 + O(\varepsilon^4)`,
+without any difference of values (no cancellation), the conditions taken
+into account by the system. ``"initial_acceleration": "zero"`` starts at
+rest instead.
 
 **The implementation.** The scheme is written in the script with GWFL macros
 and data of the model, updated by the time loop (they can be read in the
@@ -258,6 +341,15 @@ exported script):
   element method of ``T``): :math:`U_n`, :math:`\dot U_n`, :math:`U_{n-1}`;
   ``T__scheme``: the coefficients :math:`(c_0, c_1, c_2, c_3)` of the
   current step.
+- Second order: ``u__prev``, ``u__rate``, ``u__rate2`` and, for HHT and
+  generalized-:math:`\alpha`, ``u__mem`` (:math:`U_n, V_n, A_n, m_n`); the
+  macros ``Dot2_u`` (``u__acc(1)*(u - u__prev)/sqr(timestep) +
+  u__acc(2)*u__rate/timestep + u__acc(3)*u__rate2``), ``Dot_u`` (with
+  ``u__vel``) and ``u__inertia`` (:math:`\tilde A`, with ``u__inertia_c``;
+  ``Dot2_u`` for Newmark), ``Previous_Dot2_u``; the inertia term
+  ``rho*u__inertia.Test_u``, the damping ones ``alpha_M*rho*Dot_u.Test_u``
+  and ``beta_K*(lambda_L*Trace(Sym(Grad(Dot_u)))*Id(meshdim) +
+  2*mu_L*Sym(Grad(Dot_u))):Grad_Test_u``.
 - The macros ``Previous_T`` (``T__prev``), ``Previous_Dot_T`` (``T__rate``)
   and ``Dot_T``: ``(T__scheme(1)*T + T__scheme(2)*T__prev +
   T__scheme(3)*T__prev2)/timestep + T__scheme(4)*T__rate``. The time
@@ -274,14 +366,18 @@ exported script):
   then ``shift(k)``: ``T__rate`` gets the interpolation of ``Dot_T``,
   ``T__prev2`` the value of ``T__prev``, ``T__prev`` the value of ``T``, and
   after the first step the coefficients of the scheme from then on (BDF2);
+  second order, ``u__rate``, ``u__rate2``, ``u__mem`` get the
+  interpolations of ``Dot_u``, ``Dot2_u``, ``u__inertia``, then
+  ``u__prev`` the value of ``u``;
   ``save(k, t)`` every ``save.every`` steps and at the end (the
   post-processing of each model, its VTU file, its scalar results appended
   to its series).
 
 A new scheme is thus new coefficients (or a new expression of ``Dot_u``,
 ``Dot2_u``), its history and its update after each step
-(``scheme_coefficients`` in ``model.py``, ``time_declarations`` and the
-time loop in ``codegen.py``); the modules do not change.
+(``scheme_coefficients`` and ``second_order_coefficients`` in
+``model.py``, ``time_declarations`` and the time loop in ``codegen.py``);
+the modules do not change.
 
 Outputs
 -------
