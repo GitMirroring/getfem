@@ -184,7 +184,7 @@ def shown_properties(model: dict, mod: dict) -> list[str]:
             if p not in spec.get("transient_properties", ()) or M.in_time(model, _model_of(model, mod), mod)]
 
 
-def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains) -> list[Field]:
+def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, dim: int = 2) -> list[Field]:
     """The properties of a module, in its form: per domain (the whole domain
     first), a value or a material; the domains of a property but the first one
     removable."""
@@ -197,9 +197,9 @@ def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains) -
         several = len(pieces) > 1 or any(pc.get("selection", M.ALL) != M.ALL for pc in pieces)
         for j, pc in enumerate(pieces):
             path = mpath + ("properties", p, j)
-            name = f"{p} ({label})"
+            name = f"{p} ({label}, a {dim} × {dim} matrix)" if tensor else f"{p} ({label})"
             if several:                          # a row for its domain, then its value
-                out.append(Field(path + ("selection",), f"{p} on" if j else f"{p} ({label}) on", "choice",
+                out.append(Field(path + ("selection",), f"{p} on" if j else f"{name} on", "choice",
                                  domains, help="The domain of this value (the last one listed wins)",
                                  remove=path if j else None))
                 name = ""
@@ -1068,6 +1068,50 @@ def _field_fields(model, path) -> list[Field]:
 MATRIX_HELP = "a matrix [a, b; c, d] (by rows, as in GWFL), a matrix parameter, or a number (times the identity)"
 
 
+def _number(x):
+    """x as a float, or None (an expression)."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rows(value) -> list[list[str]] | None:
+    """The entries of a matrix value ([a, b; c, d] or rows), or None."""
+    if isinstance(value, list) and value and all(isinstance(r, list) for r in value):
+        return [[str(x).strip() for x in r] for r in value]
+    if isinstance(value, str) and value.strip().startswith("[") and value.strip().endswith("]"):
+        inner = value.strip()[1:-1]
+        if "[" in inner:
+            return None
+        return [[x.strip() for x in r.split(",")] for r in inner.split(";")]
+    return None
+
+
+def to_matrix(value, dim: int):
+    """A scalar value as the matrix it stands for (times the identity):
+    [v, 0; 0, v]; a matrix or an expression unchanged."""
+    if _rows(value) is not None or (isinstance(value, str) and _number(value) is None):
+        return value
+    v = value if isinstance(value, (int, float)) else _number(value)
+    text = f"{v:g}" if isinstance(v, float) and v == int(v) and abs(v) < 1e15 else repr(v)
+    return "[" + "; ".join(", ".join(text if i == j else "0" for j in range(dim)) for i in range(dim)) + "]"
+
+
+def to_scalar(value):
+    """A matrix value that is a multiple of the identity as that number (or
+    expression); anything else unchanged."""
+    rows = _rows(value)
+    if rows is None or any(len(r) != len(rows) for r in rows):
+        return value
+    diag = {rows[i][i] for i in range(len(rows))}
+    off = [rows[i][j] for i in range(len(rows)) for j in range(len(rows)) if i != j]
+    if len(diag) != 1 or any(_number(x) != 0.0 for x in off):
+        return value
+    d = diag.pop()
+    return _number(d) if _number(d) is not None else d
+
+
 def _value_field(key, label, kind, dim, op=None) -> Field:
     if kind == M.VECTOR:
         return Field(key, label, "vector", size=dim, op=op)
@@ -1151,13 +1195,17 @@ def _model_fields(model, path) -> list[Field]:
             for opt, values in spec.get("options", {}).items():
                 if opt == "plane" and dim != 2:
                     continue
+                tensor = any(o == opt for o, _ in spec.get("tensor_properties", {}).values())
                 out.append(Field(mpath + (opt,), "2D model" if opt == "plane" else opt.capitalize(), "choice",
-                                 tuple((x, f"plane {x}" if opt == "plane" else x) for x in values)))
+                                 tuple((x, f"plane {x}" if opt == "plane" else x) for x in values),
+                                 op="tensor_option" if tensor else None,
+                                 help="anisotropic: the conductivity is a dim x dim matrix (its values "
+                                      "turned into matrices)" if tensor else ""))
             for key, kind in spec.get("values", {}).items():
                 out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
             from . import equations
             out.append(Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod)))
-            out += _property_fields(model, mod, spec, mpath, domains)
+            out += _property_fields(model, mod, spec, mpath, domains, dim)
             out += _source_fields(mod, spec, mpath, domains, dim)
             terms = equations.gwfl_terms(model, k, rest[1])
             if terms:
@@ -2411,6 +2459,18 @@ def _apply(model: dict, f: Field, value) -> Path | None:
         sc.clear()
         sc.update(M.scheme_with_defaults({"type": value}))
         _time_properties(model)
+        return None
+    if f.op == "tensor_option":              # (an)isotropic: the values of its tensor properties converted
+        mod = get_at(model, key[:-1])
+        spec = M.MODULE_SPECS[mod["type"]]
+        mod[key[-1]] = value
+        dim = item_dim(model, key[:-1])
+        for prop, (opt, tval) in spec.get("tensor_properties", {}).items():
+            if opt != key[-1]:
+                continue
+            for pc in mod.get("properties", {}).get(prop, []):
+                if "value" in pc:
+                    pc["value"] = to_matrix(pc["value"], dim) if value == tval else to_scalar(pc["value"])
         return None
     if f.op == "scheme_param":
         sc = get_at(model, key[:-2]).setdefault(key[-2], _default_of(model, key[:-1]))

@@ -92,7 +92,7 @@ Module
      - one of ``T``
    * - Conductivity
      - ``conductivity``
-     - one of ``isotropic``, ``anisotropic``
+     - one of ``isotropic``, ``anisotropic``. anisotropic: the conductivity is a dim x dim matrix (its values turned into matrices)
    * - k (thermal conductivity)
      - ``properties.k.0``
      - one of ``value`` (a value), ``material:steel`` (material steel). thermal conductivity

@@ -310,6 +310,27 @@ def test_editing_vector_and_matrix_parameters():
     assert M.validate(m) == []
 
 
+def test_anisotropic_option_converts_the_values():
+    """Choosing anisotropic in the form turns the values of the conductivity
+    into matrices (a number times the identity: visible), labelled as such;
+    back to isotropic, a multiple of the identity becomes a number again
+    (an expression, a matrix parameter: unchanged)."""
+    from getfem_gui import editing as E
+    m = M.default_model()
+    path = ("models", 0, "modules", 0)
+    mod = m["models"][0]["modules"][0]
+    mod["properties"]["k"].append({"selection": "all", "value": "k0"})
+    f = next(x for x in E.fields(m, path) if x.key[-1] == "conductivity")
+    E.apply(m, f, "anisotropic")
+    assert [pc["value"] for pc in mod["properties"]["k"]] == ["[1, 0; 0, 1]", "k0"]
+    assert "k (thermal conductivity, a 2 × 2 matrix) on" in [x.label for x in E.fields(m, path)]
+    mod["properties"]["k"][0]["value"] = "[237, 0; 0, 237]"
+    E.apply(m, f, "isotropic")
+    assert [pc["value"] for pc in mod["properties"]["k"]] == [237.0, "k0"]
+    assert E.to_matrix(2, 3) == "[2, 0, 0; 0, 2, 0; 0, 0, 2]" and E.to_scalar("[1, 2; 0, 1]") == "[1, 2; 0, 1]"
+    assert E.to_scalar([[3, 0], [0, 3]]) == 3.0 and E.to_scalar("[a, 0; 0, a]") == "a"
+
+
 def test_anisotropic_conduction_and_tensor_fields():
     """A conductivity tensor: k Id gives the isotropic solution; the fibres
     of the example carry more heat along them; vector and matrix fields."""

@@ -69,7 +69,11 @@ conductivity of a heat conduction module with ``"conductivity":
 "anisotropic"`` is a matrix of the dimension of the space. Each of its
 values is then ``[a, b; c, d]`` (by rows, as in GWFL), a matrix parameter, a
 GWFL matrix expression, a list of rows in the file, or a number, standing
-for that number times the identity; a material may give a matrix too. In
+for that number times the identity; a material may give a matrix too.
+Choosing ``anisotropic`` in the form of the module turns the numbers into
+the matrices they stand for (``1`` becomes ``[1, 0; 0, 1]``), the field
+being labelled as a matrix; back to ``isotropic``, a multiple of the
+identity becomes a number again (an expression is left as it is). In
 ``examples/anisotropic_plate.json``, the conductivity tensor of a fibre
 composite is built from the direction ``d`` of the fibres:
 
