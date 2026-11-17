@@ -176,8 +176,10 @@ parameters of the scheme):
   - ``{"type": "theta", "theta": 1}``: the :math:`\theta`-method,
     :math:`\theta = 1` implicit Euler (the default), :math:`\theta = 1/2`
     Crank-Nicolson;
-  - ``{"type": "bdf2"}``: BDF2, second order, its first step by
-    Crank-Nicolson;
+  - ``{"type": "bdf2", "start": "implicit_euler"}``: BDF2, second order,
+    its first step by implicit Euler (the default: monotone) or by
+    Crank-Nicolson (``"crank_nicolson"``: a smaller error, but it may
+    overshoot when the initial values do not satisfy the conditions);
 
 - second order (the elastodynamics):
 
@@ -212,7 +214,9 @@ of the module shows where it stands: stationary, or in time with its
 scheme, and the equation solved. ``Dot_T``, ``Previous_T``, ``Dot_u``,
 ``Dot2_u``, ``Previous_Dot_u``... may appear in the terms and the outputs
 of the model (at a saved time, ``Dot_u`` and ``Dot2_u`` in an output are
-the derivatives at that time: a kinetic energy ``0.5*rho*Dot_u.Dot_u``). Since every equation is
+the derivatives at that time: a kinetic energy ``0.5*rho*Dot_u.Dot_u``; at
+the start time, a first derivative is the initial one when the scheme
+computes it, 0 otherwise). Since every equation is
 written at the new time (see :ref:`gui-time-schemes`), variables with
 different schemes and stationary variables are solved together without
 difficulty, in one model or in coupled ones.
@@ -287,12 +291,18 @@ The schemes of first order equations all have the form
 - BDF2, :math:`\dot U_{n+1} = (3 U_{n+1} - 4 U_n + U_{n-1})/(2 \Delta t)`:
   :math:`(3/2, -2, 1/2, 0)`. Second order and L-stable (no oscillation, it
   damps the fast modes), with an error constant larger than that of
-  Crank-Nicolson. It needs two previous values: its first step is a
-  Crank-Nicolson one, :math:`(2, -2, 0, -1)`, which keeps the second order
-  (one step of local error :math:`O(\Delta t^3)`).
+  Crank-Nicolson. It needs two previous values: its first step is an
+  implicit Euler one, :math:`(1, -1, 0, 0)` (the default), or a
+  Crank-Nicolson one, :math:`(2, -2, 0, -1)`. Both keep the second order:
+  the local error of a single step, :math:`O(\Delta t^2)` for implicit
+  Euler, :math:`O(\Delta t^3)` for Crank-Nicolson, is made once. Implicit
+  Euler is monotone: with initial values that do not satisfy the conditions
+  (a temperature imposed at once on a side), Crank-Nicolson overshoots
+  (above the imposed value) on its step, then BDF2 damps it.
 
 When the first step needs the initial derivative :math:`\dot U_0`
-(:math:`c_3 \neq 0`: :math:`\theta < 1`, BDF2), it is computed first from the
+(:math:`c_3 \neq 0`: :math:`\theta < 1`, BDF2 started by Crank-Nicolson), it is
+computed first from the
 equation at :math:`t_0` (an implicit Euler step of a tiny time step from the
 initial values).
 

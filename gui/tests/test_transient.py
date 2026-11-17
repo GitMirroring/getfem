@@ -118,24 +118,38 @@ def test_theta_method():
 
 
 def test_bdf2():
-    """BDF2 (its first step by Crank-Nicolson): second order, as accurate as
-    Crank-Nicolson here; its coefficients after the first step."""
+    """BDF2: second order with both first steps (implicit Euler, the default,
+    or Crank-Nicolson: a smaller error); its coefficients after the first
+    step; started by implicit Euler, monotone for initial values that do
+    not satisfy the conditions (Crank-Nicolson overshoots)."""
     try:
         import getfem  # noqa: F401
     except ImportError:
         return
-    errors = []
-    for step in (0.02, 0.01):
-        results, _ = run(bar(end=0.1, step=step, n=60, scheme={"type": "bdf2"}))
-        S = results["models"]["heat"]["series"]
-        errors.append(abs(S["mean"][-1] - 2 / np.pi * np.exp(-np.pi ** 2 * 0.1)))
-    assert 3.5 < errors[0] / errors[1] < 4.5 and errors[1] < _error(1.0, 0.01) / 10
+    for sc in ({"type": "bdf2"}, {"type": "bdf2", "start": "crank_nicolson"}):
+        errors = []
+        for step in (0.01, 0.005):
+            results, _ = run(bar(end=0.1, step=step, n=60, scheme=sc))
+            S = results["models"]["heat"]["series"]
+            errors.append(abs(S["mean"][-1] - 2 / np.pi * np.exp(-np.pi ** 2 * 0.1)))
+        assert 3.5 < errors[0] / errors[1] < 4.6 and errors[1] < _error(1.0, 0.005) / 10, (sc, errors)
     text = runner.export_script(bar(scheme={"type": "bdf2"}))
-    assert "md_heat.add_initialized_data('T__scheme', [2.0, -2.0, 0.0, -1.0])" in text       # Crank-Nicolson
+    assert "md_heat.add_initialized_data('T__scheme', [1.0, -1.0, 0.0, 0.0])" in text       # implicit Euler
     assert "md_heat.set_variable('T__scheme', [1.5, -2.0, 0.5, 0.0])" in text               # then BDF2
     assert "md_heat.add_macro('Dot_T', '(T__scheme(1)*T + T__scheme(2)*T__prev + T__scheme(3)*T__prev2)" \
         "/timestep + T__scheme(4)*T__rate')" in text
-    assert M.scheme_coefficients({"type": "theta", "theta": 0.5}) == M.scheme_coefficients({"type": "bdf2"}, True)
+    assert "initial time derivative" not in text                                          # (not needed)
+    text = runner.export_script(bar(scheme={"type": "bdf2", "start": "crank_nicolson"}))
+    assert "md_heat.add_initialized_data('T__scheme', [2.0, -2.0, 0.0, -1.0])" in text     # Crank-Nicolson
+    assert M.scheme_coefficients({"type": "theta", "theta": 0.5}) == \
+        M.scheme_coefficients({"type": "bdf2", "start": "crank_nicolson"}, True)
+    assert M.validate(bar(scheme={"type": "bdf2", "start": "euler"})) != []
+    m = M.default_model()                         # T = 0 at first, 1 imposed on a side: the maximum principle
+    for sc, monotone in (({"type": "bdf2"}, True), ({"type": "bdf2", "start": "crank_nicolson"}, False)):
+        m["solvers"] = [{"name": "main", "type": "transient", "steps": ["heat"],
+                         "time": {"end": 0.5, "step": 0.05}, "schemes": {"heat/T": sc}}]
+        top = max(run(m)[0]["models"]["heat"]["series"]["max_T"])
+        assert (top <= 1 + 1e-9) == monotone, (sc, top)
 
 
 def test_derivative_in_outputs():
@@ -150,7 +164,8 @@ def test_derivative_in_outputs():
         m["models"][0]["outputs"].append({"name": "rate", "expr": "Dot_T", "selection": "all"})
         S = run(m)[0]["models"]["heat"]["series"]
         ratio = np.array(S["rate"]) / np.array(S["mean"])
-        assert np.allclose(ratio, -np.pi ** 2, rtol=2e-3), (sc, ratio)
+        first = 0 if M.scheme_needs_rate(sc) else 1         # (the initial derivative: computed if needed)
+        assert np.allclose(ratio[first:], -np.pi ** 2, rtol=2e-3), (sc, ratio)
 
 
 def test_schemes_per_variable():
@@ -294,7 +309,9 @@ def test_editing():
     f = next(x for x in E.fields(m, path) if x.label == "Scheme of T (heat)")
     assert E.field_value(m, f) == "theta" and dict(f.choices)["bdf2"].startswith("BDF2")
     E.apply(m, f, "bdf2")
-    assert s["schemes"]["heat/T"] == {"type": "bdf2"} and "Theta of T" not in [x.label for x in E.fields(m, path)]
+    assert s["schemes"]["heat/T"] == {"type": "bdf2", "start": "implicit_euler"}
+    labels = [x.label for x in E.fields(m, path)]
+    assert "Theta of T" not in labels and "First step of T" in labels
     E.apply(m, f, "stationary")                  # (no density needed then)
     assert M.time_variables(m, m["models"][0]) == [] and M.validate(m) == []
     E.apply(m, f, "theta")

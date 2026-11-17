@@ -200,7 +200,8 @@ MODULE_SPECS[...]["inertia"]: rho*cp*Dot_T*Test_T for the heat), keyed by
 "stationary"} (no time derivative: quasi-static, the equation solved at
 each time), or a scheme of the order of its time derivative (SCHEMES,
 SCHEME_ORDER, their parameters SCHEME_PARAMETERS): first order (the heat:
-"theta", "bdf2"), second order (the elastodynamics: "newmark", "hht",
+"theta", "bdf2" with "start": "implicit_euler" | "crank_nicolson"), second
+order (the elastodynamics: "newmark", "hht",
 "generalized_alpha", with "initial_acceleration": "equation" | "zero").
 In time, a module adds its time derivative and its transient properties
 (rho, cp; rho and the Rayleigh damping alpha_M, beta_K) are required. Every
@@ -292,7 +293,7 @@ COUPLINGS = ("sequence", "staggered")         # of the models at each time step
 SCHEMES = {
     "stationary": "stationary (no time derivative: quasi-static)",
     "theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)",
-    "bdf2": "BDF2 (second order; its first step: Crank-Nicolson)",
+    "bdf2": "BDF2 (second order; its first step: implicit Euler, or Crank-Nicolson)",
     "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration)",
     "hht": "HHT-alpha (Hilber-Hughes-Taylor, numerical damping)",
     "generalized_alpha": "generalized-alpha (Chung-Hulbert, numerical damping)",
@@ -309,6 +310,10 @@ PARAMETER_LABELS = {"theta": "Theta", "beta": "Beta", "gamma": "Gamma", "alpha":
                     "rho_inf": "Spectral radius at infinity (rho_inf)"}
 INITIAL_ACCELERATIONS = {"equation": "from the equation at the start time",
                          "zero": "zero (at rest)"}
+# the first step of BDF2 (both keep the second order: one step of local error O(dt^2))
+BDF2_STARTS = {"implicit_euler": "implicit Euler (monotone: initial values not compatible with the "
+                                 "conditions)",
+               "crank_nicolson": "Crank-Nicolson (a smaller error, may overshoot)"}
 DEFAULT_SCHEME = {"type": "theta", "theta": 1.0}           # (first order)
 
 
@@ -332,6 +337,8 @@ def scheme_with_defaults(sc: dict) -> dict:
         out.setdefault(p, default)
     if SCHEME_ORDER.get(sc.get("type")) == 2:
         out.setdefault("initial_acceleration", "equation")
+    if sc.get("type") == "bdf2":
+        out.setdefault("start", "implicit_euler")
     return out
 DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
 COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
@@ -879,7 +886,9 @@ def scheme_coefficients(sc: dict, first: bool = False) -> tuple[float, float, fl
     """(c0, c1, c2, c3) of Dot_u = (c0 u + c1 u_n + c2 u_{n-1})/dt + c3 Dot_u_n
     for a time scheme, at the first time step or after."""
     if sc.get("type") == "bdf2":
-        return (2.0, -2.0, 0.0, -1.0) if first else (1.5, -2.0, 0.5, 0.0)   # first: Crank-Nicolson
+        if not first:
+            return (1.5, -2.0, 0.5, 0.0)
+        return (2.0, -2.0, 0.0, -1.0) if sc.get("start") == "crank_nicolson" else (1.0, -1.0, 0.0, 0.0)
     th = float(sc.get("theta", 1.0))
     return (1.0 / th, -1.0 / th, 0.0, -(1.0 - th) / th)
 
@@ -933,7 +942,7 @@ def scheme_label(sc: dict | None) -> str:
     if sc is None or sc.get("type") == "stationary":
         return "stationary"
     if sc.get("type") == "bdf2":
-        return "BDF2"
+        return "BDF2" + (" (first step: Crank-Nicolson)" if sc.get("start") == "crank_nicolson" else "")
     if SCHEME_ORDER.get(sc.get("type")) == 2:
         sc = scheme_with_defaults(sc)
         if sc["type"] == "hht":
@@ -2184,6 +2193,8 @@ def _validate_transient(model, s, where, steps, errors) -> None:
         if SCHEME_ORDER.get(sc["type"]) == 2 and sc.get("initial_acceleration", "equation") \
                 not in INITIAL_ACCELERATIONS:
             errors.append(f"{w}.initial_acceleration: {', '.join(INITIAL_ACCELERATIONS)} expected")
+        if sc["type"] == "bdf2" and sc.get("start", "implicit_euler") not in BDF2_STARTS:
+            errors.append(f"{w}.start: {', '.join(BDF2_STARTS)} expected")
 
 
 def _where(model, key, item, owner) -> str:

@@ -1540,6 +1540,13 @@ def fields(model: dict, path: Path) -> list[Field]:
                         out.append(Field(path + ("schemes", key, prm), f"{M.PARAMETER_LABELS[prm]} of {u}",
                                          "number", op="scheme_param", help=_SCHEME_HELP[sc["type"]][prm]
                                          + f" ({']' if open_lo else '['}{lo:.4g}, {hi:.4g}])"))
+                    if sc.get("type") == "bdf2":
+                        out.append(Field(path + ("schemes", key, "start"), f"First step of {u}", "choice",
+                                         tuple(M.BDF2_STARTS.items()), op="scheme_param",
+                                         help="BDF2 needs two previous values: its first step is an implicit "
+                                              "Euler step (monotone), or a Crank-Nicolson step (a smaller error, "
+                                              "but it may overshoot when the initial values do not satisfy the "
+                                              "conditions); both keep the second order"))
                     if M.SCHEME_ORDER.get(sc.get("type")) == 2:
                         out.append(Field(path + ("schemes", key, "initial_acceleration"),
                                          f"Initial acceleration of {u}", "choice",
