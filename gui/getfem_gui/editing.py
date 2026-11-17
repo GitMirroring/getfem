@@ -263,12 +263,30 @@ def _default_of(model: dict, scheme_path: tuple) -> dict:
     return M.default_scheme(M.variable_order(md, u) if md else 1)
 
 
+def _step_choices(model: dict, s: dict) -> tuple:
+    """The steps a global solver may have: each model; each variable of a
+    model with several (a partial step); the partial steps it has (several
+    variables)."""
+    out = []
+    for md in model.get("models", []):
+        name = md.get("name")
+        out.append((name, name))
+        names = [v.get("name") for v in md.get("variables", [])]
+        if len(names) > 1:
+            out += [(M.make_step(name, [v]), f"{name}: {v} only") for v in names]
+    for st in s.get("steps", []):
+        if st not in [c for c, _ in out]:
+            n, v = M.parse_step(st)
+            out.append((st, f"{n}: {', '.join(v or [])}"))
+    return tuple(out)
+
+
 def _fill_schemes(model: dict, s: dict) -> None:
     """A transient solver: a time scheme for each variable of its models
     which may have a time derivative (implicit Euler if none yet); the
     transient properties (rho, cp) given to the modules then in time."""
     schemes = s.setdefault("schemes", {})
-    for name in s.get("steps", []):
+    for name in M.step_models(s):
         md = M.model_by_name(model, name)
         for u in M.timeable_variables(md) if md else []:
             schemes.setdefault(M.scheme_key(name, u), M.default_scheme(M.variable_order(md, u)))
@@ -1495,8 +1513,9 @@ def fields(model: dict, path: Path) -> list[Field]:
                Field(path + ("type",), "Type", "choice",
                      (("sequence", "sequence"), ("staggered", "staggered iterations"),
                       ("transient", "transient (in time)")), op="solver_type"),
-               Field(path + ("steps",), "Models, in order", "names",
-                     _choices(m.get("name") for m in model.get("models", [])), op="solver_steps")]
+               Field(path + ("steps",), "Steps, in order", "names", _step_choices(model, s), op="solver_steps",
+                     help="Each step solves a model, or some of its variables (model/u: u solved, the "
+                          "other variables of the model given; each variable solved by one step at least)")]
         if s.get("type") == "transient":
             out += [Field(path + ("time", "start"), "Start time", "value"),
                     Field(path + ("time", "end"), "End time", "value"),
@@ -1505,7 +1524,7 @@ def fields(model: dict, path: Path) -> list[Field]:
                     Field(path + ("coupling",), "Coupling at each step", "choice",
                           (("sequence", "the models in turn"), ("staggered", "staggered iterations")),
                           op="solver_type")]
-            for name in s.get("steps", []):
+            for name in M.step_models(s):
                 md = M.model_by_name(model, name)
                 for u in M.timeable_variables(md) if md else []:
                     key = M.scheme_key(name, u)
@@ -2336,9 +2355,33 @@ def _rename_selection(model, gi, old, new) -> None:
             _rename_selection(model, bi, old, new)
 
 
+def _share_property(model: dict, path: Path) -> None:
+    """A property of a module edited (path under models[k].modules[j].properties.p):
+    the same data for the other modules of the model that have it (a
+    property is a data of the model: rho of a heat conduction and of an
+    elasticity)."""
+    if len(path) < 6 or path[0] != "models" or path[2] != "modules" or path[4] != "properties":
+        return
+    md = get_at(model, path[:2])
+    mod = get_at(model, path[:4])
+    if not isinstance(md, dict) or not isinstance(mod, dict):
+        return
+    prop = path[5]
+    pieces = mod.get("properties", {}).get(prop)
+    for other in md.get("modules", []):
+        if other is not mod and prop in M.MODULE_SPECS.get(other.get("type"), {}).get("properties", {}):
+            other.setdefault("properties", {})[prop] = copy.deepcopy(pieces) if pieces else []
+
+
 def apply(model: dict, f: Field, value) -> Path | None:
     """Set a field. Returns the new path of the node when it changed (renaming
     a selection changes its path), None otherwise."""
+    out = _apply(model, f, value)
+    _share_property(model, f.key)
+    return out
+
+
+def _apply(model: dict, f: Field, value) -> Path | None:
     key = f.key
     if f.op is None:
         set_at(model, key, value)
@@ -2490,7 +2533,10 @@ def apply(model: dict, f: Field, value) -> Path | None:
                     for im in other.get("imports", []):
                         if im.get("model") == md.get("name") and im.get("variable") == old:
                             im["variable"] = value
-                for s in model.get("solvers", []):              # its time schemes
+                for s in model.get("solvers", []):              # its steps, its time schemes
+                    s["steps"] = [M.make_step(n, [value if x == old else x for x in v])
+                                  if n == md.get("name") and v is not None else st
+                                  for st in s.get("steps", []) for n, v in [M.parse_step(st)]]
                     schemes = s.get("schemes", {})
                     if M.scheme_key(md.get("name"), old) in schemes:
                         schemes[M.scheme_key(md.get("name"), value)] = schemes.pop(M.scheme_key(md.get("name"), old))
@@ -2509,7 +2555,8 @@ def apply(model: dict, f: Field, value) -> Path | None:
                 if im.get("model") == old:
                     im["model"] = value
         for s in model.get("solvers", []):
-            s["steps"] = [value if x == old else x for x in s.get("steps", [])]
+            s["steps"] = [M.make_step(value, v) if n == old else st
+                          for st in s.get("steps", []) for n, v in [M.parse_step(st)]]
             for k in [k for k in s.get("schemes", {}) if k.partition("/")[0] == old]:
                 s["schemes"][M.scheme_key(value, k.partition("/")[2])] = s["schemes"].pop(k)
     elif f.op == "rename_material":
@@ -3327,17 +3374,24 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
                 names[role] = vname
                 existing[vname] = v["kind"]
         mods = md.setdefault("modules", [])
+        before = list(mods)
         mods.append(M.new_module(mtype, dim, names))
         if "requires" in spec:
             other, role = spec["requires"]
             if not any(m.get("type") == other and m.get("variable") == names[role] for m in mods):
                 mods.insert(len(mods) - 1, M.new_module(other, dim, {"variable": names[role]}))
+        for new in [m for m in mods if all(m is not b for b in before)]:     # the properties already given
+            for prop in list(new.get("properties", {})):
+                given = next((b["properties"][prop] for b in before if b.get("properties", {}).get(prop)), None)
+                if given:
+                    new["properties"][prop] = copy.deepcopy(given)
         return base + ("modules", len(mods) - 1)
     if action.startswith("add_piece:"):
         p = action.split(":", 1)[1]
         pieces = get_at(model, path).setdefault("properties", {}).setdefault(p, [])
         default = M.MODULE_SPECS[get_at(model, path + ("type",))]["property_defaults"].get(p, 1.0)
         pieces.append({"selection": M.ALL, "value": default})
+        _share_property(model, path + ("properties", p))
         return path                                 # (edited in the form of the module)
     if action == "add_source":
         mpath = path[:4]
@@ -3388,6 +3442,8 @@ def remove_at(model: dict, path: Path) -> None:
         del parent[path[-1]]
     else:
         parent.pop(path[-1], None)
+    if len(path) > 6:                       # (a piece of a property: the other modules too)
+        _share_property(model, path[:6])
 
 
 # ------------------------------------------------------------------ graphics

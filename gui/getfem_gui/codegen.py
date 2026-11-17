@@ -99,6 +99,7 @@ class Ctx:
     mfs: dict = field(default_factory=dict)      # variable/import name -> Python name of its MeshFem
     transient: bool = False       # solved in time (by the main solver)
     schemes: dict = field(default_factory=dict)  # variable in time -> its time scheme
+    partial: bool = False         # solved by partial steps (some of its variables at a time)
     t0: float = 0.0               # the time at the start
     timed: list = field(default_factory=list)    # data depending on t: (name, mf, GWFL expression)
 
@@ -246,11 +247,16 @@ def _fields(c: Ctx, w: ScriptWriter) -> None:
 
 def _properties(c: Ctx, w: ScriptWriter) -> None:
     """Each property of the modules becomes discontinuous finite element data,
-    defined per selection: plain 'k' can then be used in any expression."""
-    for mod in c.md["modules"]:
-        for prop in M.MODULE_SPECS[mod["type"]]["properties"]:
-            if not mod["properties"].get(prop):
-                continue                                # (a transient property, not needed)
+    defined per selection: plain 'k' can then be used in any expression. A
+    property is a data of the model, shared by its modules (rho for the heat
+    and the elasticity): declared once, by a module that uses it if any."""
+    done = set()
+    used = [(mod, prop) for mod in c.md["modules"] for prop in M.used_properties(c.model, c.md, mod)]
+    given = [(mod, prop) for mod in c.md["modules"] for prop in M.MODULE_SPECS[mod["type"]]["properties"]
+             if mod["properties"].get(prop)]
+    for mod, prop in used + given:
+        if prop not in done:
+            done.add(prop)
             pieces = []
             for pc in mod["properties"].get(prop, []):
                 if "material" in pc:
@@ -439,6 +445,9 @@ def _conditions(c: Ctx, w: ScriptWriter) -> None:
             name = "add_normal_Dirichlet_condition" if normal else "add_Dirichlet_condition"
             if cd["method"] == "simplification":
                 w(f"{md}.{name}_with_simplification({u!r}, {rg}, {data!r})")
+            elif cd["method"] == "multiplier" and c.partial:     # (its multiplier disabled with u)
+                w(f"ib = {md}.{name}_with_multipliers({c.mim}, {u!r}, {deg}, {rg}, {data!r})")
+                w(f"MULTIPLIERS[{c.md['name']!r}].setdefault({u!r}, []).append({md}.mult_varname_Dirichlet(ib))")
             elif cd["method"] == "multiplier":
                 w(f"{md}.{name}_with_multipliers({c.mim}, {u!r}, {deg}, {rg}, {data!r})")
             else:
@@ -462,6 +471,7 @@ def contexts(model: dict) -> list[Ctx]:
         mesh = M.model_mesh(model, md)
         dim = M.geometry_dim(model, M.geometry_of(model, mesh))
         c = Ctx(model, md, int(dim), mesh["name"], f"md_{ident(md['name'])}")
+        c.partial = md["name"] in M.partial_models(M.main_solver(model))
         if M.is_transient(model, md):
             solver = M.main_solver(model)
             c.transient = True
@@ -683,11 +693,21 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
     for c in ctxs:
         s = c.md["solver"]
         w("")
-        w(f"def solve_{ident(c.md['name'])}():")
+        if c.partial:
+            names = [v["name"] for v in c.md["variables"]]
+            w(f"def solve_{ident(c.md['name'])}(only=None):")
+            w(f'    """only: the variables solved (a partial step), the others of the model given."""')
+        else:
+            w(f"def solve_{ident(c.md['name'])}():")
         w.indent = "    "
         for im in c.md["imports"]:
             src = by[im["model"]]
             w(f"{c.py}.set_variable({im['name']!r}, {src.py}.variable({im['variable']!r}))")
+        if c.partial:
+            w(f"given = [v for v in {names!r} if only is not None and v not in only]")
+            w(f"given += [mult for v in given for mult in MULTIPLIERS[{c.md['name']!r}].get(v, [])]")
+            w("for v in given:")
+            w(f"    {c.py}.disable_variable(v)")
         args = ""
         if s.get("max_iter"):
             args += f", max_iter={int(s['max_iter'])}"
@@ -696,11 +716,18 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
         linear = "True" if s["type"] == "linear" else "False" if s["type"] == "newton" else f"LINEAR[{c.md['name']!r}]"
         if c.transient:                  # (the linear system checked at the first time step only)
             linear = f"{linear} and first_solve({c.md['name']!r})"
-        w(f"solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
+        if c.partial:
+            w("try:")
+            w(f"    solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
+            w("finally:")
+            w("    for v in given:")
+            w(f"        {c.py}.enable_variable(v)")
+        else:
+            w(f"solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
         w.indent = ""
     solver = M.main_solver(model)
     w("")
-    w(f"# Solver {solver['name']!r}: {solver['type']} of {', '.join(solver['steps'])}")
+    w(f"# Solver {solver['name']!r}: {solver['type']} of {', '.join(map(str, solver['steps']))}")
     if solver["type"] == "transient":
         _transient_code(model, solver, ctxs, w)
         return
@@ -710,21 +737,23 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter) -> None:
 def _coupled_code(solver: dict, coupling: str, by: dict, w: ScriptWriter) -> None:
     """The models of a solver solved in sequence, or by staggered iterations
     (results['solver'] set; inside the time loop: its indentation)."""
-    steps = [f"solve_{ident(n)}" for n in solver["steps"]]
+    parsed = [M.parse_step(st) for st in solver["steps"]]
+    calls = [f"solve_{ident(n)}({'' if v is None else repr(v)})" for n, v in parsed]
     if coupling == "sequence":
-        for st in steps:
-            w(f"{st}()")
+        for call in calls:
+            w(call)
         w(f"results['solver'] = {{'name': {solver['name']!r}, 'type': {solver['type']!r}}}")
         return
-    names = solver["steps"]
+    names = M.step_models(solver)
+    last = {n: max(j for j, (m, _) in enumerate(parsed) if m == n) for n in names}   # its last step
     outer = w.indent
     w(f"history = []")
     w(f"for iteration in range(1, {int(solver['max_iter'])} + 1):")
     w.indent = outer + "    "
     w("before = {" + ", ".join(f"{n!r}: {by[n].py}.from_variables().copy()" for n in names) + "}")
-    for n, st in zip(names, steps):
-        w(f"{st}()")
-        if float(solver["relaxation"]) != 1.0:
+    for j, ((n, _), call) in enumerate(zip(parsed, calls)):
+        w(call)
+        if float(solver["relaxation"]) != 1.0 and last[n] == j:
             r = float(solver["relaxation"])
             w(f"if iteration > 1:  # relaxation")
             w(f"    {by[n].py}.to_variables({r!r} * {by[n].py}.from_variables() + {1 - r!r} * before[{n!r}])")
@@ -750,7 +779,7 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
     t0, t1, dt = M.time_values(model, solver)
     n = max(1, int(round((t1 - t0) / dt)))
     every = int(solver["save"]["every"])
-    cs = [c for c in ctxs if c.md["name"] in solver["steps"]]
+    cs = [c for c in ctxs if c.md["name"] in M.step_models(solver)]
     by = {c.md["name"]: c for c in ctxs}
     w(f"T_START, T_END, N_STEPS = {t0!r}, {t1!r}, {n}   # time step {(t1 - t0) / n!r}")
     w("")
@@ -1023,12 +1052,16 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
             w(f"{py}.set_classical_{'discontinuous_' if fem == 'lagrange_discontinuous' else ''}fem({degree})")
 
     w("LINEAR = {}")
+    if any(c.partial for c in ctxs):
+        w("MULTIPLIERS = {}   # the multipliers of the variables (disabled with them in a partial step)")
     for c in ctxs:
         w.section(f"Model {c.md['name']!r}")
         declare_model(c, w)
         w("")
         w(f"# Terms and conditions of {c.md['name']!r}")
         w(f"LINEAR[{c.md['name']!r}] = True   # False once a term is not")
+        if c.partial:
+            w(f"MULTIPLIERS[{c.md['name']!r}] = {{}}")
         setup_model(c, w)
     w("MODELS = {" + ", ".join(f"{c.md['name']!r}: {c.py}" for c in ctxs) + "}")
 

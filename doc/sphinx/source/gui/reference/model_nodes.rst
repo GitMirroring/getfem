@@ -317,9 +317,9 @@ Global solver
    * - Type
      - ``type``
      - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))
-   * - Models, in order
+   * - Steps, in order
      - ``steps``
-     - list of names
+     - list of names. Each step solves a model, or some of its variables (model/u: u solved, the other variables of the model given; each variable solved by one step at least)
    * - Maximum iterations
      - ``max_iter``
      - integer
@@ -346,9 +346,9 @@ Transient global solver
    * - Type
      - ``type``
      - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))
-   * - Models, in order
+   * - Steps, in order
      - ``steps``
-     - list of names
+     - list of names. Each step solves a model, or some of its variables (model/u: u solved, the other variables of the model given; each variable solved by one step at least)
    * - Start time
      - ``time.start``
      - number or GWFL expression

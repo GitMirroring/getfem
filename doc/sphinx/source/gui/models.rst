@@ -131,6 +131,24 @@ by an **import**, on the same mesh for now::
 Without a global solver, the models are solved in an order compatible with
 their imports. See ``examples/thermoelastic_plate.json``.
 
+A step may also solve **some of the variables of a model**: ``"model/u"``
+(or ``"model/u,p"``) solves ``u`` (and ``p``), the other variables of the
+model being given, their current values (a partial resolution). A coupled
+model can thus be solved in sequence, ``["coupled/T", "coupled/u"]`` (a
+one-way coupling: the temperature, then the displacement it causes), or by
+staggered iterations between its variables, without splitting it into
+several models; each variable of a model is solved by one step at least.
+The *Steps* of the solver offer each model and each variable of a model
+that has several. In the script, the given variables are disabled during
+the step (``disable_variable``), with the multipliers of their Dirichlet
+conditions; a disabled variable is a data: its coupling terms go to the
+right-hand side.
+
+The properties of the modules are data of the model: a property given by
+two modules of a model (the density ``rho`` of a heat conduction and of an
+elasticity) is the same data, defined once (the two definitions, when both
+are used, must be the same).
+
 Transient problems
 ------------------
 

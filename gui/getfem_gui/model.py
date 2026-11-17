@@ -181,9 +181,13 @@ Models
 - graphics  : saved views of the result fields, {"name", "field", and the
               display settings of GRAPHIC_DEFAULTS: component, warp, scale,
               isolines, bands, cmap, range, arrows, cut}
-Global solvers: {"name", "type": "sequence" | "staggered", "steps": [model
-names], "max_iter", "tolerance", "relaxation"}; without any, the models are
-solved in an order compatible with their imports.
+Global solvers: {"name", "type": "sequence" | "staggered", "steps":
+[steps], "max_iter", "tolerance", "relaxation"}; without any, the models are
+solved in an order compatible with their imports. A step is a model name
+(all its variables solved) or "model/u,v" (a partial resolution: u and v
+solved, the other variables of the model given: disabled, with their
+multipliers); each variable of a model of the steps is solved by one of
+them at least (parse_step, step_models).
 
 Transient solver: {"name", "type": "transient", "steps": [model names],
 "time": {"start": 0, "end", "step"}, "coupling": "sequence" | "staggered"
@@ -561,7 +565,7 @@ def upgrade_schemes(model: dict) -> bool:
         if s.get("type") != "transient" or not isinstance(old, dict) or all("/" in k for k in old):
             continue
         new = {k: v for k, v in old.items() if "/" in k}
-        for name in s.get("steps", []):
+        for name in step_models(s):
             md = model_by_name(model, name)
             for mod in (md or {}).get("modules", []):
                 u = inertia_variable(mod)
@@ -785,7 +789,35 @@ def solve_order(model: dict) -> list[str]:
 def is_transient(model: dict, md: dict) -> bool:
     """Whether a model is solved in time (by a transient main solver)."""
     s = main_solver(model)
-    return s.get("type") == "transient" and md.get("name") in s.get("steps", [])
+    return s.get("type") == "transient" and md.get("name") in step_models(s)
+
+
+def parse_step(step) -> tuple[str, list[str] | None]:
+    """A step of a global solver: "model" (all its variables: None) or
+    "model/u,v" (the variables solved, the others of the model given)."""
+    name, sep, rest = str(step).partition("/")
+    return name, ([v.strip() for v in rest.split(",") if v.strip()] if sep else None)
+
+
+def make_step(name: str, variables=None) -> str:
+    return name if variables is None else f"{name}/{','.join(variables)}"
+
+
+def step_models(solver: dict) -> list[str]:
+    """The models of the steps of a global solver, in the order of their
+    first step."""
+    out = []
+    for st in solver.get("steps", []) if isinstance(solver.get("steps"), list) else []:
+        name = parse_step(st)[0]
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def partial_models(solver: dict) -> list[str]:
+    """The models of a global solver solved by partial steps."""
+    steps = [parse_step(st) for st in solver.get("steps", [])]
+    return [n for n in step_models(solver) if any(name == n and v is not None for name, v in steps)]
 
 
 def scheme_key(md_name: str, u: str) -> str:
@@ -2056,11 +2088,30 @@ def validate(model: dict) -> list[str]:
             errors.append(f"{where}.type: {', '.join(GLOBAL_SOLVERS)} expected, got {s.get('type')!r}")
         steps = s.get("steps", [])
         if not isinstance(steps, list) or not steps:
-            errors.append(f"{where}.steps: list of model names expected")
+            errors.append(f"{where}.steps: list of steps expected (model names, or model/variables)")
             steps = []
+        solved = {}
         for j, st in enumerate(steps):
-            if st not in mnames:
-                errors.append(f"{where}.steps[{j}]: unknown model {st!r}")
+            name, variables = parse_step(st)
+            md = model_by_name(model, name) if name in mnames else None
+            if md is None:
+                errors.append(f"{where}.steps[{j}]: unknown model {name!r}")
+                continue
+            own = [v.get("name") for v in md.get("variables", [])]
+            if variables is not None:
+                if not variables or len(set(variables)) != len(variables):
+                    errors.append(f"{where}.steps[{j}]: model/variables expected (each variable once)")
+                for v in variables:
+                    if v not in own:
+                        errors.append(f"{where}.steps[{j}]: model {name!r} has no variable {v!r}")
+            solved.setdefault(name, set()).update(own if variables is None else variables)
+        for name, done in solved.items():
+            missing = [v.get("name") for v in model_by_name(model, name).get("variables", [])
+                       if v.get("name") not in done]
+            if missing:
+                errors.append(f"{where}.steps: the variable{'s' if len(missing) > 1 else ''} "
+                              f"{', '.join(map(repr, missing))} of {name!r} solved by no step")
+        steps = step_models(s)
         if s.get("type") == "transient":
             _validate_transient(model, s, where, steps, errors)
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
@@ -2147,7 +2198,7 @@ def _check_import_order(model, errors) -> None:
     """Each import must be computed before: by the order of the main solver,
     or inside a staggered loop."""
     solver = main_solver(model)
-    steps = solver.get("steps", [])
+    steps = step_models(solver)
     for k, md in enumerate(model.get("models", [])):
         for j, im in enumerate(md.get("imports", [])):
             src = im.get("model")
@@ -2257,6 +2308,15 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     for i, mod in enumerate(md.get("modules", [])):
         _validate_module(model, md, mod, f"{w}.modules[{i}]", table, dim, var_kinds, known_kinds,
                          errors, anchored)
+    # a property is a data of the model, shared by its modules: one definition (of those used)
+    first: dict[str, tuple[int, list]] = {}
+    for i, mod in enumerate(md.get("modules", [])):
+        for prop in used_properties(model, md, mod):
+            pieces = mod.get("properties", {}).get(prop)
+            if prop in first and first[prop][1] != pieces:
+                errors.append(f"{w}.modules[{i}].properties.{prop}: defined otherwise by module "
+                              f"{first[prop][0] + 1} ({prop} is a data of the model, shared by its modules)")
+            first.setdefault(prop, (i, pieces))
 
     # --- Terms
     tnames = [t.get("name") for t in md.get("terms", [])]
@@ -2369,6 +2429,15 @@ def _validate_graphics(graphics, where, errors) -> None:
         for key in g:
             if key not in ("name", "field") and key not in GRAPHIC_DEFAULTS:
                 errors.append(f"{w}.{key}: unknown setting")
+
+
+def used_properties(model: dict, md: dict, mod: dict) -> list[str]:
+    """The properties a module uses (given): its transient properties only in
+    time."""
+    spec = MODULE_SPECS.get(mod.get("type"), {})
+    timed = in_time(model, md, mod)
+    return [p for p in spec.get("properties", {}) if mod.get("properties", {}).get(p)
+            and (p not in spec.get("transient_properties", ()) or timed)]
 
 
 def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, errors, anchored) -> None:
@@ -2523,7 +2592,7 @@ def with_defaults(model: dict) -> dict:
             s.setdefault("save", {}).setdefault("every", 1)
             s.setdefault("time", {}).setdefault("start", 0.0)
             schemes = s.setdefault("schemes", {})
-            for name in s.get("steps", []):
+            for name in step_models(s):
                 md = model_by_name(m, name)
                 for u in timeable_variables(md) if md else []:
                     sc = schemes.setdefault(scheme_key(name, u), default_scheme(variable_order(md, u)))
