@@ -154,7 +154,9 @@ expansion.
 ## Solvers
 
 Local (`model.solver`): `auto` (linear if all the terms are, Newton
-otherwise), `newton` (`max_iter`, `max_res`), `linear`; later `transient`
+otherwise), `newton` (`max_iter`, `max_res`), `linear`; `linear_solver`
+(`auto`, `mumps`, `superlu`, `dense_lu`, `cg/ildlt`, `gmres/ilu`,
+`gmres/ilut`, `gmres/ilutp`); later `transient`
 (scheme, `dt`, `t_end`). A property given by an expression stays an
 expression (a GWFL macro), so that it may depend on the variables.
 

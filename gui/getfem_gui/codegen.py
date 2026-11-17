@@ -668,11 +668,21 @@ def write_pvd(name, series):
         f.write('</Collection>\\n</VTKFile>\\n')
 
 
-def solve(md, R, max_iter=50, max_res=1e-10, check_linear=True):
+def solve(md, R, max_iter=50, max_res=1e-10, check_linear=True, lsolver='auto'):
     """Solve a model and check the result (check_linear: the linear system);
-    R: its results entries."""
+    R: its results entries; lsolver: the solver of the linear systems."""
     t = time.perf_counter()
-    info = md.solve('max_iter', max_iter, 'max_res', max_res)
+    options = ['max_iter', max_iter, 'max_res', max_res]
+    if lsolver != 'auto':
+        if lsolver == 'mumps' and not gf.util_mumps_linked():
+            R.setdefault('warnings', []).append('MUMPS is not available in this GetFEM: SuperLU used')
+            lsolver = 'superlu'
+        options += ['lsolver', lsolver]
+        R['linear_solver'] = lsolver
+        if check_linear and lsolver.startswith(('cg/', 'gmres/')):
+            # a linear model: max_iter bounds the iterations of the linear solver itself
+            options[1] = max(max_iter, 10000)
+    info = md.solve(*options)
     R['nb_dofs'] = int(md.nbdof())
     R['iterations'] = int(info[0]) if isinstance(info, tuple) else None
     converged = bool(info[1]) if isinstance(info, tuple) and len(info) > 1 else True
@@ -684,6 +694,10 @@ def solve(md, R, max_iter=50, max_res=1e-10, check_linear=True):
         residual = np.linalg.norm(K.mult(U) - F) / max(np.linalg.norm(F), 1e-300)
         R['relative_residual'] = float(residual)
         if not residual < 1e-6:
+            if lsolver.startswith(('cg/', 'gmres/')):
+                raise RuntimeError(f'the iterative linear solver {lsolver} did not converge (relative '
+                                   f'residual {residual:.1e}): choose a direct one or another '
+                                   'preconditioner (CG: a symmetric positive definite system only)')
             raise RuntimeError(f'solve failed (relative residual {residual:.1e}): the system is '
                                'probably singular, check the boundary conditions')
     elif not converged:
@@ -722,6 +736,8 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
             args += f", max_iter={int(s['max_iter'])}"
         if s.get("max_res"):
             args += f", max_res={float(s['max_res'])!r}"
+        if s.get("linear_solver", "auto") != "auto":
+            args += f", lsolver={s['linear_solver']!r}"
         linear = "True" if s["type"] == "linear" else "False" if s["type"] == "newton" else f"LINEAR[{c.md['name']!r}]"
         if c.transient:                  # (the linear system checked at the first time step only)
             linear = f"{linear} and first_solve({c.md['name']!r})"

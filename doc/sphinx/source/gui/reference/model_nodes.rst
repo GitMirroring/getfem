@@ -211,6 +211,9 @@ Solver of a model
    * - Residual tolerance
      - ``max_res``
      - number or expression of parameters
+   * - Linear solver
+     - ``linear_solver``
+     - one of ``auto`` (automatic (GetFEM's choice)), ``mumps`` (MUMPS (direct, parallel; SuperLU if not available)), ``superlu`` (SuperLU (direct)), ``dense_lu`` (dense LU (direct, small systems only)), ``cg/ildlt`` (conjugate gradient, ILDLT preconditioner (iterative; symmetric positive definite)), ``gmres/ilu`` (GMRES, ILU preconditioner (iterative)), ``gmres/ilut`` (GMRES, ILUT preconditioner (iterative)), ``gmres/ilutp`` (GMRES, ILUTP preconditioner (iterative)). The solver of the linear systems (at each Newton iteration): automatic, GetFEM chooses (direct up to a size, then iterative); a direct one (MUMPS, SuperLU, dense LU) or an iterative one, with an incomplete factorization: CG for a symmetric positive definite system only (no multiplier, and a Dirichlet condition by simplification makes the system non symmetric), GMRES otherwise
 
 Output
 --------

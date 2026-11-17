@@ -176,6 +176,59 @@ def test_window():
         A.close(win)
 
 
+def test_linear_solvers():
+    """The solver of the linear systems of a model: each one gives the same
+    solution (the plate, its temperature by simplification, non symmetric:
+    the direct ones and GMRES, also for the elasticity; with convection only,
+    symmetric positive definite: CG too); MUMPS: SuperLU if not available;
+    editing."""
+    m = M.load(T.Path(__file__).resolve().parents[1] / "examples" / "plate.json")
+    md = m["models"][0]
+    f = next(x for x in E.fields(m, ("models", 0, "solver")) if x.label == "Linear solver")
+    assert E.field_value(m, f) == "auto" and "gmres/ilut" in dict(f.choices)
+    E.apply(m, f, "gmres/ilu")
+    assert md["solver"]["linear_solver"] == "gmres/ilu" and M.validate(m) == []
+    E.apply(m, f, "auto")
+    assert "linear_solver" not in md["solver"]
+    md["solver"]["linear_solver"] = "pardiso"
+    assert any("linear_solver: auto, mumps" in e for e in M.validate(m))
+    assert "lsolver" not in runner.export_script(M.load(T.Path(__file__).resolve().parents[1] / "examples"
+                                                        / "plate.json")).split("def _solver")[0].split(
+        "info = md.solve(*options)")[1][:200]          # (auto: GetFEM's choice, as before)
+    if not _getfem():
+        return
+    import getfem
+    examples = T.Path(__file__).resolve().parents[1] / "examples"
+    direct_gmres = [ls for ls in M.LINEAR_SOLVERS if ls != "cg/ildlt"]
+    for name, solvers in (("plate.json", [ls for ls in direct_gmres if ls != "gmres/ilutp"]),
+                          ("plate_hole_tension.json", direct_gmres),
+                          ("convection only", ["superlu", "cg/ildlt"])):
+        ref = None
+        for ls in solvers:
+            m = M.load(examples / ("plate.json" if name == "convection only" else name))
+            if name == "convection only":
+                m["models"][0]["modules"][0]["conditions"].pop(0)        # (the temperature imposed)
+            for mdl in m["models"]:
+                mdl.setdefault("solver", {})["linear_solver"] = ls
+            with tempfile.TemporaryDirectory() as tmp:
+                r = runner.run(m, tmp)
+            assert r.ok, (name, ls, r.error)
+            mr = next(iter(r.results["models"].values()))
+            q = {k: v for k, v in mr.items() if k.startswith("max_")}
+            if ref is None:
+                ref = q
+            assert all(abs(q[k] - ref[k]) <= 1e-6 * max(abs(ref[k]), 1e-12) for k in ref), (name, ls, q, ref)
+            if ls == "mumps" and not getfem.util_mumps_linked():
+                assert mr["linear_solver"] == "superlu" and any("MUMPS" in w for w in mr["warnings"])
+            elif ls != "auto":
+                assert mr["linear_solver"] == ls
+    m = M.load(examples / "plate.json")             # an iterative solver which does not converge: said so
+    m["models"][0]["solver"] = {"linear_solver": "cg/ildlt"}    # (a non symmetric system)
+    with tempfile.TemporaryDirectory() as tmp:
+        r = runner.run(m, tmp)
+    assert not r.ok and "the iterative linear solver cg/ildlt did not converge" in r.error, r.error
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

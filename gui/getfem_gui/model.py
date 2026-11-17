@@ -175,7 +175,8 @@ Models
               | true | false}; the terms of a model sum to zero (a source
               is written "-f*Test_u")
 - conditions: generic ones on a variable, see CONDITIONS
-- solver    : {"type": "auto" | "linear" | "newton", "max_iter", "max_res"}
+- solver    : {"type": "auto" | "linear" | "newton", "max_iter", "max_res",
+               "linear_solver": "auto" (GetFEM's choice) | LINEAR_SOLVERS}
 - outputs   : integrals {"name", "expr", "selection"}; "vtu": file name of
               the export (variables, module fields, fields), null for none
 - graphics  : saved views of the result fields, {"name", "field", and the
@@ -291,6 +292,18 @@ COORDINATES = ("x", "y", "z")
 
 FEMS = ("lagrange", "lagrange_discontinuous")
 SOLVER_TYPES = ("auto", "linear", "newton")
+# the solvers of the linear systems (GetFEM's lsolver); auto: GetFEM chooses (a direct one, MUMPS
+# or SuperLU, up to a size; then an iterative one); mumps: if this GetFEM has it, SuperLU otherwise
+LINEAR_SOLVERS = {
+    "auto": "automatic (GetFEM's choice)",
+    "mumps": "MUMPS (direct, parallel; SuperLU if not available)",
+    "superlu": "SuperLU (direct)",
+    "dense_lu": "dense LU (direct, small systems only)",
+    "cg/ildlt": "conjugate gradient, ILDLT preconditioner (iterative; symmetric positive definite)",
+    "gmres/ilu": "GMRES, ILU preconditioner (iterative)",
+    "gmres/ilut": "GMRES, ILUT preconditioner (iterative)",
+    "gmres/ilutp": "GMRES, ILUTP preconditioner (iterative)",
+}
 GLOBAL_SOLVERS = ("sequence", "staggered", "transient")
 COUPLINGS = ("sequence", "staggered")         # of the models at each time step
 # The time schemes of a variable with a time derivative: first order (Dot_u,
@@ -2441,6 +2454,9 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
         _check_int(s["max_iter"], 1, 10000, f"{w}.solver.max_iter", errors)
     if "max_res" in s:
         _check_positive(s["max_res"], f"{w}.solver.max_res", errors)
+    if s.get("linear_solver", "auto") not in LINEAR_SOLVERS:
+        errors.append(f"{w}.solver.linear_solver: {', '.join(LINEAR_SOLVERS)} expected, "
+                      f"got {s.get('linear_solver')!r}")
 
     # --- Outputs
     onames = [q.get("name") for q in md.get("outputs", [])]

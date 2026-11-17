@@ -125,6 +125,20 @@ residual :math:`|KU - F|/|F|` and stops with an explicit error when it
 exceeds :math:`10^{-6}` (a singular system); when the system is singular but
 compatible, it is solved, with a warning.
 
+The **linear solver** of a model solves its linear systems (the system of a
+linear model, the one of each Newton iteration otherwise): ``auto`` (GetFEM's
+choice: a direct solver up to a size, then an iterative one), a direct one
+(``mumps``, SuperLU if this GetFEM has no MUMPS, with a warning;
+``superlu``; ``dense_lu``, for small systems only) or an iterative one with
+an incomplete factorization as preconditioner (``cg/ildlt``,
+``gmres/ilu``, ``gmres/ilut``, ``gmres/ilutp``). The conjugate gradient
+requires a symmetric positive definite system: no multiplier, and no
+Dirichlet condition by simplification (it makes the system non
+symmetric). For a linear model, the maximum number of iterations of an
+iterative solver is at least 10000; when it does not reach the residual
+check above, the error says so (choose a direct solver or another
+preconditioner).
+
 Several models are solved by a global **solver**: ``sequence`` (in order),
 or ``staggered`` (iterated until the relative change of the variables is
 below a tolerance, with relaxation). A model takes a variable of another one

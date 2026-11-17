@@ -543,7 +543,9 @@ def _model_node(model: dict, k: int, md: dict) -> Node:
                                    "condition"))
     node.children.append(conds)
     s = md.get("solver", {})
-    node.children.append(Node(path + ("solver",), f"Solver ({s.get('type', 'auto')})", "solver"))
+    ls = s.get("linear_solver", "auto")
+    node.children.append(Node(path + ("solver",), f"Solver ({s.get('type', 'auto')}"
+                              + (f", {ls}" if ls != "auto" else "") + ")", "solver"))
     outs = Node(path + ("outputs",), "Outputs", "outputs")
     for i, q in enumerate(md.get("outputs", [])):
         outs.children.append(Node(path + ("outputs", i), q.get("name", "?"), "quantity"))
@@ -1278,6 +1280,12 @@ def _model_fields(model, path) -> list[Field]:
         if get_at(model, path + ("type",), "auto") != "linear":
             out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
                     Field(path + ("max_res",), "Residual tolerance", "number")]
+        out.append(Field(path + ("linear_solver",), "Linear solver", "choice", tuple(M.LINEAR_SOLVERS.items()),
+                         op="linear_solver", help="The solver of the linear systems (at each Newton iteration): "
+                         "automatic, GetFEM chooses (direct up to a size, then iterative); a direct one "
+                         "(MUMPS, SuperLU, dense LU) or an iterative one, with an incomplete factorization: CG "
+                         "for a symmetric positive definite system only (no multiplier, and a Dirichlet "
+                         "condition by simplification makes the system non symmetric), GMRES otherwise"))
         return out
     if head == "graphics":
         return [Field(path, "", "info", help="Saved views of the result fields, with their "
@@ -2319,6 +2327,8 @@ def field_value(model: dict, f: Field):
         return ",".join(str(i) for i in get_at(model, f.key, []))
     if f.op == "solver_start":
         return get_at(model, f.key, "initial")
+    if f.op == "linear_solver":
+        return get_at(model, f.key, "auto")
     if f.op in ("scheme_type", "scheme_param"):     # (the default scheme of the variable if not given)
         return M.scheme_with_defaults(get_at(model, f.key[:-1]) or _default_of(model, f.key[:-1])).get(f.key[-1])
     return get_at(model, f.key)
@@ -2479,6 +2489,13 @@ def _apply(model: dict, f: Field, value) -> Path | None:
             for pc in mod.get("properties", {}).get(prop, []):
                 if "value" in pc:
                     pc["value"] = to_matrix(pc["value"], dim) if value == tval else to_scalar(pc["value"])
+        return None
+    if f.op == "linear_solver":
+        s = get_at(model, key[:-1])
+        if value == "auto":
+            s.pop("linear_solver", None)       # (the default)
+        else:
+            s["linear_solver"] = value
         return None
     if f.op == "solver_start":
         s = get_at(model, key[:-1])
