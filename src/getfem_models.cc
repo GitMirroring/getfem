@@ -2472,8 +2472,10 @@ namespace getfem {
                                           complex_type(-alpha2)),
                               gmm::sub_vector(crhs, I2));
             }
+            // (a disabled variable is a data: its coupling terms go to the rhs)
             if (term.is_matrix_term && brick.pbr->is_linear()
-                && (!is_linear() || (version & BUILD_WITH_LIN))
+                && (!is_linear() || (version & BUILD_WITH_LIN)
+                    || (!isg && !var2->is_enabled()))
                 && var1->is_enabled())
               gmm::mult_add(brick.cmatlist[j],
                             gmm::scaled(var2->complex_value[0],
@@ -2491,7 +2493,8 @@ namespace getfem {
                                      complex_type(alpha2)),
                          gmm::sub_vector(crhs, I2));
               if (brick.pbr->is_linear()
-                  && (!is_linear() || (version & BUILD_WITH_LIN)))
+                  && (!is_linear() || (version & BUILD_WITH_LIN)
+                      || (!isg && !var1->is_enabled())))
                  gmm::mult_add(gmm::conjugated(brick.cmatlist[j]),
                                gmm::scaled(var1->complex_value[0],
                                            complex_type(-alpha2)),
@@ -2532,8 +2535,10 @@ namespace getfem {
                                           complex_type(-alpha2)),
                               gmm::sub_vector(crhs, I2));
             }
+            // (a disabled variable is a data: its coupling terms go to the rhs)
             if (term.is_matrix_term && brick.pbr->is_linear()
-                && (!is_linear() || (version & BUILD_WITH_LIN))
+                && (!is_linear() || (version & BUILD_WITH_LIN)
+                    || (!isg && !var2->is_enabled()))
                 && var1->is_enabled())
               gmm::mult_add(brick.rmatlist[j],
                             gmm::scaled(var2->complex_value[0],
@@ -2551,7 +2556,8 @@ namespace getfem {
                          gmm::sub_vector(crhs, I2));
 
               if (brick.pbr->is_linear()
-                  && (!is_linear() || (version & BUILD_WITH_LIN)))
+                  && (!is_linear() || (version & BUILD_WITH_LIN)
+                      || (!isg && !var1->is_enabled())))
                 gmm::mult_add(gmm::transposed(brick.rmatlist[j]),
                               gmm::scaled(var1->complex_value[0],
                                           complex_type(-alpha2)),
@@ -2583,7 +2589,9 @@ namespace getfem {
             if (var1->is_enabled()
                 && term.is_matrix_term && brick.pbr->is_linear()) {
               bool affine_contrib(is_linear() && var2->is_affine_dependent);
-              bool linear_contrib(!is_linear() || (version & BUILD_WITH_LIN));
+              // (a disabled variable is a data: its coupling terms go to the rhs)
+              bool linear_contrib(!is_linear() || (version & BUILD_WITH_LIN)
+                                  || (!isg && !var2->is_enabled()));
               const auto &matj = brick.rmatlist[j];
               const auto vec_affine2 = gmm::scaled(var2->affine_real_value,
                                                    -alpha1);
@@ -2619,7 +2627,8 @@ namespace getfem {
                          vec_out2);
               if (term.is_matrix_term && brick.pbr->is_linear()) {
                 bool affine_contrib(is_linear() && var1->is_affine_dependent);
-                bool linear_contrib(!is_linear() || (version & BUILD_WITH_LIN));
+                bool linear_contrib(!is_linear() || (version & BUILD_WITH_LIN)
+                                    || (!isg && !var1->is_enabled()));
                 const auto matj_trans = gmm::transposed(brick.rmatlist[j]);
                 const auto vec_affine1 = gmm::scaled(var1->affine_real_value,
                                                      -alpha2);
