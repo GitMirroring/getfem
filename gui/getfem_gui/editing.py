@@ -171,12 +171,17 @@ def unique_name(base: str, used) -> str:
     return f"{base}{i}"
 
 
-def shown_properties(mod: dict) -> list[str]:
+def _model_of(model: dict, mod: dict) -> dict:
+    """The model of a module."""
+    return next((md for md in model.get("models", []) if any(m is mod for m in md.get("modules", []))), {})
+
+
+def shown_properties(model: dict, mod: dict) -> list[str]:
     """The properties of a module in its form (those only needed in time if
     it is in time)."""
     spec = M.MODULE_SPECS.get(mod.get("type"), {})
     return [p for p in spec.get("properties", {})
-            if p not in spec.get("transient_properties", ()) or M.in_time(mod)]
+            if p not in spec.get("transient_properties", ()) or M.in_time(model, _model_of(model, mod), mod)]
 
 
 def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains) -> list[Field]:
@@ -184,7 +189,7 @@ def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains) -
     first), a value or a material; the domains of a property but the first one
     removable."""
     out = []
-    for p in shown_properties(mod):
+    for p in shown_properties(model, mod):
         label = spec["properties"][p]
         pieces = mod.get("properties", {}).get(p, [])
         mats = [m.get("name") for m in model.get("materials", []) if p in (m.get("properties") or {})]
@@ -237,29 +242,29 @@ def _source_fields(mod: dict, spec: dict, mpath: Path, domains, dim: int) -> lis
     return out
 
 
-def _solve_in_time(model: dict, md: dict) -> None:
-    """A model solved in time: the main solver made transient (created if
-    none: the models in the order of their imports), the model in it."""
-    if M.is_transient(model, md):
-        return
-    solvers = model.setdefault("solvers", [])
-    if not solvers:
-        s = dict(M.main_solver(model))
-        s = {"name": "main", "type": "transient", "steps": list(s.get("steps", []))}
-        solvers.insert(0, s)
-    s = solvers[0]
-    if md["name"] not in s.setdefault("steps", []):
-        s["steps"].append(md["name"])
-    if s.get("type") != "transient":
-        coupling = s.get("type", "sequence")
-        s["type"] = "transient"
-        s["coupling"] = coupling if coupling in M.COUPLINGS else "sequence"
-    s.setdefault("time", {"start": 0.0, "end": 1.0, "step": 0.1})
-    s.setdefault("save", {"every": 1})
-    s.setdefault("coupling", "sequence")
+def _fill_schemes(model: dict, s: dict) -> None:
+    """A transient solver: a time scheme for each variable of its models
+    which may have a time derivative (implicit Euler if none yet); the
+    transient properties (rho, cp) given to the modules then in time."""
     schemes = s.setdefault("schemes", {})
-    for name in s["steps"]:
-        schemes.setdefault(name, {"type": "theta", "theta": 1.0})
+    for name in s.get("steps", []):
+        md = M.model_by_name(model, name)
+        for u in M.timeable_variables(md) if md else []:
+            schemes.setdefault(M.scheme_key(name, u), dict(M.DEFAULT_SCHEME))
+    _time_properties(model)
+
+
+def _time_properties(model: dict) -> None:
+    """The transient properties (rho, cp) of the modules in time: a default
+    value where missing."""
+    for md in model.get("models", []):
+        for mod in md.get("modules", []):
+            if M.in_time(model, md, mod):
+                spec = M.MODULE_SPECS[mod["type"]]
+                props = mod.setdefault("properties", {})
+                for p in spec.get("transient_properties", ()):
+                    if not props.get(p):
+                        props[p] = [{"selection": M.ALL, "value": spec["property_defaults"].get(p, 1.0)}]
 
 
 def _choices(names) -> tuple:
@@ -1108,11 +1113,6 @@ def _model_fields(model, path) -> list[Field]:
                                  tuple((x, f"plane {x}" if opt == "plane" else x) for x in values)))
             for key, kind in spec.get("values", {}).items():
                 out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
-            if spec.get("inertia"):
-                out.append(Field(mpath + ("transient",), "In time", "bool", op="module_transient",
-                                 help="Solved in time (with its time derivative), by a transient solver "
-                                      "(one is set up when checked); unchecked: stationary (at each time "
-                                      "step, in a transient solver)"))
             from . import equations
             out.append(Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod)))
             out += _property_fields(model, mod, spec, mpath, domains)
@@ -1472,7 +1472,7 @@ def fields(model: dict, path: Path) -> list[Field]:
                      (("sequence", "sequence"), ("staggered", "staggered iterations"),
                       ("transient", "transient (in time)")), op="solver_type"),
                Field(path + ("steps",), "Models, in order", "names",
-                     _choices(m.get("name") for m in model.get("models", [])))]
+                     _choices(m.get("name") for m in model.get("models", [])), op="solver_steps")]
         if s.get("type") == "transient":
             out += [Field(path + ("time", "start"), "Start time", "value"),
                     Field(path + ("time", "end"), "End time", "value"),
@@ -1482,13 +1482,24 @@ def fields(model: dict, path: Path) -> list[Field]:
                           (("sequence", "the models in turn"), ("staggered", "staggered iterations")),
                           op="solver_type")]
             for name in s.get("steps", []):
-                out.append(Field(path + ("schemes", name, "theta"), f"Theta of {name}", "number",
-                                 help="The theta-method: 1, implicit Euler (robust, first order); 0.5, "
-                                      "Crank-Nicolson (second order, may oscillate)"))
+                md = M.model_by_name(model, name)
+                for u in M.timeable_variables(md) if md else []:
+                    key = M.scheme_key(name, u)
+                    sc = s.get("schemes", {}).get(key) or M.DEFAULT_SCHEME
+                    out.append(Field(path + ("schemes", key, "type"), f"Scheme of {u} ({name})", "choice",
+                                     tuple(M.SCHEMES.items()), op="scheme_type",
+                                     help="The time scheme of the variable: stationary (no time derivative, "
+                                          "the equation solved at each time), theta-method or BDF2"))
+                    if sc.get("type", "theta") == "theta":
+                        out.append(Field(path + ("schemes", key, "theta"), f"Theta of {u}", "number",
+                                         op="scheme_theta", help="The theta-method: 1, implicit Euler (robust, first order); "
+                                              "0.5, Crank-Nicolson (second order, may oscillate)"))
             out.append(Field(path, "", "info", help="At each time step, the models are solved in turn (or "
-                             "by staggered iterations); the time t may appear in the expressions, Dot_T is "
-                             "the time derivative of T. The variables start from their initial value; the "
-                             "results are saved every few steps (a VTU file each, a .pvd collection)."))
+                             "by staggered iterations), every equation written at the new time; the scheme "
+                             "of each variable in time gives its time derivative (Dot_T for T) from its "
+                             "value and the previous ones; the time t may appear in the expressions. The "
+                             "variables start from their initial value; the results are saved every few "
+                             "steps (a VTU file each, a .pvd collection)."))
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
             out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
                     Field(path + ("tolerance",), "Tolerance (relative change)", "number"),
@@ -2193,6 +2204,8 @@ def field_value(model: dict, f: Field):
         return get_at(model, f.key, "linear")
     if f.op == "constraint_shape":
         return ",".join(str(i) for i in get_at(model, f.key, []))
+    if f.op in ("scheme_type", "scheme_theta"):    # (implicit Euler if not given)
+        return (get_at(model, f.key[:-1]) or M.DEFAULT_SCHEME).get(f.key[-1], 1.0)
     return get_at(model, f.key)
 
 
@@ -2310,16 +2323,22 @@ def apply(model: dict, f: Field, value) -> Path | None:
     if f.op == "first_source":               # the first source of a module: on the whole domain
         get_at(model, key[:-1])["sources"] = [{"selection": M.ALL, "value": value}]
         return None
-    if f.op == "module_transient":           # in time: a transient solver for its model, rho and cp
-        mod = get_at(model, key[:-1])
-        mod["transient"] = bool(value)
-        if value:
-            md = model["models"][key[1]]
-            _solve_in_time(model, md)
-            spec = M.MODULE_SPECS[mod["type"]]
-            for p in spec.get("transient_properties", ()):
-                if not mod["properties"].get(p):
-                    mod["properties"][p] = [{"selection": "all", "value": spec["property_defaults"].get(p, 1.0)}]
+    if f.op == "scheme_type":                # the scheme of a variable: theta given, rho and cp if in time
+        sc = get_at(model, key[:-2]).setdefault(key[-2], {})
+        sc.clear()
+        sc["type"] = value
+        if value == "theta":
+            sc["theta"] = 1.0
+        _time_properties(model)
+        return None
+    if f.op == "scheme_theta":
+        get_at(model, key[:-2]).setdefault(key[-2], dict(M.DEFAULT_SCHEME))["theta"] = value
+        return None
+    if f.op == "solver_steps":               # its models; in time: the schemes of their variables
+        s = get_at(model, key[:-1])
+        s["steps"] = list(value)
+        if s.get("type") == "transient":
+            _fill_schemes(model, s)
         return None
     if f.op == "solver_type":                # its type or its coupling; in time: its settings
         s = get_at(model, key[:-1])
@@ -2328,9 +2347,7 @@ def apply(model: dict, f: Field, value) -> Path | None:
             s.setdefault("time", {"start": 0.0, "end": 1.0, "step": 0.1})
             s.setdefault("save", {"every": 1})
             s.setdefault("coupling", "sequence")
-            s.setdefault("schemes", {})
-            for name in s.get("steps", []):
-                s["schemes"].setdefault(name, {"type": "theta", "theta": 1.0})
+            _fill_schemes(model, s)
         else:
             for k in ("time", "save", "coupling", "schemes"):
                 s.pop(k, None)
@@ -2440,6 +2457,10 @@ def apply(model: dict, f: Field, value) -> Path | None:
                     for im in other.get("imports", []):
                         if im.get("model") == md.get("name") and im.get("variable") == old:
                             im["variable"] = value
+                for s in model.get("solvers", []):              # its time schemes
+                    schemes = s.get("schemes", {})
+                    if M.scheme_key(md.get("name"), old) in schemes:
+                        schemes[M.scheme_key(md.get("name"), value)] = schemes.pop(M.scheme_key(md.get("name"), old))
     elif f.op == "rename_mesh":
         old = get_at(model, key)
         set_at(model, key, value)
@@ -2456,8 +2477,8 @@ def apply(model: dict, f: Field, value) -> Path | None:
                     im["model"] = value
         for s in model.get("solvers", []):
             s["steps"] = [value if x == old else x for x in s.get("steps", [])]
-            if old in s.get("schemes", {}):
-                s["schemes"][value] = s["schemes"].pop(old)
+            for k in [k for k in s.get("schemes", {}) if k.partition("/")[0] == old]:
+                s["schemes"][M.scheme_key(value, k.partition("/")[2])] = s["schemes"].pop(k)
     elif f.op == "rename_material":
         old = get_at(model, key)
         set_at(model, key, value)
@@ -2853,7 +2874,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out.append(("add_graphic", "Add a graphic"))
     elif rest[:1] == ("modules",) and len(rest) == 2:
         spec = M.MODULE_SPECS.get(get_at(model, path + ("type",)), {})
-        out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(get_at(model, path))]
+        out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(model, get_at(model, path))]
         if spec.get("source") is not None:
             out.append(("add_source", "Add a domain for f"))
         if spec.get("conditions"):

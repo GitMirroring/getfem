@@ -370,7 +370,10 @@ def _sample_model() -> dict:
     second["imports"] = [{"name": "T", "model": "heat", "variable": "T"}]
     m["models"].append(second)
     m["solvers"] = [{"name": "main", "type": "staggered", "steps": ["heat", "other"], "max_iter": 20,
-                     "tolerance": 1e-6, "relaxation": 1}]
+                     "tolerance": 1e-6, "relaxation": 1},
+                    {"name": "in_time", "type": "transient", "steps": ["heat", "other"],
+                     "time": {"start": 0, "end": 1, "step": 0.1}, "save": {"every": 1}, "coupling": "sequence",
+                     "schemes": {"heat/T": {"type": "theta", "theta": 1}, "other/S": {"type": "stationary"}}}]
     return m
 
 
@@ -394,6 +397,7 @@ def model_nodes() -> str:
         ("Material", ("materials", 0)),
         ("Field", ("fields", 0)),
         ("Global solver", ("solvers", 0)),
+        ("Transient global solver", ("solvers", 1)),
     ]
     for title, path in cases:
         out += _title(title, "-") + _fields_doc(m, path)

@@ -51,21 +51,22 @@ def _time(model: dict, md: dict, mod: dict) -> str:
     if not M.MODULE_SPECS.get(mod.get("type"), {}).get("inertia"):
         return ""
     s = M.main_solver(model)
-    if M.in_time(mod) and M.is_transient(model, md):
+    where = " (its time scheme is chosen in the solver)"
+    if M.in_time(model, md, mod):
         t = s.get("time", {})
-        theta = s.get("schemes", {}).get(md.get("name"), {}).get("theta", 1)
+        sc = M.scheme_of(model, md, M.inertia_variable(mod))
         return (f"<p><b>In time</b>, by the solver {html.escape(s['name'])}: from t = {_v(t.get('start', 0))} "
-                f"to {_v(t.get('end'))}, step {_v(t.get('step'))}, θ-method θ = {_v(theta)}; "
-                f"from the initial value of the variable.</p>")
+                f"to {_v(t.get('end'))}, step {_v(t.get('step'))}, {html.escape(M.scheme_label(sc))}; "
+                f"from the initial value of the variable{where}.</p>")
     if M.is_transient(model, md):
         return (f"<p><b>Stationary</b> at each time step of the solver {html.escape(s['name'])} "
-                "(quasi-static: no time derivative).</p>")
-    return "<p><b>Stationary.</b></p>"
+                f"(quasi-static: no time derivative){where}.</p>")
+    return "<p><b>Stationary</b> (a transient global solver solves in time).</p>"
 
 
 def _heat(model: dict, md: dict, mod: dict) -> str:
     T = html.escape(mod.get("variable", "T"))
-    timed = M.in_time(mod) and M.is_transient(model, md)
+    timed = M.in_time(model, md, mod)
     lhs = f"ρ c<sub>p</sub> ∂{T}/∂t − " if timed else "−"
     k = "k" if mod.get("conductivity", "isotropic") == "isotropic" else "K"
     return _time(model, md, mod) + _block([f"{lhs}{DIV}({k} {NABLA}{T}) = f &nbsp; in Ω"])
@@ -117,7 +118,7 @@ def gwfl_terms(model: dict, md_index: int, mod_index: int) -> list[str]:
         declare(c, mod, mod_index + 1, w)
         setup(c, mod, mod_index + 1, w)
         inertia = M.MODULE_SPECS[mod["type"]].get("inertia")
-        if inertia and c.transient and M.in_time(mod):
+        if inertia and c.transient and M.in_time(r, r["models"][md_index], mod):
             u = mod[inertia["variable"]]
             w(f"# Time derivative (Dot_{u}: by the scheme)")
             w(f"add_term(md, mim, {inertia['expr'].replace('{u}', u)!r})")

@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from getfem_gui import codegen, editing as E, model as M, runner  # noqa: E402
 
 
-def bar(end=0.1, step=0.01, theta=1.0, n=40, every=1):
+def bar(end=0.1, step=0.01, theta=1.0, n=40, every=1, scheme=None):
     """A bar [0, 1], its ends at 0, from sin(pi x): T = exp(-pi^2 t) sin(pi x)."""
     m = M.default_model()
     m["geometries"][0]["source"] = {"type": "box", "origin": [0], "size": [1]}
@@ -43,13 +43,12 @@ def bar(end=0.1, step=0.01, theta=1.0, n=40, every=1):
     md = m["models"][0]
     md["variables"][0]["initial"] = "sin(pi*x)"
     mod = md["modules"][0]
-    mod["transient"] = True
     mod["conditions"] = [{"type": "temperature", "selection": "boundary", "value": 0}]
     mod["properties"].update(rho=[{"selection": "all", "value": 2.0}], cp=[{"selection": "all", "value": 0.5}])
     md["outputs"] = [{"name": "mean", "expr": "T", "selection": "all"}]
     m["solvers"] = [{"name": "main", "type": "transient", "steps": [md["name"]],
                      "time": {"end": end, "step": step}, "save": {"every": every},
-                     "schemes": {md["name"]: {"type": "theta", "theta": theta}}}]
+                     "schemes": {"heat/T": scheme or {"type": "theta", "theta": theta}}}]
     return m
 
 
@@ -71,22 +70,23 @@ def test_validation():
                         ({"time": {"end": 1, "step": "dt"}}, "unknown parameter 'dt'"),
                         ({"coupling": "monolithic"}, "sequence, staggered expected"),
                         ({"save": {"every": 0}}, "save.every"),
-                        ({"schemes": {"heat": {"theta": 0}}}, "number in ]0, 1] expected"),
-                        ({"schemes": {"heat": {"type": "bdf"}}}, "theta expected")]:
+                        ({"schemes": {"heat/T": {"theta": 0}}}, "number in ]0, 1] expected"),
+                        ({"schemes": {"heat/T": {"type": "bdf"}}}, "stationary, theta, bdf2 expected")]:
         m2 = bar()
         m2["solvers"][0].update(change)
         assert any(msg in e for e in M.validate(m2)), (msg, M.validate(m2))
     m2 = bar()                                   # the density is needed in time
     del m2["models"][0]["modules"][0]["properties"]["rho"]
     assert any("missing density" in e and "needed in time" in e for e in M.validate(m2))
-    m2["solvers"] = []                           # in time: a transient solver needed
-    assert any("not solved by a transient solver" in e for e in M.validate(m2))
-    m2["models"][0]["modules"][0]["transient"] = False          # stationary: no density needed
-    assert M.validate(m2) == []
-    m2 = bar()                                   # stationary in a transient solver: quasi-static
-    m2["models"][0]["modules"][0]["transient"] = False
+    m2["solvers"] = []                           # no transient solver: stationary, no density needed
+    assert M.validate(m2) == [] and M.time_variables(m2, m2["models"][0]) == []
+    m2 = bar(scheme={"type": "stationary"})      # stationary in a transient solver: quasi-static
     del m2["models"][0]["modules"][0]["properties"]["rho"]
-    assert M.validate(m2) == [] and M.time_variables(m2["models"][0]) == []
+    assert M.validate(m2) == [] and M.time_variables(m2, m2["models"][0]) == []
+    m2 = bar()                                   # no scheme given: implicit Euler
+    m2["solvers"][0]["schemes"] = {"other/T": {"type": "bdf"}}       # (an unknown model: ignored)
+    md = m2["models"][0]
+    assert M.validate(m2) == [] and M.scheme_of(m2, md, "T") == M.DEFAULT_SCHEME
     m2 = bar()
     m2["parameters"] = [{"name": "dt", "value": 0.02}]
     s = m2["solvers"][0]
@@ -115,6 +115,83 @@ def test_theta_method():
     assert 1.8 < e1 / e2 < 2.2
     c1, c2 = _error(0.5, 0.02), _error(0.5, 0.01)
     assert 3.5 < c1 / c2 < 4.5 and c2 < e2 / 20
+
+
+def test_bdf2():
+    """BDF2 (its first step by Crank-Nicolson): second order, as accurate as
+    Crank-Nicolson here; its coefficients after the first step."""
+    try:
+        import getfem  # noqa: F401
+    except ImportError:
+        return
+    errors = []
+    for step in (0.02, 0.01):
+        results, _ = run(bar(end=0.1, step=step, n=60, scheme={"type": "bdf2"}))
+        S = results["models"]["heat"]["series"]
+        errors.append(abs(S["mean"][-1] - 2 / np.pi * np.exp(-np.pi ** 2 * 0.1)))
+    assert 3.5 < errors[0] / errors[1] < 4.5 and errors[1] < _error(1.0, 0.01) / 10
+    text = runner.export_script(bar(scheme={"type": "bdf2"}))
+    assert "md_heat.add_initialized_data('T__scheme', [2.0, -2.0, 0.0, -1.0])" in text       # Crank-Nicolson
+    assert "md_heat.set_variable('T__scheme', [1.5, -2.0, 0.5, 0.0])" in text               # then BDF2
+    assert "md_heat.add_macro('Dot_T', '(T__scheme(1)*T + T__scheme(2)*T__prev + T__scheme(3)*T__prev2)" \
+        "/timestep + T__scheme(4)*T__rate')" in text
+    assert M.scheme_coefficients({"type": "theta", "theta": 0.5}) == M.scheme_coefficients({"type": "bdf2"}, True)
+
+
+def test_schemes_per_variable():
+    """A scheme per variable: T in time (BDF2), S stationary at each time
+    (-div(grad S) = T, T imported: quasi-static, following T)."""
+    try:
+        import getfem  # noqa: F401
+    except ImportError:
+        return
+    m = bar(end=0.1, step=0.02, scheme={"type": "bdf2"})
+    second = copy.deepcopy(m["models"][0])
+    second.update(name="second", imports=[{"name": "Ta", "model": "heat", "variable": "T"}])
+    second["variables"][0].update(name="S", initial=0)
+    mod = second["modules"][0]
+    mod.update(variable="S", sources=[{"selection": "all", "value": "Ta"}])
+    mod["conditions"][0]["selection"] = "boundary"
+    for p in ("rho", "cp"):
+        del mod["properties"][p]
+    second["outputs"] = [{"name": "mean_S", "expr": "S", "selection": "all"}]
+    m["models"].append(second)
+    s = m["solvers"][0]
+    s["steps"].append("second")
+    s["schemes"]["second/S"] = {"type": "stationary"}
+    assert M.validate(m) == [] and M.time_variables(m, second) == [] and not M.in_time(m, second, mod)
+    assert M.time_variables(m, m["models"][0]) == ["T"]
+    results, _ = run(m)
+    T, S = results["models"]["heat"]["series"], results["models"]["second"]["series"]
+    ratio = np.array(S["mean_S"]) / np.array(T["mean"])         # S = T / pi^2 at each time
+    assert np.allclose(ratio[1:], 1 / np.pi ** 2, rtol=1e-3), ratio
+    text = runner.export_script(m)
+    assert "S__scheme" not in text and "Dot_S" not in text and "rho*cp*Dot_T*Test_T" in text
+
+
+def test_upgrade():
+    """The earlier form: one scheme per model, the modules "transient" or
+    not; made one scheme per variable on loading."""
+    m = bar(theta=0.5)
+    s = m["solvers"][0]
+    s["schemes"] = {"heat": {"type": "theta", "theta": 0.5}}
+    m["models"][0]["modules"][0]["transient"] = True
+    other = copy.deepcopy(m["models"][0])
+    other["name"] = "other"
+    other["modules"][0]["transient"] = False
+    m["models"].append(other)
+    s["steps"].append("other")
+    assert M.upgrade_schemes(m)
+    assert s["schemes"] == {"heat/T": {"type": "theta", "theta": 0.5}, "other/T": {"type": "stationary"}}
+    assert all("transient" not in mod for md in m["models"] for mod in md["modules"])
+    assert not M.upgrade_schemes(m) and M.validate(m) == []
+    with tempfile.TemporaryDirectory() as tmp:                     # on loading
+        old = bar()
+        old["solvers"][0]["schemes"] = {"heat": {"type": "theta", "theta": 1.0}}
+        old["models"][0]["modules"][0]["transient"] = True
+        M.save(old, Path(tmp) / "old.json")
+        new = M.load(Path(tmp) / "old.json")
+        assert new["solvers"][0]["schemes"] == {"heat/T": {"type": "theta", "theta": 1.0}}
 
 
 def test_series_and_files():
@@ -193,18 +270,36 @@ def test_editing():
     f = next(x for x in E.fields(m, path) if x.key[-1] == "type")
     E.apply(m, f, "transient")
     s = E.get_at(m, path)
-    assert s["time"] == {"start": 0.0, "end": 1.0, "step": 0.1} and s["schemes"] == {"heat": {"type": "theta",
-                                                                                           "theta": 1.0}}
+    assert s["time"] == {"start": 0.0, "end": 1.0, "step": 0.1} and s["schemes"] == {"heat/T": {"type": "theta",
+                                                                                             "theta": 1.0}}
     assert M.validate(m) == []
     labels = [x.label for x in E.fields(m, path)]
     assert {"Start time", "End time", "Time step", "Save every (steps)", "Coupling at each step",
-            "Theta of heat"} <= set(labels)
+            "Scheme of T (heat)", "Theta of T"} <= set(labels)
+    f = next(x for x in E.fields(m, path) if x.label == "Scheme of T (heat)")
+    assert E.field_value(m, f) == "theta" and dict(f.choices)["bdf2"].startswith("BDF2")
+    E.apply(m, f, "bdf2")
+    assert s["schemes"]["heat/T"] == {"type": "bdf2"} and "Theta of T" not in [x.label for x in E.fields(m, path)]
+    E.apply(m, f, "stationary")                  # (no density needed then)
+    assert M.time_variables(m, m["models"][0]) == [] and M.validate(m) == []
+    E.apply(m, f, "theta")
+    assert s["schemes"]["heat/T"] == {"type": "theta", "theta": 1.0}
+    f = next(x for x in E.fields(m, path) if x.label == "Theta of T")
+    E.apply(m, f, 0.5)
+    assert s["schemes"]["heat/T"]["theta"] == 0.5 and E.field_value(m, f) == 0.5
     f = next(x for x in E.fields(m, path) if x.key[-1] == "coupling")
     E.apply(m, f, "staggered")
     assert s["max_iter"] == 20 and "Maximum iterations" in [x.label for x in E.fields(m, path)]
     f = next(x for x in E.fields(m, ("models", 0)) if x.key[-1] == "name")
     E.apply(m, f, "thermal")
-    assert s["steps"] == ["thermal"] and "thermal" in s["schemes"] and M.validate(m) == []
+    assert s["steps"] == ["thermal"] and s["schemes"] == {"thermal/T": {"type": "theta", "theta": 0.5}}
+    f = next(x for x in E.fields(m, ("models", 0, "variables", 0)) if x.key[-1] == "name")
+    E.apply(m, f, "Temp")                        # the rename of a variable followed
+    assert s["schemes"] == {"thermal/Temp": {"type": "theta", "theta": 0.5}} and M.validate(m) == []
+    m["models"].append(M.new_model("other", "mesh", "heat_conduction"))
+    f = next(x for x in E.fields(m, path) if x.key[-1] == "steps")
+    E.apply(m, f, ["thermal", "other"])          # a model added: its variables in time (rho, cp given)
+    assert s["schemes"]["other/T"] == {"type": "theta", "theta": 1.0} and M.validate(m) == []
     f = next(x for x in E.fields(m, path) if x.key[-1] == "type")
     E.apply(m, f, "sequence")
     assert "time" not in s and "schemes" not in s
@@ -286,38 +381,35 @@ def test_window():
 
 
 def test_module_form():
-    """The form of a module: In time (checked: a transient solver set up, rho
-    and cp given; unchecked: stationary, quasi-static), the equation solved
-    and its data, the GWFL terms of the script."""
+    """The form of a module: no In time box (the scheme is chosen in the
+    transient solver), the equation solved and where it stands in time
+    (stationary, in time and its scheme, quasi-static), its data, the GWFL
+    terms of the script."""
     from getfem_gui import equations
     m = M.default_model()
     path = ("models", 0, "modules", 0)
     fields = {f.label: f for f in E.fields(m, path)}
-    assert fields["In time"].kind == "bool" and not E.field_value(m, fields["In time"])
+    assert "In time" not in fields
     eq = fields["Equation"].help
-    assert "<b>Stationary.</b>" in eq and "−div(k ∇T) = f" in eq and "xmin" not in eq     # (no conditions)
+    assert "<b>Stationary</b> (a transient global solver" in eq and "−div(k ∇T) = f" in eq and "xmin" not in eq
     assert "rho (density)" not in fields and E.field_value(m, fields["k (thermal conductivity)"]) == 1.0
     terms = fields["GWFL terms of the script"].help.splitlines()
     assert "k*Grad_T.Grad_Test_T" in terms and not any("xmin" in x for x in terms)    # (no conditions)
-    E.apply(m, fields["In time"], True)
-    s = m["solvers"][0]
-    assert s["type"] == "transient" and s["steps"] == ["heat"] and M.validate(m) == []
+    path_s = E.do_action(m, ("solvers",), "add_solver")         # in time: by a transient solver
+    E.apply(m, next(x for x in E.fields(m, path_s) if x.key[-1] == "type"), "transient")
+    assert M.validate(m) == []
     fields = {f.label: f for f in E.fields(m, path)}
     assert "ρ c<sub>p</sub> ∂T/∂t − div(k ∇T) = f" in fields["Equation"].help
-    assert "by the solver main: from t = 0 to 1, step 0.1" in fields["Equation"].help
+    assert "from t = 0 to 1, step 0.1, implicit Euler" in fields["Equation"].help
     assert {"rho (density)", "cp (specific heat capacity)"} <= set(fields)
     assert fields["GWFL terms of the script"].help.splitlines()[-1] == "rho*cp*Dot_T*Test_T"
-    E.apply(m, fields["In time"], False)
+    f = next(x for x in E.fields(m, path_s) if x.label == "Scheme of T (heat)")
+    E.apply(m, f, "bdf2")
+    assert "step 0.1, BDF2" in equations.equation(m, m["models"][0], m["models"][0]["modules"][0])
+    E.apply(m, f, "stationary")
     assert M.validate(m) == [] and "quasi-static" in equations.equation(m, m["models"][0],
                                                                         m["models"][0]["modules"][0])
-    m2 = M.default_model()                       # a sequence: made transient, its coupling kept
-    m2["models"].append(M.new_model("other", "mesh", "heat_conduction"))
-    m2["solvers"] = [{"name": "chain", "type": "staggered", "steps": ["heat"], "max_iter": 5,
-                      "tolerance": 1e-6, "relaxation": 1.0}]
-    f = next(x for x in E.fields(m2, ("models", 1, "modules", 0)) if x.label == "In time")
-    E.apply(m2, f, True)
-    s = m2["solvers"][0]
-    assert s["type"] == "transient" and s["coupling"] == "staggered" and s["steps"] == ["heat", "other"]
+    assert "rho (density)" not in {f.label for f in E.fields(m, path)}
 
 
 if __name__ == "__main__":

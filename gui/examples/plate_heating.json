@@ -25,7 +25,6 @@
         {
           "type": "heat_conduction",
           "variable": "T",
-          "transient": true,
           "conductivity": "isotropic",
           "properties": {
             "k": [{"selection": "all", "material": "aluminium"}],
@@ -51,6 +50,6 @@
   "solvers": [
     {"name": "heating", "type": "transient", "steps": ["heat"],
      "time": {"start": 0, "end": 60, "step": 1}, "save": {"every": 5},
-     "schemes": {"heat": {"type": "theta", "theta": 1}}}
+     "schemes": {"heat/T": {"type": "bdf2"}}}
   ]
 }

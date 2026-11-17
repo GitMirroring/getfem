@@ -93,9 +93,6 @@ Module
    * - Conductivity
      - ``conductivity``
      - one of ``isotropic``, ``anisotropic``
-   * - In time
-     - ``transient``
-     - true or false. Solved in time (with its time derivative), by a transient solver (one is set up when checked); unchecked: stationary (at each time step, in a transient solver)
    * - k (thermal conductivity)
      - ``properties.k.0``
      - one of ``value`` (a value), ``material:steel`` (material steel). thermal conductivity
@@ -332,3 +329,49 @@ Global solver
    * - Relaxation
      - ``relaxation``
      - number or expression of parameters
+
+Transient global solver
+-----------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Name
+     - ``name``
+     - name
+   * - Type
+     - ``type``
+     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))
+   * - Models, in order
+     - ``steps``
+     - list of names
+   * - Start time
+     - ``time.start``
+     - number or GWFL expression
+   * - End time
+     - ``time.end``
+     - number or GWFL expression
+   * - Time step
+     - ``time.step``
+     - number or GWFL expression
+   * - Save every (steps)
+     - ``save.every``
+     - integer
+   * - Coupling at each step
+     - ``coupling``
+     - one of ``sequence`` (the models in turn), ``staggered`` (staggered iterations)
+   * - Scheme of T (heat)
+     - ``schemes.heat/T.type``
+     - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), theta-method or BDF2
+   * - Theta of T
+     - ``schemes.heat/T.theta``
+     - number or expression of parameters. The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson (second order, may oscillate)
+   * - Scheme of S (other)
+     - ``schemes.other/S.type``
+     - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), theta-method or BDF2
+
+At each time step, the models are solved in turn (or by staggered iterations), every equation written at the new time; the scheme of each variable in time gives its time derivative (Dot\_T for T) from its value and the previous ones; the time t may appear in the expressions. The variables start from their initial value; the results are saved every few steps (a VTU file each, a .pvd collection).

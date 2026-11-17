@@ -181,7 +181,8 @@ def check_script(model: dict, items: list[dict]) -> str:
                 w(f"md.add_initialized_fem_data({name!r}, mf{i}, np.zeros(mf{i}.nbdof()))")
         codegen.coordinates(w, "md", dim)
         if M.is_transient(model, md):
-            c.transient, c.scheme = True, M.main_solver(model)["schemes"][md["name"]]
+            c.transient = True
+            c.schemes = {u: M.scheme_of(model, md, u) for u in M.time_variables(model, md)}
         codegen.time_declarations(c, w)
         codegen.parameters(model, md, w, "md")
         w("# fields and properties: their names, with a representative value")

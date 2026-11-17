@@ -98,7 +98,7 @@ class Ctx:
     py: str                       # Python name of the gf.Model ("md_thermal")
     mfs: dict = field(default_factory=dict)      # variable/import name -> Python name of its MeshFem
     transient: bool = False       # solved in time (by the main solver)
-    scheme: dict = field(default_factory=dict)   # its time scheme ({"type": "theta", "theta": 1})
+    schemes: dict = field(default_factory=dict)  # variable in time -> its time scheme
     t0: float = 0.0               # the time at the start
     timed: list = field(default_factory=list)    # data depending on t: (name, mf, GWFL expression)
 
@@ -465,7 +465,7 @@ def contexts(model: dict) -> list[Ctx]:
         if M.is_transient(model, md):
             solver = M.main_solver(model)
             c.transient = True
-            c.scheme = solver["schemes"][md["name"]]
+            c.schemes = {u: M.scheme_of(model, md, u) for u in M.time_variables(model, md)}
             c.t0 = M.time_values(model, solver)[0]
         for v in md["variables"]:
             c.mfs[v["name"]] = fem_name(fem_key(model, v, c.dim))
@@ -478,9 +478,11 @@ def contexts(model: dict) -> list[Ctx]:
 
 def time_declarations(c: Ctx, w: ScriptWriter) -> None:
     """In time: the time t of the GWFL expressions (its start value; 0 for
-    a stationary model), the time step and the scheme of each variable with
-    a time derivative:
-    Dot_u from u and the previous values (Previous_u, Previous_Dot_u)."""
+    a stationary model), the time step and the scheme of each variable in
+    time: Dot_u from u and the previous values (Previous_u, Previous_Dot_u,
+    u__prev2 for BDF2), Dot_u = (c0 u + c1 u_n + c2 u_{n-1})/dt + c3 Dot_u_n,
+    the coefficients in the data u__scheme (those of the first step, set
+    again after it by shift())."""
     md = c.py
     w(f"{md}.set_time({c.t0!r})  # the time t of the expressions")
     if not c.transient:
@@ -491,17 +493,22 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
     w("except RuntimeError:")
     w("    raise RuntimeError('this GetFEM is too old for the transient solver (its time step must be a "
       "data of the model)') from None")
-    for u in M.time_variables(c.md):
+    for u, sc in c.schemes.items():
         mf = c.mfs[u]
-        theta = float(c.scheme.get("theta", 1.0))
-        w(f"# Time scheme of {u}: theta-method, theta = {theta!r} (the equation written at t_n+1)")
-        w(f"{md}.add_initialized_data('theta_{u}', [{theta!r}])")
+        first = list(M.scheme_coefficients(sc, first=True))
+        w(f"# Time scheme of {u}: {M.scheme_label(sc)} (the equation written at t_n+1),")
+        w(f"#   Dot_{u} = (c0*{u} + c1*Previous_{u} + c2*{u}__prev2)/timestep + c3*Previous_Dot_{u}")
+        w(f"{md}.add_initialized_data('{u}__scheme', {first!r})  # c0, c1, c2, c3 (first step)")
         w(f"{md}.add_initialized_fem_data('{u}__prev', {mf}, np.zeros({mf}.nbdof()))")
         w(f"{md}.add_initialized_fem_data('{u}__rate', {mf}, np.zeros({mf}.nbdof()))")
+        two = sc.get("type") == "bdf2"
+        if two:
+            w(f"{md}.add_initialized_fem_data('{u}__prev2', {mf}, np.zeros({mf}.nbdof()))")
         w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
         w(f"{md}.add_macro('Previous_Dot_{u}', '{u}__rate')")
-        w(f"{md}.add_macro('Dot_{u}', '({u} - {u}__prev)/(theta_{u}*timestep) "
-          f"- (1 - theta_{u})/theta_{u}*{u}__rate')")
+        prev2 = f" + {u}__scheme(3)*{u}__prev2" if two else ""
+        w(f"{md}.add_macro('Dot_{u}', '({u}__scheme(1)*{u} + {u}__scheme(2)*{u}__prev{prev2})/timestep "
+          f"+ {u}__scheme(4)*{u}__rate')")
 
 
 def declare_model(c: Ctx, w: ScriptWriter) -> None:
@@ -542,7 +549,7 @@ def setup_model(c: Ctx, w: ScriptWriter) -> None:
         w("")
         MODULES[mod["type"]][1](c, mod, i, w)
         inertia = M.MODULE_SPECS[mod["type"]].get("inertia")
-        if inertia and c.transient and M.in_time(mod):
+        if inertia and c.transient and M.in_time(c.model, c.md, mod):
             u = mod[inertia["variable"]]
             expr = inertia["expr"].replace("{u}", u)
             w(f"# Time derivative: {expr}")
@@ -707,13 +714,20 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
         for name, mf, expr in c.timed:
             w(f"    {c.py}.set_variable({name!r}, {c.py}.interpolation({expr!r}, {mf}))")
     w("")
-    w("def shift():")
-    w('    """After a time step: the previous values (Previous_u, Previous_Dot_u)."""')
+    w("def shift(k):")
+    w('    """After the time step k: the previous values (Previous_u, Previous_Dot_u, u__prev2),')
+    w('    the coefficients of the schemes after their first step."""')
     lines = 0
     for c in cs:
-        for u in M.time_variables(c.md):
+        for u, sc in c.schemes.items():
             w(f"    {c.py}.set_variable('{u}__rate', {c.py}.interpolation('Dot_{u}', {c.mfs[u]}))")
+            if sc.get("type") == "bdf2":
+                w(f"    {c.py}.set_variable('{u}__prev2', {c.py}.variable('{u}__prev'))")
             w(f"    {c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
+            after = list(M.scheme_coefficients(sc))
+            if after != list(M.scheme_coefficients(sc, first=True)):
+                w("    if k == 1:")
+                w(f"        {c.py}.set_variable('{u}__scheme', {after!r})  # {M.scheme_label(sc)} from now on")
             lines += 1
     if not lines:
         w("    pass")
@@ -740,24 +754,28 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
             u, mf = v["name"], c.mfs[v["name"]]
             init = c.value(v.get("initial", 0.0), M.variable_kind(v))
             w(f"{c.py}.set_variable({u!r}, {c.py}.interpolation({init!r}, {mf}))")
-            if u in M.time_variables(c.md):
+            if u in c.schemes:
                 w(f"{c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
+                if c.schemes[u].get("type") == "bdf2":
+                    w(f"{c.py}.set_variable('{u}__prev2', {c.py}.variable({u!r}))")
     w("set_time(T_START, (T_END - T_START) / N_STEPS)")
     for c in cs:
-        tv = M.time_variables(c.md)
-        if tv and float(c.scheme.get("theta", 1.0)) < 1.0:
-            w(f"# The initial time derivative of {', '.join(tv)} (needed when theta < 1): an implicit")
-            w("# Euler step of a tiny time step from the initial values")
+        tv = list(c.schemes)
+        if any(M.scheme_needs_rate(sc) for sc in c.schemes.values()):
+            w(f"# The initial time derivative of {', '.join(tv)} (needed by the first step of "
+              + ", ".join(sorted({M.scheme_label(sc) for sc in c.schemes.values() if M.scheme_needs_rate(sc)}))
+              + "):")
+            w("# an implicit Euler step of a tiny time step from the initial values")
             eps = "1e-6 * (T_END - T_START) / N_STEPS"
             w(f"set_time(T_START + {eps}, {eps})")
             for u in tv:
-                w(f"{c.py}.set_variable('theta_{u}', [1.0])")
+                w(f"{c.py}.set_variable('{u}__scheme', [1.0, -1.0, 0.0, 0.0])")
             w(f"solve_{ident(c.md['name'])}()")
             for u in tv:
                 w(f"{c.py}.set_variable('{u}__rate', ({c.py}.variable({u!r}) - {c.py}.variable('{u}__prev'))"
                   f" / ({eps}))")
                 w(f"{c.py}.set_variable({u!r}, {c.py}.variable('{u}__prev'))")
-                w(f"{c.py}.set_variable('theta_{u}', [{float(c.scheme['theta'])!r}])")
+                w(f"{c.py}.set_variable('{u}__scheme', {list(M.scheme_coefficients(c.schemes[u], first=True))!r})")
             w("set_time(T_START, (T_END - T_START) / N_STEPS)")
     w("save(0, T_START)")
     w("")
@@ -770,7 +788,7 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter)
     if solver["coupling"] == "staggered":
         w("if not results['solver']['converged']:")
         w("    results['warnings'][-1] += f' (at t = {t:g})'")
-    w("shift()")
+    w("shift(k)")
     w(f"if k % {every} == 0 or k == N_STEPS:")
     w("    save(k, t)")
     w.indent = ""

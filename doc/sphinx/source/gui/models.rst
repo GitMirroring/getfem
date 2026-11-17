@@ -139,22 +139,34 @@ to an end time by a fixed time step::
 
   {"name": "heating", "type": "transient", "steps": ["heat"],
    "time": {"start": 0, "end": 60, "step": 1}, "save": {"every": 5},
-   "coupling": "sequence", "schemes": {"heat": {"type": "theta", "theta": 1}}}
+   "coupling": "sequence", "schemes": {"heat/T": {"type": "bdf2"}}}
 
-A module whose equation has a time derivative has an **In time** box in its
-form. Checked (``"transient": true``), the module
-is solved in time: the heat conduction adds :math:`\rho c_p \partial
-T/\partial t` (the term ``rho*cp*Dot_T*Test_T``), and its properties
-``rho`` and ``cp`` are then required (they are not needed otherwise); its
-model must be solved by a transient solver (checking the box sets one up:
-the main solver made transient, or created). Unchecked, the module is
-stationary: in a transient solver, it is solved at each time step without
-time derivative (quasi-static: a heat conduction following imposed values
-that depend on the time, an elasticity driven by a temperature in time).
-The equation is written at :math:`t_{n+1}`, the scheme giving the time
-derivative ``Dot_T`` from ``T`` and the previous values (see
-:ref:`gui-time-schemes`; :math:`\theta = 1`, implicit Euler, by default).
-``Dot_T`` and ``Previous_T`` may appear in the terms of the model.
+Whether a variable is solved in time, and how, is a choice of the solver,
+not of the physics: the same model may be solved stationary by one solver
+and in time by another. The solver lists the variables of its models which
+may have a time derivative (those of the modules with one: the temperature
+of a heat conduction) and gives each one its **time scheme**
+(``schemes``, keyed by ``model/variable``; its form shows a *Scheme of T*
+choice for each):
+
+- ``{"type": "stationary"}``: no time derivative, the equation solved at
+  each time step (quasi-static: a heat conduction following imposed values
+  that depend on the time, a potential driven by a temperature in time);
+- ``{"type": "theta", "theta": 1}``: the :math:`\theta`-method,
+  :math:`\theta = 1` implicit Euler (the default when a model is added to a
+  transient solver), :math:`\theta = 1/2` Crank-Nicolson;
+- ``{"type": "bdf2"}``: BDF2, second order, its first step by
+  Crank-Nicolson.
+
+In time, the heat conduction adds :math:`\rho c_p \partial T/\partial t`
+(the term ``rho*cp*Dot_T*Test_T``), and its properties ``rho`` and ``cp``
+are then required (they are not needed otherwise; they are given a default
+value when the variable goes into time). The form of the module shows where
+it stands: stationary, or in time with its scheme. ``Dot_T`` and
+``Previous_T`` may appear in the terms of the model. Since every equation is
+written at the new time (see :ref:`gui-time-schemes`), variables with
+different schemes and stationary variables are solved together without
+difficulty, in one model or in coupled ones.
 
 - The variables start from their **initial** value (a number or an
   expression of the coordinates and the parameters; 0 by default).
@@ -166,6 +178,7 @@ derivative ``Dot_T`` from ``T`` and the previous values (see
   with ``max_iter``, ``tolerance``, ``relaxation``), each one taking the
   current variables of the others by its imports; a model without time
   derivative (an elasticity) is then quasi-static.
+- The time step is the same for all the variables of a solver.
 - The results are saved every ``save.every`` steps and at the end: a |vtu|
   file each (``heat_00005.vtu``...), a ParaView collection ``heat.pvd``,
   and the scalar results (outputs, extrema) as series of the saved times
@@ -187,36 +200,50 @@ Time schemes: principle and implementation
 
 where :math:`M` comes from the time derivative terms (the "mass": :math:`\rho
 c_p` for the heat) and :math:`F` gathers all the other terms: conduction,
-sources, boundary conditions, nonlinear terms, constraints. The scheme does
-not touch :math:`F`: at each time step, the equation is written **at**
-:math:`t_{n+1}`, as a stationary problem,
+sources, boundary conditions, nonlinear terms, constraints, the equations
+of the stationary variables. The scheme does not touch :math:`F`: at each
+time step, the equation is written **at** :math:`t_{n+1}`, as a stationary
+problem,
 
 .. math::
 
    M \dot U_{n+1} + F(U_{n+1}, t_{n+1}) = 0,
 
 and the scheme only gives :math:`\dot U_{n+1}` as a function of the unknown
-:math:`U_{n+1}` and of the values of the previous step. For the
-:math:`\theta`-method, :math:`(U_{n+1} - U_n)/\Delta t = \theta \dot U_{n+1} +
-(1 - \theta) \dot U_n`, that is
+:math:`U_{n+1}` and of the values of the previous steps. No term of
+:math:`F` is weighted one by one (no "dispatcher" of terms): the conditions
+are imposed at :math:`t_{n+1}`, a nonlinear model is solved by Newton's
+method as in the stationary case, the right-hand side stays as it is. The
+schemes of the different variables are thus independent: each variable in
+time has its own expression of its derivative, the stationary ones none.
+
+The schemes of first order equations all have the form
 
 .. math::
 
-   \dot U_{n+1} = \frac{U_{n+1} - U_n}{\theta \Delta t} - \frac{1 -
-   \theta}{\theta} \dot U_n .
+   \dot U_{n+1} = \frac{c_0 U_{n+1} + c_1 U_n + c_2 U_{n-1}}{\Delta t}
+   + c_3 \dot U_n .
 
-Since the equation also held at :math:`t_n`, this is the usual
-:math:`\theta`-method :math:`M (U_{n+1} - U_n)/\Delta t + \theta F_{n+1} + (1 -
-\theta) F_n = 0`, without weighting the terms of :math:`F` one by one (no
-"dispatcher" of terms): the conditions are imposed at :math:`t_{n+1}`, a
-nonlinear model is solved by Newton's method as in the stationary case, the
-right-hand side stays as it is. :math:`\theta = 1` is the implicit Euler
-scheme (first order, robust: the default); :math:`\theta = 1/2`
-Crank-Nicolson (second order, but it may oscillate with steep initial data);
-:math:`\theta < 1/2` is only conditionally stable. When :math:`\theta < 1`,
-the initial derivative :math:`\dot U_0` is needed: it is computed first from
-the equation at :math:`t_0` (an implicit Euler step of a tiny time step from
-the initial values).
+- The :math:`\theta`-method, :math:`(U_{n+1} - U_n)/\Delta t = \theta \dot
+  U_{n+1} + (1 - \theta) \dot U_n`: :math:`(c_0, c_1, c_2, c_3) = (1/\theta,
+  -1/\theta, 0, -(1 - \theta)/\theta)`. Since the equation also held at
+  :math:`t_n`, this is the usual :math:`\theta`-method :math:`M (U_{n+1} -
+  U_n)/\Delta t + \theta F_{n+1} + (1 - \theta) F_n = 0`. :math:`\theta = 1`
+  is the implicit Euler scheme (first order, robust: the default);
+  :math:`\theta = 1/2` Crank-Nicolson (second order, but it may oscillate
+  with steep initial data); :math:`\theta < 1/2` is only conditionally
+  stable.
+- BDF2, :math:`\dot U_{n+1} = (3 U_{n+1} - 4 U_n + U_{n-1})/(2 \Delta t)`:
+  :math:`(3/2, -2, 1/2, 0)`. Second order and L-stable (no oscillation, it
+  damps the fast modes), with an error constant larger than that of
+  Crank-Nicolson. It needs two previous values: its first step is a
+  Crank-Nicolson one, :math:`(2, -2, 0, -1)`, which keeps the second order
+  (one step of local error :math:`O(\Delta t^3)`).
+
+When the first step needs the initial derivative :math:`\dot U_0`
+(:math:`c_3 \neq 0`: :math:`\theta < 1`, BDF2), it is computed first from the
+equation at :math:`t_0` (an implicit Euler step of a tiny time step from the
+initial values).
 
 The same principle holds for second order equations (elastodynamics, to
 come): :math:`M \ddot U_{n+1} + F(U_{n+1}, t_{n+1}) = 0`, the scheme
@@ -227,12 +254,16 @@ come): :math:`M \ddot U_{n+1} + F(U_{n+1}, t_{n+1}) = 0`, the scheme
 and data of the model, updated by the time loop (they can be read in the
 exported script):
 
-- ``T__prev`` and ``T__rate`` (data on the finite element method of ``T``):
-  :math:`U_n` and :math:`\dot U_n`; ``theta_T``.
+- ``T__prev``, ``T__rate`` and, for BDF2, ``T__prev2`` (data on the finite
+  element method of ``T``): :math:`U_n`, :math:`\dot U_n`, :math:`U_{n-1}`;
+  ``T__scheme``: the coefficients :math:`(c_0, c_1, c_2, c_3)` of the
+  current step.
 - The macros ``Previous_T`` (``T__prev``), ``Previous_Dot_T`` (``T__rate``)
-  and ``Dot_T``: ``(T - T__prev)/(theta_T*timestep) - (1 - theta_T)/theta_T*T__rate``.
-  The time derivative term of the module, ``rho*cp*Dot_T*Test_T``, is then an
-  ordinary term (linear: assembled with the others).
+  and ``Dot_T``: ``(T__scheme(1)*T + T__scheme(2)*T__prev +
+  T__scheme(3)*T__prev2)/timestep + T__scheme(4)*T__rate``. The time
+  derivative term of the module, ``rho*cp*Dot_T*Test_T``, is then an
+  ordinary term (linear: assembled with the others, again when the
+  coefficients change).
 - The time ``t`` and the time step ``timestep`` of the expressions are those
   of the ``gf.Model`` (``set_time``, ``set_time_step``: data of the model, so
   that the terms using them are assembled again when they change); the
@@ -240,13 +271,17 @@ exported script):
   again at each step.
 - The loop: ``set_time(t, dt)`` (the time, the time step, the data depending
   on the time), the models solved (in turn, or by staggered iterations),
-  then ``shift()``: ``T__rate`` gets the interpolation of ``Dot_T``,
-  ``T__prev`` the value of ``T``; ``save(k, t)`` every ``save.every`` steps
-  and at the end (the post-processing of each model, its VTU file, its
-  scalar results appended to its series).
+  then ``shift(k)``: ``T__rate`` gets the interpolation of ``Dot_T``,
+  ``T__prev2`` the value of ``T__prev``, ``T__prev`` the value of ``T``, and
+  after the first step the coefficients of the scheme from then on (BDF2);
+  ``save(k, t)`` every ``save.every`` steps and at the end (the
+  post-processing of each model, its VTU file, its scalar results appended
+  to its series).
 
-A new scheme is thus a new expression of ``Dot_u`` (or ``Dot2_u``) and its
-update after each step; the modules do not change.
+A new scheme is thus new coefficients (or a new expression of ``Dot_u``,
+``Dot2_u``), its history and its update after each step
+(``scheme_coefficients`` in ``model.py``, ``time_declarations`` and the
+time loop in ``codegen.py``); the modules do not change.
 
 Outputs
 -------

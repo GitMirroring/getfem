@@ -187,16 +187,19 @@ solved in an order compatible with their imports.
 Transient solver: {"name", "type": "transient", "steps": [model names],
 "time": {"start": 0, "end", "step"}, "coupling": "sequence" | "staggered"
 (then "max_iter", "tolerance", "relaxation": iterations at each time step),
-"save": {"every": n}, "schemes": {model name: {"type": "theta", "theta":
-1}}}. The models are solved at each time step, in turn. A module with a
-time derivative (MODULE_SPECS[...]["inertia"]: its term, rho*cp*Dot_T*Test_T
-for the heat) is in time if "transient": true (its model must then be in a
-transient solver): it adds its term, its transient properties (rho, cp)
-are then required; otherwise it is stationary (quasi-static in a transient
-solver). The scheme gives Dot_u from u (the equation written at t_{n+1}):
-theta-method, Dot_u = (u - Previous_u)/(theta dt) - (1 - theta)/theta
-Previous_Dot_u. A variable starts from its "initial" value (0 by
-default). The time is t in the expressions (0 for a stationary model).
+"save": {"every": n}, "schemes": {"model/variable": scheme}}. The models are
+solved at each time step, in turn. The solver chooses the time scheme of
+each variable which may have a time derivative (that of a module with one,
+MODULE_SPECS[...]["inertia"]: rho*cp*Dot_T*Test_T for the heat), keyed by
+"model name/variable name" ({"type": "theta", "theta": 1} if missing):
+{"type": "stationary"} (no time derivative: quasi-static, the equation
+solved at each time), {"type": "theta", "theta": ...} or {"type": "bdf2"}
+(SCHEMES). In time, a module adds its time derivative and its transient
+properties (rho, cp) are required. Every equation is written at t_{n+1}
+and the scheme gives Dot_u from u: Dot_u = (c0 u + c1 Previous_u +
+c2 u_{n-1})/dt + c3 Previous_Dot_u (scheme_coefficients). A variable
+starts from its "initial" value (0 by default). The time is t in the
+expressions (0 for a stationary model).
 
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
@@ -273,7 +276,13 @@ FEMS = ("lagrange", "lagrange_discontinuous")
 SOLVER_TYPES = ("auto", "linear", "newton")
 GLOBAL_SOLVERS = ("sequence", "staggered", "transient")
 COUPLINGS = ("sequence", "staggered")         # of the models at each time step
-SCHEMES = {"theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)"}
+# The time schemes of a variable with a first time derivative (Dot_u).
+SCHEMES = {
+    "stationary": "stationary (no time derivative: quasi-static)",
+    "theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)",
+    "bdf2": "BDF2 (second order; its first step: Crank-Nicolson)",
+}
+DEFAULT_SCHEME = {"type": "theta", "theta": 1.0}
 DIRICHLET_METHODS = ("simplification", "multiplier", "penalization")
 COLORMAPS = ("viridis", "coolwarm", "jet", "plasma", "gray")     # the first one: default
 
@@ -482,7 +491,36 @@ def load(path: str | Path) -> dict:
         raise ValueError(f"format_version {FORMAT_VERSION} expected, got "
                          f"{model.get('format_version')!r} (older formats are not supported)")
     model["_source_dir"] = str(path.resolve().parent)
+    upgrade_schemes(model)
     return model
+
+
+def upgrade_schemes(model: dict) -> bool:
+    """The time schemes of an earlier form of the format: one per model in
+    the transient solver, the modules "transient" (in time) or not, made one
+    per variable ("model/variable", "stationary" for a module not in time).
+    Returns whether something changed."""
+    changed = False
+    for s in model.get("solvers", []):
+        old = s.get("schemes")
+        if s.get("type") != "transient" or not isinstance(old, dict) or all("/" in k for k in old):
+            continue
+        new = {k: v for k, v in old.items() if "/" in k}
+        for name in s.get("steps", []):
+            md = model_by_name(model, name)
+            for mod in (md or {}).get("modules", []):
+                u = inertia_variable(mod)
+                if u is not None:
+                    new[scheme_key(name, u)] = (dict(old.get(name) or DEFAULT_SCHEME) if mod.get("transient")
+                                                else {"type": "stationary"})
+        s["schemes"] = new
+        changed = True
+    for md in model.get("models", []):
+        for mod in md.get("modules", []):
+            if "transient" in mod:
+                del mod["transient"]
+                changed = True
+    return changed
 
 
 _TOP_ORDER = ("format_version", "name", "parameters", "materials", "geometries", "meshes", "fields",
@@ -695,23 +733,75 @@ def is_transient(model: dict, md: dict) -> bool:
     return s.get("type") == "transient" and md.get("name") in s.get("steps", [])
 
 
-def in_time(mod: dict) -> bool:
-    """Whether a module is solved in time (its "transient" box: its time
-    derivative, in a transient solver), or stationary (quasi-static)."""
-    return bool(mod.get("transient")) and bool(MODULE_SPECS.get(mod.get("type"), {}).get("inertia"))
+def scheme_key(md_name: str, u: str) -> str:
+    """The key of the time scheme of a variable in a transient solver."""
+    return f"{md_name}/{u}"
 
 
-def time_variables(md: dict) -> list[str]:
-    """The variables of a model with a time derivative (of a module in time)."""
+def inertia_variable(mod: dict) -> str | None:
+    """The variable of a module which may have a time derivative (None:
+    the module has none)."""
+    inertia = MODULE_SPECS.get(mod.get("type"), {}).get("inertia")
+    if not inertia:
+        return None
+    return mod.get(inertia["variable"], MODULE_SPECS[mod["type"]]["variables"][inertia["variable"]]["name"])
+
+
+def timeable_variables(md: dict) -> list[str]:
+    """The variables of a model which may have a time derivative (those of
+    the modules with one), whatever their scheme."""
     out = []
     for mod in md.get("modules", []):
-        inertia = MODULE_SPECS.get(mod.get("type"), {}).get("inertia")
-        if inertia and in_time(mod):
-            spec = MODULE_SPECS[mod["type"]]["variables"][inertia["variable"]]
-            u = mod.get(inertia["variable"], spec["name"])
-            if u not in out:
-                out.append(u)
+        u = inertia_variable(mod)
+        if u is not None and u not in out:
+            out.append(u)
     return out
+
+
+def scheme_of(model: dict, md: dict, u: str) -> dict | None:
+    """The time scheme of a variable (None: not in time, its model not in a
+    transient solver or the variable stationary)."""
+    if not is_transient(model, md) or u not in timeable_variables(md):
+        return None
+    sc = main_solver(model).get("schemes", {}).get(scheme_key(md["name"], u)) or DEFAULT_SCHEME
+    return None if sc.get("type") == "stationary" else sc
+
+
+def time_variables(model: dict, md: dict) -> list[str]:
+    """The variables of a model in time (with a time derivative)."""
+    return [u for u in timeable_variables(md) if scheme_of(model, md, u) is not None]
+
+
+def in_time(model: dict, md: dict, mod: dict) -> bool:
+    """Whether a module is solved in time (its variable has a time scheme
+    in the transient solver of its model), or stationary (quasi-static)."""
+    u = inertia_variable(mod)
+    return u is not None and scheme_of(model, md, u) is not None
+
+
+def scheme_coefficients(sc: dict, first: bool = False) -> tuple[float, float, float, float]:
+    """(c0, c1, c2, c3) of Dot_u = (c0 u + c1 u_n + c2 u_{n-1})/dt + c3 Dot_u_n
+    for a time scheme, at the first time step or after."""
+    if sc.get("type") == "bdf2":
+        return (2.0, -2.0, 0.0, -1.0) if first else (1.5, -2.0, 0.5, 0.0)   # first: Crank-Nicolson
+    th = float(sc.get("theta", 1.0))
+    return (1.0 / th, -1.0 / th, 0.0, -(1.0 - th) / th)
+
+
+def scheme_needs_rate(sc: dict) -> bool:
+    """Whether a scheme needs the initial time derivative (c3 != 0 at the
+    first step)."""
+    return scheme_coefficients(sc, first=True)[3] != 0.0
+
+
+def scheme_label(sc: dict | None) -> str:
+    """A short name of a time scheme."""
+    if sc is None or sc.get("type") == "stationary":
+        return "stationary"
+    if sc.get("type") == "bdf2":
+        return "BDF2"
+    th = float(sc.get("theta", 1.0))
+    return {1.0: "implicit Euler", 0.5: "Crank-Nicolson"}.get(th, f"θ-method θ = {th:g}")
 
 
 def main_solver(model: dict) -> dict:
@@ -1912,15 +2002,17 @@ def _validate_transient(model, s, where, steps, errors) -> None:
         _check_int(save.get("every", 1), 1, 10 ** 9, f"{where}.save.every", errors)
     schemes = s.get("schemes", {})
     if not isinstance(schemes, dict):
-        errors.append(f"{where}.schemes: {{model name: scheme}} expected")
+        errors.append(f"{where}.schemes: {{'model/variable': scheme}} expected")
         return
-    for name, sc in schemes.items():
-        w = f"{where}.schemes.{name}"
-        if name not in steps:
-            continue                                    # (a model no longer solved: ignored)
+    for key, sc in schemes.items():
+        w = f"{where}.schemes[{key!r}]"
+        name, _, u = str(key).partition("/")
+        md = model_by_name(model, name) if name in steps else None
+        if md is None or u not in timeable_variables(md):
+            continue                    # (a model no longer solved, a variable no longer in time: ignored)
         if not isinstance(sc, dict) or sc.get("type", "theta") not in SCHEMES:
             errors.append(f"{w}.type: {', '.join(SCHEMES)} expected")
-        else:
+        elif sc.get("type", "theta") == "theta":
             th = sc.get("theta", 1.0)
             if isinstance(th, bool) or not isinstance(th, (int, float)) or not 0 < th <= 1:
                 errors.append(f"{w}.theta: number in ]0, 1] expected")
@@ -2183,7 +2275,7 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
                    == name for m in md.get("modules", [])):
             errors.append(f"{w}: requires a {MODULE_SPECS[other]['label'].lower()} module on {name!r}")
     # options and values
-    known = {"type", "properties", "sources", "conditions", "transient"} | set(spec["variables"])
+    known = {"type", "properties", "sources", "conditions"} | set(spec["variables"])
     for opt, value in mod.items():
         if opt in known:
             continue
@@ -2198,15 +2290,7 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
             errors.append(f"{w}.{opt}: unknown option for {mtype!r}")
     # properties, per domain selection
     props = mod.get("properties", {})
-    transient = is_transient(model, md) and in_time(mod)
-    if "transient" in mod:
-        if not isinstance(mod["transient"], bool):
-            errors.append(f"{w}.transient: true or false expected")
-        elif mod["transient"] and not spec.get("inertia"):
-            errors.append(f"{w}.transient: no time derivative in this module")
-        elif mod["transient"] and not is_transient(model, md):
-            errors.append(f"{w}.transient: in time, but the model is not solved by a transient solver "
-                          "(add one, or uncheck In time)")
+    transient = in_time(model, md, mod)
     for prop, label in spec["properties"].items():
         pieces = props.get(prop)
         where = f"{w}.properties.{prop}"
@@ -2254,7 +2338,8 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
                 errors.append(f"{where}.{key}: unknown field for a {btype!r} condition")
         is_anchored |= btype in spec["anchoring"]
     var = mod.get("variable", spec["variables"].get("variable", {}).get("name"))
-    if spec["anchoring"] and not is_anchored and var not in anchored and not errors:
+    # (in time, the time derivative anchors its variable: rho*cp*Dot_T)
+    if spec["anchoring"] and not is_anchored and var not in anchored and not errors and not transient:
         errors.append(f"{w}.conditions: {spec['anchoring_message']}")
 
 
@@ -2321,8 +2406,11 @@ def with_defaults(model: dict) -> dict:
             s.setdefault("time", {}).setdefault("start", 0.0)
             schemes = s.setdefault("schemes", {})
             for name in s.get("steps", []):
-                schemes.setdefault(name, {}).setdefault("type", "theta")
-                schemes[name].setdefault("theta", 1.0)
+                md = model_by_name(m, name)
+                for u in timeable_variables(md) if md else []:
+                    sc = schemes.setdefault(scheme_key(name, u), dict(DEFAULT_SCHEME))
+                    if sc.setdefault("type", "theta") == "theta":
+                        sc.setdefault("theta", 1.0)
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s["coupling"] == "staggered"):
             s.setdefault("max_iter", 20)
             s.setdefault("tolerance", 1e-6)
