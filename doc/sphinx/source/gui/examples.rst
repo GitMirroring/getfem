@@ -155,6 +155,26 @@ constant within 0.1 % (the scheme only damps the high frequencies). The
 *In time* curves of the results show them; the VTU files, the deformed
 beam.
 
+.. _gui-example-thermal_shock_strip:
+
+Thermal shock of a strip (``thermal_shock_strip.json``)
+-------------------------------------------------------
+
+Thermally induced vibrations (Boley's problem): an aluminium strip (5 cm x 1
+mm, plane strain), clamped at its left end, receives from t = 0 a heat flux
+of 1 MW/m² on its top face. Two models solved in turn at each time step:
+the heat in time (BDF2), and the elasticity with thermal expansion, which
+imports the temperature, in time too (generalized-:math:`\alpha`): each
+variable its scheme. The top face, warmer, expands: the strip bends down.
+As the heating (the diffusion time through the thickness,
+:math:`h^2/\kappa \approx` 10 ms) is not much slower than the first
+bending mode of the strip (a period of 2.87 ms), the strip vibrates about
+the quasi-static deflection: its tip goes down to about 1.37 times the
+quasi-static deflection. With the scheme of ``u`` set to *stationary* in
+the solver, the same problem is solved quasi-statically (no vibration).
+``T_mean`` rises as :math:`q t/(\rho c_p h)` (12.4 °C in 30 ms: all the
+heat received stays in the strip).
+
 .. _gui-example-heated_pipe:
 
 Heated pipe (``heated_pipe.json``)

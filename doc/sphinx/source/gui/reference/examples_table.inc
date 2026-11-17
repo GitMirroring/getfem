@@ -94,6 +94,11 @@
      - csg 3D
      - getfem
      - heat_conduction
+   * - :ref:`thermal_shock_strip.json <gui-example-thermal_shock_strip>`
+     - Thermal shock of a strip: an aluminium strip clamped at one end, heated on one face, bends and vibrates (thermally induced vibrations: heat in time, elastodynamics)
+     - box
+     - structured
+     - heat_conduction, linear_elasticity, thermal_expansion
    * - :ref:`thermoelastic_plate.json <gui-example-thermoelastic_plate>`
      - Heated plate that expands (two models, solved in sequence)
      - box

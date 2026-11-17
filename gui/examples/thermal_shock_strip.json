@@ -1,0 +1,60 @@
+{
+  "format_version": 3,
+  "name": "Thermal shock of a strip: an aluminium strip clamped at one end, heated on one face, bends and vibrates (thermally induced vibrations: heat in time, elastodynamics)",
+  "parameters": [
+    {"name": "L", "value": 0.05, "description": "length of the strip (m)"},
+    {"name": "h", "value": 0.001, "description": "thickness of the strip (m)"},
+    {"name": "q_in", "value": 1e6, "description": "heat flux received by the top face from t = 0 (W/m2)"},
+    {"name": "T0", "value": 20, "description": "initial temperature, without stress (degC)"}
+  ],
+  "materials": [
+    {"name": "aluminium", "properties": {"k": 237, "rho": 2700, "cp": 897, "E": 70e9, "nu": 0.33, "alpha": 23e-6}}
+  ],
+  "geometries": [
+    {"name": "strip", "source": {"type": "box", "origin": [0, 0], "size": ["L", "h"]}, "selections": {}}
+  ],
+  "meshes": [{"name": "mesh", "geometry": "strip", "mesher": "structured", "divisions": [50, 2]}],
+  "models": [
+    {
+      "name": "thermal",
+      "variables": [{"name": "T", "mesh": "mesh", "fem": "lagrange", "degree": 2, "initial": "T0"}],
+      "modules": [
+        {"type": "heat_conduction", "variable": "T", "conductivity": "isotropic",
+         "properties": {"k": [{"selection": "all", "material": "aluminium"}],
+                        "rho": [{"selection": "all", "material": "aluminium"}],
+                        "cp": [{"selection": "all", "material": "aluminium"}]},
+         "sources": [],
+         "conditions": [{"type": "heat_flux", "selection": "ymax", "value": "q_in"}]}
+      ],
+      "outputs": [{"name": "T_mean", "expr": "T/(L*h)", "selection": "all"},
+                  {"name": "T_top", "expr": "T/L", "selection": "ymax"},
+                  {"name": "T_bottom", "expr": "T/L", "selection": "ymin"}],
+      "vtu": "thermal.vtu"
+    },
+    {
+      "name": "mechanical",
+      "imports": [{"name": "T", "model": "thermal", "variable": "T"}],
+      "variables": [{"name": "u", "mesh": "mesh", "fem": "lagrange", "degree": 2, "components": "dim"}],
+      "modules": [
+        {"type": "linear_elasticity", "variable": "u", "plane": "strain",
+         "properties": {"E": [{"selection": "all", "material": "aluminium"}],
+                        "nu": [{"selection": "all", "material": "aluminium"}],
+                        "rho": [{"selection": "all", "material": "aluminium"}],
+                        "alpha_M": [{"selection": "all", "value": 0}],
+                        "beta_K": [{"selection": "all", "value": 0}]},
+         "sources": [],
+         "conditions": [{"type": "fixed", "selection": "xmin"}]},
+        {"type": "thermal_expansion", "temperature": "T", "displacement": "u", "T_ref": "T0",
+         "properties": {"alpha": [{"selection": "all", "material": "aluminium"}]}}
+      ],
+      "outputs": [{"name": "tip_deflection", "expr": "u(2)/h", "selection": "xmax"}],
+      "vtu": "mechanical.vtu"
+    }
+  ],
+  "solvers": [
+    {"name": "shock", "type": "transient", "steps": ["thermal", "mechanical"],
+     "time": {"start": 0, "end": 0.03, "step": 0.0001}, "save": {"every": 5}, "coupling": "sequence",
+     "schemes": {"thermal/T": {"type": "bdf2"},
+                 "mechanical/u": {"type": "generalized_alpha", "rho_inf": 0.9}}}
+  ]
+}

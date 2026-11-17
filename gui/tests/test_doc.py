@@ -152,6 +152,26 @@ def test_examples_quoted_results():
     w1 = 3.516 * math.sqrt(E * h ** 3 / 12 / (rho * h * L ** 4))
     assert _close(2 * np.mean(np.diff(cross)), 2 * math.pi / w1, 3e-2)
     assert abs(e[-1] / e[after][0] - 1) < 1e-3
+    m = M.load(EXAMPLES / "thermal_shock_strip.json")                 # thermally induced vibrations
+    series = []
+    for sc in (None, {"type": "stationary"}):
+        if sc:
+            m["solvers"][0]["schemes"]["mechanical/u"] = sc
+        with tempfile.TemporaryDirectory() as tmp:
+            res = runner.run(m, tmp)
+        assert res.ok, res.error
+        series.append(res.results["models"])
+    t = np.array(series[0]["thermal"]["series"]["t"])
+    Tm = np.array(series[0]["thermal"]["series"]["T_mean"])
+    assert np.allclose(Tm - 20, 1e6 * t / (2700 * 897 * 1e-3), rtol=1e-6, atol=1e-9)   # the heat received
+    dyn, qs = (np.array(r["mechanical"]["series"]["tip_deflection"]) for r in series)
+    assert 1.3 < dyn.min() / qs[-1] < 1.45 and np.all(np.diff(qs) < 1e-4 * abs(qs[-1]))   # overshoot; monotone
+    x = dyn - qs                                                         # the vibration about it
+    k = np.where(np.sign(x[2:]) != np.sign(x[1:-1]))[0] + 1
+    cross = t[k] - x[k] * (t[k + 1] - t[k]) / (x[k + 1] - x[k])
+    E, rho, h, L = 70e9 / (1 - 0.33 ** 2), 2700, 1e-3, 0.05
+    w1 = 3.516 * math.sqrt(E * h ** 2 / 12 / (rho * L ** 4))
+    assert _close(2 * np.mean(np.diff(cross)), 2 * math.pi / w1, 3e-2)
     q = _solve("heated_pipe.json")["heat"]
     R, L = 0.05, 0.6                                                    # the tube; heated on a half
     assert _close(q["area"], 2 * math.pi * R * L, 1e-4) and _close(q["heated_area"], math.pi * R * L, 1e-4)
