@@ -503,7 +503,8 @@ def _fields_node(path: Path, fields_: list) -> Node:
 def _module_node(md_path: Path, i: int, mod: dict) -> Node:
     spec = M.spec_of(mod)
     path = md_path + ("modules", i)
-    node = Node(path, spec.get("label", str(mod.get("type"))), "module")
+    label = f"PDE on {mod.get('variable', 'u')}" if mod.get("type") == "pde" else spec.get("label", str(mod.get("type")))
+    node = Node(path, label, "module")
     # (its properties and its source: in its form)
     if spec.get("conditions"):
         bcs = Node(path + ("conditions",), "Conditions", "conditions")
@@ -3136,7 +3137,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif rest == ("modules",):
         present = {m.get("type") for m in md.get("modules", [])}
         out += [(f"add_module:{t}", f"Add {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
-                if t not in present]      # one module of each type per model
+                if t not in present or s.get("several")]      # one module of each type per model (PDE: several)
     elif rest == ("terms",):
         out.append(("add_term", "Add a term"))
     elif rest == ("conditions",):
@@ -3557,8 +3558,10 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         names = {}
         existing = {v["name"]: M.variable_kind(v) for v in md.get("variables", [])}
         imports = [im["name"] for im in md.get("imports", [])]
+        taken = {m.get("variable") for m in md.get("modules", []) if mtype == "pde" and m.get("type") == "pde"}
         for role, v in spec["variables"].items():
-            same = [n for n, k in existing.items() if k == v["kind"]] + (imports if v.get("import") else [])
+            same = [n for n, k in existing.items() if k == v["kind"] and n not in taken] + \
+                (imports if v.get("import") else [])        # (a new PDE: a new unknown)
             if v["name"] in same or (v["name"] in imports and v.get("import")):
                 names[role] = v["name"]
             elif same and role != "variable":

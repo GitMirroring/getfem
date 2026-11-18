@@ -472,6 +472,7 @@ MODULE_SPECS = {
     # and its gradient). Its spec depends on its options: pde_spec.
     "pde": {
         "label": "PDE (coefficient or general form)",
+        "several": True,             # several per model, on different unknowns
         "doc": "Its properties and their kinds depend on its options (see :ref:`gui-models-pde`): "
                "K, b, j, v, r in coefficient form, F in general form; d at order 1 in time, "
                "m and d at order 2; the unknown, the source and the conditions scalar, or vectors with "
@@ -544,7 +545,7 @@ def pde_spec(mod: dict) -> dict:
     spec["conditions"] = {"imposed_value": {"value": kind}, "flux": {"value": kind}, "robin": {"q": q, "value": kind}}
     spec["macros"] = (() if general else (f"F_{u}",)) + \
         ((f"tau_{u}",) if "stabilization" in spec["options"] and opt["stabilization"] == "supg" else ())
-    spec["exports"] = {} if vector else {"flux": (f"F_{u}", VECTOR)}
+    spec["exports"] = {} if vector else {f"flux_{u}": (f"F_{u}", VECTOR)}
     spec["dot"] = dot
     return spec
 
@@ -2482,7 +2483,15 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
 
     # --- Modules: their properties and macros join the names of the model
     macro_owner: dict[str, int] = {}
+    unknowns = {}                           # the unknown of each PDE: its own
     for i, mod in enumerate(md.get("modules", [])):
+        if mod.get("type") == "pde":
+            u = mod.get("variable", "u")
+            if u in unknowns:
+                errors.append(f"{w}.modules[{i}].variable: {u!r} is already the unknown of the PDE module "
+                              f"{unknowns[u] + 1} (a PDE per unknown)")
+                continue
+            unknowns[u] = i
         spec = spec_of(mod) if mod.get("type") in MODULE_SPECS else None
         if spec is None:
             continue

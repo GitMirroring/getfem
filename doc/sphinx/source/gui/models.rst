@@ -161,7 +161,15 @@ Its conditions: ``imposed_value``, ``flux`` (:math:`F\cdot n = g`, with
 :math:`F = K \nabla u + b\, u - j` in coefficient form, the flux of the
 general form otherwise) and ``robin`` (:math:`F\cdot n = g - q u`); a
 boundary without condition has a zero flux. The macro ``F_u`` is the flux
-in coefficient form, exported as the field ``flux`` for a scalar unknown.
+in coefficient form, exported as the field ``flux_u`` for a scalar unknown.
+
+A model may have several ``pde`` modules, each one on its own unknown
+(*Add pde* in its modules adds one on a new variable): a system of equations,
+coupled through their coefficients and sources (a reaction ``r`` of one
+of them, a source ``f`` depending on the other unknowns...), solved
+together, each unknown with its order in time and its scheme. Their
+coefficients do not clash: ``K_u`` and ``K_w`` for two PDEs on ``u`` and
+``w``. Its node in the tree reads *PDE on u*.
 ``examples/convection_diffusion.json`` and ``examples/membrane_wave.json``
 use it.
 

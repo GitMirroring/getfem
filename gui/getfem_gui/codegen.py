@@ -444,6 +444,10 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     lin = f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, "
     dot, colon = (".", ":") if vec else ("*", ".")
     test = f"Test_{u}"
+
+    def source(expr: str, rg: str | None = None) -> None:
+        # a term, not a source term: the sources may depend on the unknowns (a coupling of PDEs)
+        w(f"{lin}{'-(' + expr + ')'!r}" + (f", {rg})" if rg else ")"))
     if p["general"]:
         w("# -div F = f")
         w(f"{lin}{n['F'] + colon + 'Grad_' + test!r})")
@@ -459,10 +463,10 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
         if "r" in nz:
             w(f"{lin}{(f'({r}*{u}).{test}' if vec else f'{r}*{u}*{test}')!r})")
         if "j" in nz:
-            w(f"{md}.add_source_term({c.mim}, {n['j'] + colon + 'Grad_' + test!r})")
+            source(n["j"] + colon + "Grad_" + test)
     for src in mod["sources"]:
         f = gwfl_vec(src["value"], c.dim) if vec else gwfl(src["value"])
-        w(f"{md}.add_source_term({c.mim}, {f + dot + test!r}, {c.rg(src['selection'])})")
+        source(f + dot + test, c.rg(src["selection"]))
     if mod.get("stabilization") == "supg" and "stabilization" in p["spec"]["options"] and "v" in nz:
         _supg(c, mod, p, w)
     for j, bc in enumerate(mod["conditions"], start=1):
@@ -476,12 +480,12 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
         elif bc["type"] == "flux":
             w(f"# Imposed flux on {bc['selection']}: F.n = g")
-            w(f"{md}.add_source_term({c.mim}, {value + dot + test!r}, {rg})")
+            source(value + dot + test, rg)
         elif bc["type"] == "robin":
             q = gwfl_mat(bc["q"]) if vec else gwfl(bc["q"])
             w(f"# Robin condition on {bc['selection']}: F.n = g - q {u}")
             w(f"{lin}{(f'({q}*{u}).{test}' if vec else f'{q}*{u}*{test}')!r}, {rg})")
-            w(f"{md}.add_source_term({c.mim}, {value + dot + test!r}, {rg})")
+            source(value + dot + test, rg)
 
 
 def _supg(c: Ctx, mod: dict, p: dict, w: ScriptWriter) -> None:
@@ -509,7 +513,8 @@ def _supg(c: Ctx, mod: dict, p: dict, w: ScriptWriter) -> None:
     w("# SUPG stabilization: tau (v.grad w) (residual of the equation)")
     w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, {weight + '*(' + ' + '.join(res) + ')'!r})")
     for src in mod["sources"]:
-        w(f"{md}.add_source_term({c.mim}, {weight + '*' + gwfl(src['value'])!r}, {c.rg(src['selection'])})")
+        w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, {'-' + weight + '*(' + gwfl(src['value']) + ')'!r}, "
+          f"{c.rg(src['selection'])})")
 
 
 def _pde_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
@@ -521,10 +526,10 @@ def _pde_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
     w(f"R['min_{u}'] = float({md}.variable({u!r}).min())")
     w(f"R['max_{u}'] = float({md}.variable({u!r}).max())")
     deg = max(int(c.var(u).get("degree", 1)) - 1, 0)
-    w(f"mf_flux = gf.MeshFem({c.m}, {c.m}.dim())")
-    w(f"mf_flux.set_classical_discontinuous_fem({deg})")
-    w(f"flux = {md}.interpolation({p['n']['F']!r}, mf_flux)")
-    return ["mf_flux", "flux", "'flux'"]
+    w(f"mf_flux_{u} = gf.MeshFem({c.m}, {c.m}.dim())")
+    w(f"mf_flux_{u}.set_classical_discontinuous_fem({deg})")
+    w(f"flux_{u} = {md}.interpolation({p['n']['F']!r}, mf_flux_{u})")
+    return [f"mf_flux_{u}", f"flux_{u}", repr(f"flux_{u}")]
 
 
 def _nothing(c: Ctx, mod: dict, i: int, w: ScriptWriter):

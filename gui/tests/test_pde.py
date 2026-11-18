@@ -138,6 +138,57 @@ def test_names_and_editing():
     assert M.validate(m) == [] and M.model_properties(md)[:2] == ["K_w", "b_w"] and "K_u" in M.model_properties(md)
 
 
+def test_several_pdes():
+    """Several PDEs in one model: a new one on a new unknown (the menu still
+    offers it); a PDE per unknown; their own coefficients, macros, fields;
+    a coupled system (-Lap u + u - w = f1, -Lap w + 2 w - u = f2,
+    manufactured; the coupling by a source depending on w, a term in u)
+    solved together, and in time with an order per unknown."""
+    m, md, mod = pde(12)
+    assert ("add_module:pde", "Add pde (coefficient or general form)") in E.actions(m, ("models", 0, "modules"))
+    path = E.do_action(m, ("models", 0, "modules"), "add_module:pde")
+    second = E.get_at(m, path)
+    assert second["variable"] == "u2" and [v["name"] for v in md["variables"]] == ["u", "u2"]
+    assert [n.label for n in E.find_node(E.tree(m), ("models", 0, "modules")).children] == ["PDE on u", "PDE on u2"]
+    second["variable"] = "u"
+    assert any("'u' is already the unknown of the PDE module 1" in e for e in M.validate(m))
+    f = next(x for x in E.fields(m, ("models", 0, "variables", 1)) if x.key[-1] == "name")
+    E.apply(m, f, "w")                                    # (the second unknown renamed: its PDE follows)
+    second["variable"] = "w"
+    exact_u, exact_w = EXACT, f"sin(2*pi*x)*sin(pi*y)"
+    mod["properties"]["r"] = [{"selection": "all", "value": 1.0}]
+    second["properties"]["r"] = [{"selection": "all", "value": 2.0}]
+    mod["sources"] = [{"selection": "all", "value": f"(2*sqr(pi) + 1)*{exact_u} - {exact_w} + w"}]
+    second["sources"] = [{"selection": "all", "value": f"(5*sqr(pi) + 2)*{exact_w} - {exact_u}"}]
+    md["terms"] = [{"name": "coupling", "expr": "-u*Test_w", "selection": "all"}]   # (or by a term)
+    for mm in (mod, second):
+        mm["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": 0}]
+    md["outputs"] = [{"name": "err_u", "expr": f"sqr(u - {exact_u})", "selection": "all"},
+                     {"name": "err_w", "expr": f"sqr(w - {exact_w})", "selection": "all"}]
+    assert M.validate(m) == [], M.validate(m)
+    text = runner.export_script(m)
+    for line in ("md_pde.add_macro('F_u', 'K_u*Grad_u')", "md_pde.add_macro('F_w', 'K_w*Grad_w')",
+                 "'flux_u'", "'flux_w'"):
+        assert line in text, line
+    if not _getfem():
+        return
+    r = run(m)
+    assert r["quantities"]["err_u"] < 1e-6 and r["quantities"]["err_w"] < 1e-5, r["quantities"]
+    assert r["max_u"] > 0.9 and r["max_w"] > 0.9
+    # in time: u of order 1 (a diffusion from a unit source), w of order 0 (-Lap w + 2 w = u, the
+    # coupling term: at each time step, from u)
+    option(m, "time_order", "1", 0)
+    mod["sources"] = [{"selection": "all", "value": 1.0}]
+    second["sources"] = [{"selection": "all", "value": 0.0}]
+    md["outputs"] = [{"name": "mean_u", "expr": "u", "selection": "all"},
+                     {"name": "mean_w", "expr": "w", "selection": "all"}]
+    m["solvers"] = [{"name": "main", "type": "transient", "steps": ["pde"],
+                     "time": {"start": 0, "end": 0.2, "step": 0.02}}]
+    assert list(M.with_defaults(m)["solvers"][0]["schemes"]) == ["pde/u"]
+    s = run(m)["series"]
+    assert s["mean_u"][0] == 0 and 0 < s["mean_u"][-1] and s["mean_w"][-1] > s["mean_w"][1] > 0
+
+
 def test_coefficient_form():
     """Manufactured solutions: -div(c grad u) + a u = f (P2, its order);
     anisotropic c; al, ga, be (1D-like); flux and Robin conditions."""
