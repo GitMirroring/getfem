@@ -4,7 +4,8 @@ What a new contributor, or an AI assistant starting a new session, needs to
 know before changing the graphical interface. `README.md` gives the
 overview, the command line and the role of each file ("Layout"); the user
 documentation is in `doc/sphinx/source/gui/`; the model format is in
-`doc/model_format_v3.md`.
+`doc/model_format_v3.md`; the directions kept for later in
+`doc/roadmap.md`.
 
 ## Principles
 
