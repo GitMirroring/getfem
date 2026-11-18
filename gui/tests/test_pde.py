@@ -109,16 +109,18 @@ def test_options_and_properties():
 def test_names_and_editing():
     """The coefficients are named after the unknown: no clash with a
     parameter r; renaming the unknown renames them in the expressions; the
-    equation shows all the terms of the form; the GWFL terms of the script
-    (the nonzero ones)."""
+    equation shows all the terms of the form (not whether it is solved in
+    time: the solvers), each field the name of its coefficient (help); the
+    GWFL terms of the script (the nonzero ones)."""
     m, md, mod = pde()
     m["parameters"] = [{"name": "r", "value": 2.0}, {"name": "K", "value": 3.0}]
     mod["properties"]["r"] = [{"selection": "all", "value": "r"}]           # (the parameter r)
     md["outputs"] = [{"name": "q", "expr": "r_u*u + K_u", "selection": "all"}]
     assert M.validate(m) == []
     eq = equations.equation(m, md, mod)
-    assert "−div(K ∇u + b u − j) + v·∇u + r u = f" in eq and "K_u, b_u, j_u, v_u, r_u" in eq
-    assert "∂u/∂t" not in eq
+    assert "−div(K ∇u + b u − j) + v·∇u + r u = f" in eq and "∂u/∂t" not in eq and "olve" not in eq
+    tip = next(x for x in E.fields(m, ("models", 0, "modules", 0)) if x.label == "K (diffusion)").help
+    assert tip == "diffusion; K_u in the expressions"
     f = next(x for x in E.fields(m, ("models", 0, "variables", 0)) if x.key[-1] == "name")
     E.apply(m, f, "w")
     assert mod["variable"] == "w" and md["outputs"][0]["expr"] == "r_w*w + K_w" and M.validate(m) == []

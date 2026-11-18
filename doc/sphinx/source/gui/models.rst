@@ -123,8 +123,10 @@ by Newton's method). The coefficients are properties, given per domain
 selection, and the expressions may depend on the coordinates, the time and
 the variables; a zero coefficient adds no term to the script. The equation
 shown in the form of the module has all the terms of its form and of its
-order in time, whatever the values of the coefficients. In the
-expressions, the coefficients take the name of the unknown: ``K_u``,
+order in time, whatever the values of the coefficients (and whatever the
+global solvers, which decide whether it is solved in time). In the
+expressions, the coefficients take the name of the unknown (given in the
+help of their fields): ``K_u``,
 ``v_u``, ``F_u``... for an unknown ``u`` (renamed with it), so that they do
 not clash with the parameters (a parameter ``r`` may be the value of
 ``r``) and that two PDEs of a model, on two unknowns, have their own

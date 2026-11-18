@@ -122,12 +122,11 @@ def _pde(model: dict, md: dict, mod: dict) -> str:
     lines = [_sum(lhs) + " = f &nbsp; in Ω"]
     if mod.get("form") == "general":
         lines.append(f"F: the flux, an expression of {u} and {NABLA}{u}")
-    lines.append("in the expressions: " + ", ".join(html.escape(M.data_name(mod, n)) for n in spec["properties"]))
     if mod.get("stabilization") == "supg" and "stabilization" in spec["options"]:
         lines.append(f"SUPG: + τ (v·{NABLA}w) (residual), &nbsp; τ = ((2|v|/h)² + 9 (4K/h²)²)<sup>−1/2</sup>")
     if vector:
         lines.append(f"{u}: a vector; r, d, m: matrices")
-    return _time(model, md, mod) + _block(lines)
+    return _block(lines)                 # (whether it is solved in time: the global solvers)
 
 
 def _sum(terms) -> str:

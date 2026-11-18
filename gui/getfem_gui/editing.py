@@ -193,7 +193,9 @@ def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, d
     removable."""
     out = []
     for p in shown_properties(model, mod):
-        label = spec["properties"][p]
+        label = tip = spec["properties"][p]
+        if M.data_name(mod, p) != p:              # (a PDE: its name in the expressions, K_u)
+            tip = f"{label}; {M.data_name(mod, p)} in the expressions"
         pieces = mod.get("properties", {}).get(p, [])
         mats = [m.get("name") for m in model.get("materials", []) if p in (m.get("properties") or {})]
         tensor = M.property_kind(mod, p) == M.MATRIX
@@ -209,12 +211,13 @@ def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, d
             if mats:
                 out.append(Field(path, name, "choice",
                                  (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
-                                 op="piece_source", help=label))
+                                 op="piece_source", help=tip))
                 name = ""
             if "material" not in pc and M.property_kind(mod, p) == M.VECTOR:
-                out.append(Field(path + ("value",), name, "vector", size=dim, help=label))
+                out.append(Field(path + ("value",), name, "vector", size=dim, help=tip))
             elif "material" not in pc:
-                out.append(Field(path + ("value",), name, "value", help=MATRIX_HELP if tensor else label))
+                out.append(Field(path + ("value",), name, "value",
+                                 help=MATRIX_HELP + (f" ({tip})" if tip != label else "") if tensor else tip))
         if not pieces:
             out.append(Field(mpath, "", "info", help=f"{p} ({label}): not given (Add a domain for {p})"))
     if len(domains) > 1:
