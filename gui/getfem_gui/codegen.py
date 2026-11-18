@@ -253,11 +253,12 @@ def _properties(c: Ctx, w: ScriptWriter) -> None:
     and the elasticity): declared once, by a module that uses it if any."""
     done = set()
     used = [(mod, prop) for mod in c.md["modules"] for prop in M.used_properties(c.model, c.md, mod)]
-    given = [(mod, prop) for mod in c.md["modules"] for prop in M.MODULE_SPECS[mod["type"]]["properties"]
+    given = [(mod, prop) for mod in c.md["modules"] for prop in M.spec_of(mod)["properties"]
              if mod["properties"].get(prop)]
     for mod, prop in used + given:
-        if prop not in done:
-            done.add(prop)
+        name = M.data_name(mod, prop)
+        if name not in done:
+            done.add(name)
             pieces = []
             for pc in mod["properties"].get(prop, []):
                 if "material" in pc:
@@ -266,7 +267,7 @@ def _properties(c: Ctx, w: ScriptWriter) -> None:
                                    f"{pc['selection']}: {pc['material']}"))
                 else:
                     pieces.append((pc["selection"], pc["value"], pc["selection"]))
-            _piecewise(c, prop, pieces, "property", w, M.property_kind(mod, prop))
+            _piecewise(c, name, pieces, "property", w, M.property_kind(mod, prop))
 
 
 # ---------------------------------------------------------------- modules
@@ -406,6 +407,125 @@ def _elasticity_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
     return ["mf_vm", "von_mises", "'von_mises'"]
 
 
+def _pde_parts(c: Ctx, mod: dict) -> dict:
+    """The pieces of a PDE module: its unknown, whether it is a vector, the
+    nonzero coefficients among its properties."""
+    spec = M.spec_of(mod)
+    props = mod.get("properties", {})
+    nonzero = {p for p in spec["properties"] if not _is_zero(props.get(p))}
+    u = mod["variable"]
+    n = {q: f"{q}_{u}" for q in ("c", "al", "ga", "be", "a", "da", "ea", "Gamma", "tau")}
+    return {"u": u, "n": n, "vector": mod.get("unknown") == "vector", "spec": spec, "nz": nonzero,
+            "general": mod.get("form") == "general",
+            "aniso": mod.get("diffusion") == "anisotropic"}
+
+
+def _pde_declare(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
+    p = _pde_parts(c, mod)
+    u, md, n, nz = p["u"], c.py, p["n"], p["nz"]
+    if p["general"]:
+        return                                      # (Gamma_u: a property)
+    diff = (f"Grad_{u}*{n['c']}" if p["vector"] else f"{n['c']}*Grad_{u}") if "c" in nz else "0"
+    flux = diff + (f" + {u}*{n['al']}" if "al" in nz else "") + (f" - {n['ga']}" if "ga" in nz else "")
+    w(f"{md}.add_macro({n['Gamma']!r}, {flux!r})  # the flux: c grad {u} + al {u} - ga")
+    if mod.get("stabilization") == "supg" and "stabilization" in p["spec"]["options"]:
+        cc = f"Trace({n['c']})/meshdim" if p["aniso"] else n["c"]
+        k = int(c.var(u).get("degree", 1))
+        h = "element_size" if k == 1 else f"(element_size/{k})"
+        w(f"# SUPG: tau = (|2 be/h|^2 + 9 |4 c/h^2|^2)^(-1/2), h the size of the element"
+          f"{'' if k == 1 else ' over the degree'}")
+        w(f"{md}.add_macro({n['tau']!r}, '1/sqrt(sqr(2*Norm({n['be']})/{h}) "
+          f"+ 9*sqr(4*({cc})/sqr({h})) + 1e-300)')")
+
+
+def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
+    p = _pde_parts(c, mod)
+    u, md, nz, vec, n = p["u"], c.py, p["nz"], p["vector"], p["n"]
+    lin = f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, "
+    dot, colon = (".", ":") if vec else ("*", ".")
+    test = f"Test_{u}"
+    if p["general"]:
+        w(f"# -div Gamma = f")
+        w(f"{lin}{n['Gamma'] + colon + 'Grad_' + test!r})")
+    else:
+        w(f"# -div(c grad {u} + al {u} - ga) + be.grad {u} + a {u} = f")
+        cn, al, be, a = n["c"], n["al"], n["be"], n["a"]
+        if "c" in nz:
+            w(f"{lin}{(f'(Grad_{u}*{cn}):Grad_{test}' if vec else f'({cn}*Grad_{u}).Grad_{test}')!r})")
+        if "al" in nz:
+            w(f"{lin}{f'{u}*{al}.Grad_{test}'!r})")
+        if "be" in nz:
+            w(f"{lin}{(f'(Grad_{u}*{be}).{test}' if vec else f'({be}.Grad_{u})*{test}')!r})")
+        if "a" in nz:
+            w(f"{lin}{(f'({a}*{u}).{test}' if vec else f'{a}*{u}*{test}')!r})")
+        if "ga" in nz:
+            w(f"{md}.add_source_term({c.mim}, {n['ga'] + colon + 'Grad_' + test!r})")
+    for src in mod["sources"]:
+        f = gwfl_vec(src["value"], c.dim) if vec else gwfl(src["value"])
+        w(f"{md}.add_source_term({c.mim}, {f + dot + test!r}, {c.rg(src['selection'])})")
+    if mod.get("stabilization") == "supg" and "stabilization" in p["spec"]["options"] and "be" in nz:
+        _supg(c, mod, p, w)
+    for j, bc in enumerate(mod["conditions"], start=1):
+        rg = c.rg(bc["selection"])
+        value = (gwfl_vec(bc["value"], c.dim) if vec else gwfl(bc["value"])) if "value" in bc else None
+        w("")
+        if bc["type"] == "imposed_value":
+            data = f"{u}_D{i}_{j}"
+            w(f"# Imposed value on {bc['selection']}")
+            c.fem_data(w, data, c.mfs[u], value)
+            w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+        elif bc["type"] == "flux":
+            w(f"# Imposed flux on {bc['selection']}: Gamma.n = g")
+            w(f"{md}.add_source_term({c.mim}, {value + dot + test!r}, {rg})")
+        elif bc["type"] == "robin":
+            q = gwfl_mat(bc["q"]) if vec else gwfl(bc["q"])
+            w(f"# Robin condition on {bc['selection']}: Gamma.n = g - q {u}")
+            w(f"{lin}{(f'({q}*{u}).{test}' if vec else f'{q}*{u}*{test}')!r}, {rg})")
+            w(f"{md}.add_source_term({c.mim}, {value + dot + test!r}, {rg})")
+
+
+def _supg(c: Ctx, mod: dict, p: dict, w: ScriptWriter) -> None:
+    """SUPG: tau (be.grad v) times the residual of the equation, added on each
+    element (the second derivatives of u from degree 2: c Laplacian u, the
+    gradient of c neglected; the time derivatives in time)."""
+    u, nz, md, n = p["u"], p["nz"], c.py, p["n"]
+    res = [f"{n['be']}.Grad_{u}"]
+    if "al" in nz:
+        res.append(f"{n['al']}.Grad_{u}")
+    if "a" in nz:
+        res.append(f"{n['a']}*{u}")
+    if "c" in nz and int(c.var(u).get("degree", 1)) >= 2:
+        res.append(f"-Trace({n['c']}*Hess_{u})" if p["aniso"] else f"-{n['c']}*Trace(Hess_{u})")
+    inertia = p["spec"].get("inertia")
+    if inertia and c.transient and M.in_time(c.model, c.md, mod):
+        if inertia["order"] == 1:
+            res.append(f"{n['da']}*Dot_{u}")
+        else:
+            res.append(f"{n['ea']}*{u}__inertia")
+            if "da" in nz:
+                res.append(f"{n['da']}*Dot_{u}")
+    weight = f"{n['tau']}*({n['be']}.Grad_Test_{u})"
+    w("# SUPG stabilization: tau (be.grad v) (residual of the equation)")
+    w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, {weight + '*(' + ' + '.join(res) + ')'!r})")
+    for src in mod["sources"]:
+        w(f"{md}.add_source_term({c.mim}, {weight + '*' + gwfl(src['value'])!r}, {c.rg(src['selection'])})")
+
+
+def _pde_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
+    p = _pde_parts(c, mod)
+    u, md = p["u"], c.py
+    if p["vector"]:
+        w(f"R['max_{u}'] = float(np.max(np.linalg.norm({md}.variable({u!r}).reshape(-1, {c.m}.dim()), axis=1)))")
+        return []
+    w(f"R['min_{u}'] = float({md}.variable({u!r}).min())")
+    w(f"R['max_{u}'] = float({md}.variable({u!r}).max())")
+    deg = max(int(c.var(u).get("degree", 1)) - 1, 0)
+    w(f"mf_flux = gf.MeshFem({c.m}, {c.m}.dim())")
+    w(f"mf_flux.set_classical_discontinuous_fem({deg})")
+    w(f"flux = {md}.interpolation({p['n']['Gamma']!r}, mf_flux)")
+    return ["mf_flux", "flux", "'flux'"]
+
+
 def _nothing(c: Ctx, mod: dict, i: int, w: ScriptWriter):
     return []
 
@@ -414,6 +534,7 @@ MODULES = {
     "heat_conduction": (_heat_declare, _heat_setup, _heat_post),
     "linear_elasticity": (_elasticity_declare, _elasticity_setup, _elasticity_post),
     "thermal_expansion": (_nothing, _nothing, _nothing),   # written by the elasticity module
+    "pde": (_pde_declare, _pde_setup, _pde_post),
 }
 
 
@@ -567,10 +688,14 @@ def _second_order_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> Non
 
 def _is_zero(pieces) -> bool:
     """A property zero everywhere (its values all the number 0)."""
-    try:
-        return bool(pieces) and all("material" not in pc and float(pc.get("value")) == 0.0 for pc in pieces)
-    except (TypeError, ValueError):
-        return False
+    def zero(v):
+        if isinstance(v, list):
+            return all(zero(x) for x in v)
+        try:
+            return not isinstance(v, bool) and float(v) == 0.0
+        except (TypeError, ValueError):
+            return False
+    return bool(pieces) and all("material" not in pc and zero(pc.get("value")) for pc in pieces)
 
 
 def declare_model(c: Ctx, w: ScriptWriter) -> None:
@@ -610,7 +735,7 @@ def setup_model(c: Ctx, w: ScriptWriter) -> None:
     for i, mod in enumerate(c.md["modules"], start=1):
         w("")
         MODULES[mod["type"]][1](c, mod, i, w)
-        inertia = M.MODULE_SPECS[mod["type"]].get("inertia")
+        inertia = M.spec_of(mod).get("inertia")
         if inertia and c.transient and M.in_time(c.model, c.md, mod):
             u = mod[inertia["variable"]]
             expr = inertia["expr"].replace("{u}", u)

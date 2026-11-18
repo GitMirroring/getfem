@@ -137,7 +137,9 @@ terms:
 - *Unfold* replaces a module by its variables, terms and generic conditions.
 
 First modules: stationary heat conduction, linear elasticity, thermal
-expansion.
+expansion; then the PDE module (`pde`, coefficient or general form, as
+COMSOL's), whose spec depends on its options (`model.pde_spec`) and whose
+coefficients are named after its unknown (`model.data_name`: `c_u`).
 
 ## Names and scopes
 

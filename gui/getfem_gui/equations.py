@@ -42,13 +42,13 @@ def _v(value) -> str:
 def equation(model: dict, md: dict, mod: dict) -> str:
     """The equation solved by a module and its data, as HTML."""
     fn = {"heat_conduction": _heat, "linear_elasticity": _elasticity,
-          "thermal_expansion": _expansion}.get(mod.get("type"))
+          "thermal_expansion": _expansion, "pde": _pde}.get(mod.get("type"))
     return fn(model, md, mod) if fn else ""
 
 
 def _time(model: dict, md: dict, mod: dict) -> str:
     """Where the module stands in time."""
-    if not M.MODULE_SPECS.get(mod.get("type"), {}).get("inertia"):
+    if not M.spec_of(mod).get("inertia"):
         return ""
     s = M.main_solver(model)
     where = " (its time scheme is chosen in the solver)"
@@ -105,6 +105,58 @@ def _expansion(model: dict, md: dict, mod: dict) -> str:
     return _block([f"σ({u}) gets − β α ({T} − T<sub>ref</sub>) I, &nbsp; β = 3λ + 2μ (in 3D)"])
 
 
+def _pde(model: dict, md: dict, mod: dict) -> str:
+    from .codegen import _is_zero
+    spec = M.spec_of(mod)
+    u = html.escape(mod.get("variable", "u"))
+    props = mod.get("properties", {})
+    nz = {p for p in spec["properties"] if not _is_zero(props.get(p))}
+    lhs = []
+    if M.in_time(model, md, mod):
+        if spec["inertia"]["order"] == 2:
+            lhs.append(f"e<sub>a</sub> ∂²{u}/∂t²")
+        if spec["inertia"]["order"] == 1 or "da" in nz:
+            lhs.append(f"d<sub>a</sub> ∂{u}/∂t")
+    vector = mod.get("unknown") == "vector"
+    if mod.get("form") == "general":
+        lhs.append(f"{DIV} Γ")
+        gam = props.get("Gamma") or []
+        lines = [_sum(lhs) + " = f &nbsp; in Ω"]
+        if len(gam) == 1 and "value" in gam[0]:
+            lines.append(f"Γ = {_v(gam[0]['value'])} ({html.escape(M.data_name(mod, 'Gamma'))})")
+        else:
+            lines.append(f"Γ: the flux ({html.escape(M.data_name(mod, 'Gamma'))}), per domain")
+    else:
+        c = "C" if mod.get("diffusion") == "anisotropic" else "c"
+        flux = ([f"{c} {NABLA}{u}"] if "c" in nz else []) + ([f"α {u}"] if "al" in nz else [])
+        text = " + ".join(flux) + (" − γ" if "ga" in nz else "")
+        if text:
+            lhs.append(f"{DIV}({text})")
+        if "be" in nz:
+            lhs.append(f"β·{NABLA}{u}" if not vector else f"({NABLA}{u}) β")
+        if "a" in nz:
+            lhs.append(f"a {u}")
+        lines = [_sum(lhs) + " = f &nbsp; in Ω"]
+        names = [(c, "c"), ("α", "al"), ("γ", "ga"), ("β", "be"), ("a", "a"),
+                 ("d<sub>a</sub>", "da"), ("e<sub>a</sub>", "ea")]
+        lines.append(", &nbsp;".join(f"{g}: {html.escape(M.data_name(mod, n))}" for g, n in names
+                                     if n in spec["properties"]))
+        if mod.get("stabilization") == "supg" and "stabilization" in spec["options"]:
+            lines.append(f"SUPG: + τ (β·{NABLA}v) (residual), &nbsp; τ = ((2|β|/h)² + 9 (4c/h²)²)<sup>−1/2</sup>")
+    if vector:
+        lines.append(f"{u}: a vector; a, d<sub>a</sub>, e<sub>a</sub>: matrices")
+    return _time(model, md, mod) + _block(lines)
+
+
+def _sum(terms) -> str:
+    """Terms added, a divergence subtracted (-div ...)."""
+    eq = ""
+    for j, term in enumerate(terms):
+        neg = term.startswith(DIV)
+        eq += (("−" if neg else "") + term) if j == 0 else ((" − " if neg else " + ") + term)
+    return eq or "0"
+
+
 def _block(lines) -> str:
     return "<p style='margin-left: 8px'>" + "<br>".join(lines) + "</p>"
 
@@ -133,7 +185,7 @@ def gwfl_terms(model: dict, md_index: int, mod_index: int) -> list[str]:
         declare, setup, _ = codegen.MODULES[mod["type"]]
         declare(c, mod, mod_index + 1, w)
         setup(c, mod, mod_index + 1, w)
-        inertia = M.MODULE_SPECS[mod["type"]].get("inertia")
+        inertia = M.spec_of(mod).get("inertia")
         if inertia and c.transient and M.in_time(r, r["models"][md_index], mod):
             u = mod[inertia["variable"]]
             w(f"# Time derivative (Dot_{u}: by the scheme)")

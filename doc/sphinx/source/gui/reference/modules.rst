@@ -200,6 +200,99 @@ Value ``T_ref``: scalar, default ``0.0``.
 
 Requires a ``linear_elasticity`` module (on its displacement).
 
+.. _gui-ref-module-pde:
+
+pde: PDE (coefficient or general form)
+--------------------------------------
+
+Its properties and their kinds depend on its options (see :ref:`gui-models-pde`): c, al, ga, be, a in coefficient form, Gamma in general form; da at order 1 in time, ea and da at order 2; the unknown, the source and the conditions scalar, or vectors with "unknown": "vector". In the expressions, a coefficient takes the name of the unknown: c_u for the c of an unknown u.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Key
+     - Variable
+     - Kind
+     - Default name
+     - May be imported
+   * - ``variable``
+     - unknown
+     - scalar
+     - ``u``
+     -
+
+Properties:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Property
+     - Meaning
+     - Unit (SI)
+     - Default
+   * - ``c``
+     - diffusion
+     -
+     - ``1.0``
+   * - ``al``
+     - α, flux convection
+     -
+     - ``0.0``
+   * - ``ga``
+     - γ, flux source
+     -
+     - ``0.0``
+   * - ``be``
+     - β, convection
+     -
+     - ``0.0``
+   * - ``a``
+     - absorption
+     -
+     - ``0.0``
+   * - ``Gamma``
+     - Γ, the flux
+     -
+     - ``Grad_u``
+   * - ``da``
+     - mass at order 1, damping at order 2
+     -
+     - ``1.0``
+   * - ``ea``
+     - mass
+     -
+     - ``1.0``
+
+Option ``form``: ``coefficients``, ``general``.
+
+Option ``unknown``: ``scalar``, ``vector``.
+
+Option ``time_order``: ``0``, ``1``, ``2``.
+
+Option ``diffusion``: ``isotropic``, ``anisotropic``.
+
+Option ``stabilization``: ``none``, ``supg``.
+
+Sources: scalar values per domain selection.
+
+Conditions:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Condition
+     - Values
+     - Fixes the solution
+   * - ``imposed_value``
+     - ``value`` (scalar)
+     -
+   * - ``flux``
+     - ``value`` (scalar)
+     -
+   * - ``robin``
+     - ``q`` (scalar), ``value`` (scalar)
+     -
+
 .. _gui-ref-conditions:
 
 Generic conditions

@@ -42,6 +42,9 @@ A module is a predefined physics acting on variables
    coupling of a temperature (a variable of the model, or imported from
    another model) with a linear elasticity module: it adds
    :math:`-\beta\alpha(T - T_{ref})I` to the stress.
+``pde``
+   a partial differential equation of a scalar or vector unknown, in
+   coefficient or general form, of order 0, 1 or 2 in time (see below).
 
 The form of a module is in sections, opened or closed by a click on their
 title: *Equation* (the equation it solves, with the options which change
@@ -90,6 +93,75 @@ composite is built from the direction ``d`` of the fibres:
 The heat conduction module can be *unfolded* (tree action) into the
 equivalent terms and generic conditions, a starting point to write a
 variant.
+
+.. _gui-models-pde:
+
+PDE module
+----------
+
+The ``pde`` module solves an equation given by its coefficients, as the
+coefficient form of COMSOL (whose names it takes):
+
+.. math::
+
+   e_a \frac{\partial^2 u}{\partial t^2} + d_a \frac{\partial u}{\partial t}
+   - \mathrm{div}(c \nabla u + \alpha u - \gamma) + \beta\cdot\nabla u + a u = f,
+
+of coefficients ``c`` (diffusion: a number or, with ``"diffusion":
+"anisotropic"``, a matrix), ``al`` (:math:`\alpha`, a vector), ``ga``
+(:math:`\gamma`, a vector), ``be`` (:math:`\beta`, the convection, a
+vector), ``a`` (absorption), ``da`` and ``ea``, or in general form
+(``"form": "general"``),
+
+.. math::
+
+   e_a \frac{\partial^2 u}{\partial t^2} + d_a \frac{\partial u}{\partial t}
+   - \mathrm{div}\,\Gamma = f,
+
+of flux ``Gamma`` (:math:`\Gamma`): any expression of ``u`` and of its
+gradient, ``(1 + sqr(u))*Grad_u`` for instance (the model is then nonlinear,
+solved by Newton's method). The coefficients are properties, given per
+domain selection, and the expressions may depend on the coordinates, the
+time and the variables; a zero coefficient adds no term. The equation shown
+in the form of the module has its nonzero terms only. In the expressions,
+the coefficients take the name of the unknown: ``c_u``, ``be_u``,
+``Gamma_u``... for an unknown ``u`` (renamed with it), so that they do not
+clash with the parameters (a parameter ``a`` may be the value of ``a``) and
+that two PDEs of a model, on two unknowns, have their own coefficients.
+
+Its options:
+
+- ``unknown``: ``scalar``, or ``vector`` (as many components as the
+  dimension: changing it changes the variable). For a vector, ``c`` is the
+  same for each component (a number or a matrix applied to the gradient of
+  each one), ``a``, ``da``, ``ea`` are matrices (a number standing for its
+  multiple of the identity) coupling the components, ``ga`` and ``Gamma``
+  are matrices (a row per component, as ``Grad_u``), and there is no
+  :math:`\alpha`.
+- ``time_order``: ``0``, ``1`` (:math:`d_a\,\partial u/\partial t`, as the
+  heat), ``2`` (:math:`e_a\,\partial^2 u/\partial t^2`, a wave, and
+  :math:`d_a` a damping, 0 by default). As for the other modules, the order
+  is part of the equation, and whether it is solved in time, and with which
+  scheme, is chosen in the global solver (:ref:`gui-time-schemes`): a
+  stationary solver solves it with zero time derivatives.
+- ``stabilization``: ``none`` or ``supg``, for a scalar unknown in
+  coefficient form. When the convection dominates (:math:`|\beta| h / c`
+  large, h the size of the elements), the Galerkin solution oscillates;
+  SUPG adds to the equation, on each element,
+  :math:`\tau\,(\beta\cdot\nabla v)\,R(u)` with :math:`R(u)` the residual of
+  the equation (its second derivatives from degree 2, the gradient of
+  :math:`c` neglected) and
+  :math:`\tau = ((2|\beta|/h)^2 + 9 (4c/h^2)^2)^{-1/2}`, h the size of the
+  element divided by the degree of the unknown. It is consistent: the
+  exact solution satisfies it.
+
+Its conditions: ``imposed_value``, ``flux`` (:math:`\Gamma\cdot n = g`,
+with :math:`\Gamma = c \nabla u + \alpha u - \gamma` in coefficient form,
+the flux of the general form otherwise) and ``robin``
+(:math:`\Gamma\cdot n = g - q u`); a boundary without condition has a zero
+flux. The macro ``Gamma_u`` is the flux in coefficient form, exported as
+the field ``flux`` for a scalar unknown. ``examples/convection_diffusion.json`` and ``examples/membrane_wave.json``
+use it.
 
 Materials
 ---------

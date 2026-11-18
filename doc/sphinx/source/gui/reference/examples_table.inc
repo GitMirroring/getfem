@@ -24,6 +24,11 @@
      - csg 3D
      - getfem
      - heat_conduction
+   * - :ref:`convection_diffusion.json <gui-example-convection_diffusion>`
+     - Convection-diffusion: a dominant convection, boundary layers at the outflow (PDE module, SUPG)
+     - box
+     - structured
+     - pde
    * - :ref:`flange_2d.json <gui-example-flange_2d>`
      - Flange: a circular array of bolt holes (2D)
      - csg 2D
@@ -59,6 +64,11 @@
      - csg 2D
      - getfem
      - linear_elasticity
+   * - :ref:`membrane_wave.json <gui-example-membrane_wave>`
+     - Membrane: waves from an initial bump, fixed edges (PDE module of order 2 in time, Newmark)
+     - box
+     - structured
+     - pde
    * - :ref:`pin_fin_heat_sink_3d.json <gui-example-pin_fin_heat_sink_3d>`
      - Pin fin heat sink: an array of pins (3D)
      - csg 3D

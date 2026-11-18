@@ -311,6 +311,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
 | `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
+| `tests/test_pde.py` | the PDE module: manufactured solutions (both forms, scalar and vector), SUPG, orders in time |
 | `tests/test_coupling.py` | thermal expansion (monolithic, sequence), staggered two-way coupling, user terms and generic conditions |
 | `tests/test_editing.py` | editing operations, on every node of every example |
 | `tests/test_app.py` | the window driven without a screen (requires PySide6) |
@@ -329,7 +330,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
 | `tests/test_splines.py` | curved sides of polygons: geometry, format, meshers, 3D profiles, export, editing, table |
-| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution) |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution), convection-diffusion (PDE module, SUPG), membrane waves (PDE module of order 2 in time) |
 
 ## Geometry, selections, meshes
 
@@ -422,6 +423,7 @@ predefined physics acting on them:
 | `heat_conduction` | `k` | `temperature`, `heat_flux`, `convection` | `q` (heat flux) |
 | `linear_elasticity` | `E`, `nu` (option `plane`: `strain` / `stress` in 2D) | `fixed`, `displacement`, `roller`, `traction`, `pressure` | `eps`, `sigma`, `von_mises`, `mu_L`, `lambda_L` |
 | `thermal_expansion` | `alpha` (value `T_ref`) | | adds `- beta alpha (T - T_ref) I` to `sigma` |
+| `pde` | coefficient form `c`, `al`, `ga`, `be`, `a`, or general form `Gamma`; `da`, `ea` in time (options `form`, `unknown`, `time_order`, `diffusion`, `stabilization`: SUPG) | `imposed_value`, `flux`, `robin` | `Gamma_u` (the flux); the coefficients named `c_u`... after the unknown |
 
 Properties are given per domain selection, by a value (number or GWFL
 expression, possibly depending on the variables: a conductivity `k(T)` makes

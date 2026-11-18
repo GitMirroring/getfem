@@ -465,7 +465,103 @@ MODULE_SPECS = {
         "macros": (),
         "exports": {},
     },
+    # A partial differential equation of a scalar unknown or of a vector one (dim components),
+    # of order 0, 1 or 2 in time, in coefficient form,
+    #   ea d2u/dt2 + da du/dt - div(c grad u + al u - ga) + be.grad u + a u = f,
+    # or in general form, ea d2u/dt2 + da du/dt - div Gamma = f (Gamma: the flux, any
+    # expression of u and its gradient). Its spec depends on its options: pde_spec.
+    "pde": {
+        "label": "PDE (coefficient or general form)",
+        "doc": "Its properties and their kinds depend on its options (see :ref:`gui-models-pde`): "
+               "c, al, ga, be, a in coefficient form, Gamma in general form; da at order 1 in time, "
+               "ea and da at order 2; the unknown, the source and the conditions scalar, or vectors with "
+               "\"unknown\": \"vector\". In the expressions, a coefficient takes the name of the "
+               "unknown: c_u for the c of an unknown u.",
+        "variables": {"variable": {"name": "u", "kind": SCALAR, "degree": 2, "label": "unknown"}},
+        "properties": {"c": "diffusion", "al": "α, flux convection", "ga": "γ, flux source",
+                       "be": "β, convection", "a": "absorption", "Gamma": "Γ, the flux",
+                       "da": "mass at order 1, damping at order 2", "ea": "mass"},
+        "property_defaults": {"c": 1.0, "al": 0.0, "ga": 0.0, "be": 0.0, "a": 0.0, "Gamma": "Grad_u",
+                              "da": 1.0, "ea": 1.0},
+        "options": {"form": ("coefficients", "general"), "unknown": ("scalar", "vector"),
+                    "time_order": ("0", "1", "2"), "diffusion": ("isotropic", "anisotropic"),
+                    "stabilization": ("none", "supg")},
+        "option_labels": {"time_order": {"0": "0 (no time derivative)", "1": "1 (du/dt: diffusion type)",
+                                         "2": "2 (d2u/dt2: wave type)"},
+                          "stabilization": {"none": "none", "supg": "SUPG (streamline upwind)"}},
+        "values": {},
+        "source": SCALAR,
+        "conditions": {
+            "imposed_value": {"value": SCALAR},
+            "flux": {"value": SCALAR},
+            "robin": {"q": SCALAR, "value": SCALAR},
+        },
+        "anchoring": (),
+        "macros": (),
+        "exports": {},
+    },
 }
+
+
+def pde_spec(mod: dict) -> dict:
+    """The spec of a PDE module with its options: its properties (those of
+    its form, the time ones of its order), their kinds (scalar unknown: c a
+    number or, anisotropic, a matrix, al, be, ga vectors; vector
+    unknown: c, the same for each component, a, da, ea matrices (a number
+    standing for itself times the identity), ga and Gamma matrices (a row
+    per component), no al), its time derivative, its options shown."""
+    base = MODULE_SPECS["pde"]
+    opt = {k: mod.get(k, v[0]) for k, v in base["options"].items()}
+    vector = opt["unknown"] == "vector"
+    general = opt["form"] == "general"
+    order = int(opt["time_order"]) if opt["time_order"] in ("0", "1", "2") else 0
+    names = ["Gamma"] if general else ["c"] + ([] if vector else ["al"]) + ["ga", "be", "a"]
+    timed = {1: ["da"], 2: ["ea", "da"]}.get(order, [])
+    kinds = {"c": MATRIX if opt["diffusion"] == "anisotropic" else SCALAR,
+             "a": MATRIX if vector else SCALAR, "da": MATRIX if vector else SCALAR,
+             "ea": MATRIX if vector else SCALAR, "al": VECTOR, "be": VECTOR,
+             "ga": MATRIX if vector else VECTOR, "Gamma": MATRIX if vector else VECTOR}
+    kind = VECTOR if vector else SCALAR
+    dot = "." if vector else "*"
+    mass = "(ea_{u}*{u}__inertia).Test_{u}" if vector else "ea_{u}*{u}__inertia*Test_{u}"
+    damp = "(da_{u}*Dot_{u}).Test_{u}" if vector else "da_{u}*Dot_{u}*Test_{u}"
+    u = mod.get("variable", "u")
+    spec = dict(base)
+    spec["variables"] = {"variable": dict(base["variables"]["variable"], kind=kind)}
+    spec["properties"] = {p: base["properties"][p] for p in names + timed}
+    spec["transient_properties"] = tuple(timed)
+    spec["property_kinds"] = {p: kinds[p] for p in spec["properties"]}
+    spec["options"] = {k: v for k, v in base["options"].items()
+                       if (k != "diffusion" or not general) and (k != "stabilization" or not (general or vector))}
+    if order == 1:
+        spec["inertia"] = {"order": 1, "variable": "variable", "expr": damp}
+    elif order == 2:
+        spec["inertia"] = {"order": 2, "variable": "variable", "expr": mass, "damping": {"da": damp}}
+    spec["source"] = kind
+    q = MATRIX if vector else SCALAR
+    spec["conditions"] = {"imposed_value": {"value": kind}, "flux": {"value": kind}, "robin": {"q": q, "value": kind}}
+    spec["macros"] = (() if general else (f"Gamma_{u}",)) + \
+        ((f"tau_{u}",) if "stabilization" in spec["options"] and opt["stabilization"] == "supg" else ())
+    spec["exports"] = {} if vector else {"flux": (f"Gamma_{u}", VECTOR)}
+    spec["dot"] = dot
+    return spec
+
+
+def data_name(mod: dict, prop: str) -> str:
+    """The name of a property of a module in the expressions (a data of its
+    model, shared by the modules which have it: rho of a heat conduction and
+    of an elasticity); the coefficients of a PDE take the name of its
+    unknown (c_u, a_u: those of each PDE, apart from the parameters)."""
+    if mod.get("type") == "pde":
+        return f"{prop}_{mod.get('variable', 'u')}"
+    return prop
+
+
+def spec_of(mod: dict) -> dict:
+    """The spec of a module (MODULE_SPECS; a PDE: with its options)."""
+    if mod.get("type") == "pde":
+        return pde_spec(mod)
+    return MODULE_SPECS.get(mod.get("type"), {})
 
 
 # ------------------------------------------------------------------ utilities
@@ -487,7 +583,9 @@ def swept_root(shape) -> dict | None:
 def property_kind(mod: dict, prop: str) -> str:
     """SCALAR, or MATRIX for a property that is a tensor with the options of
     its module (the conductivity of an anisotropic heat conduction)."""
-    spec = MODULE_SPECS.get(mod.get("type"), {})
+    spec = spec_of(mod)
+    if prop in spec.get("property_kinds", {}):
+        return spec["property_kinds"][prop]
     opt = spec.get("tensor_properties", {}).get(prop)
     if opt and mod.get(opt[0], spec["options"][opt[0]][0]) == opt[1]:
         return MATRIX
@@ -510,13 +608,26 @@ def new_module(mtype: str, dim: int = 2, names: dict | None = None) -> dict:
             mod[opt] = choices[0]
     for key, value in spec.get("value_defaults", {}).items():
         mod[key] = value
-    mod["properties"] = {p: [{"selection": ALL, "value": v}]
-                         for p, v in spec["property_defaults"].items()}
+    mod["properties"] = {p: [{"selection": ALL, "value": default_property(mod, p, dim)}]
+                         for p in spec_of(mod)["properties"]}
     if spec["source"] is not None:
         mod["sources"] = []
     if spec["conditions"]:
         mod["conditions"] = []
     return mod
+
+
+def default_property(mod: dict, prop: str, dim: int = 2):
+    """The default value of a property of a module: a vector of its default
+    (a number) for a vector property; for the PDE flux, of its unknown."""
+    v = MODULE_SPECS[mod["type"]]["property_defaults"].get(prop, 1.0)
+    if prop == "Gamma" and mod.get("type") == "pde":
+        return f"Grad_{mod.get('variable', 'u')}"
+    if prop == "da" and mod.get("type") == "pde" and mod.get("time_order") == "2":
+        v = 0.0                                     # (second order: a damping, none by default)
+    if property_kind(mod, prop) == VECTOR and isinstance(v, (int, float)):
+        return [v] * dim
+    return v
 
 
 def new_variable(name: str, mesh: str, kind: str = SCALAR, degree: int = 2) -> dict:
@@ -716,7 +827,7 @@ def module_variables(md: dict) -> list[tuple[dict, str, str]]:
     """(module, role, variable name) for the variables the modules act on."""
     out = []
     for mod in md.get("modules", []):
-        spec = MODULE_SPECS.get(mod.get("type"), {})
+        spec = spec_of(mod)
         for role, v in spec.get("variables", {}).items():
             out.append((mod, role, mod.get(role, v["name"])))
     return out
@@ -736,19 +847,19 @@ def model_properties(md: dict) -> list[str]:
     if given)."""
     out = []
     for mod in md.get("modules", []):
-        spec = MODULE_SPECS.get(mod.get("type"), {})
+        spec = spec_of(mod)
         for p in spec.get("properties", {}):
             if p in spec.get("transient_properties", ()) and not mod.get("properties", {}).get(p):
                 continue
-            if p not in out:
-                out.append(p)
+            if data_name(mod, p) not in out:
+                out.append(data_name(mod, p))
     return out
 
 
 def model_macros(md: dict) -> list[str]:
     out = []
     for mod in md.get("modules", []):
-        for m in MODULE_SPECS.get(mod.get("type"), {}).get("macros", ()):
+        for m in spec_of(mod).get("macros", ()):
             if m not in out:
                 out.append(m)
     return out
@@ -853,17 +964,18 @@ def scheme_key(md_name: str, u: str) -> str:
 def inertia_variable(mod: dict) -> str | None:
     """The variable of a module which may have a time derivative (None:
     the module has none)."""
-    inertia = MODULE_SPECS.get(mod.get("type"), {}).get("inertia")
+    spec = spec_of(mod)
+    inertia = spec.get("inertia")
     if not inertia:
         return None
-    return mod.get(inertia["variable"], MODULE_SPECS[mod["type"]]["variables"][inertia["variable"]]["name"])
+    return mod.get(inertia["variable"], spec["variables"][inertia["variable"]]["name"])
 
 
 def variable_order(md: dict, u: str) -> int:
     """The order of the time derivative of a variable (0: none)."""
     for mod in md.get("modules", []):
         if inertia_variable(mod) == u:
-            return int(MODULE_SPECS[mod["type"]]["inertia"].get("order", 1))
+            return int(spec_of(mod)["inertia"].get("order", 1))
     return 0
 
 
@@ -2369,16 +2481,17 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     # --- Modules: their properties and macros join the names of the model
     macro_owner: dict[str, int] = {}
     for i, mod in enumerate(md.get("modules", [])):
-        spec = MODULE_SPECS.get(mod.get("type"))
+        spec = spec_of(mod) if mod.get("type") in MODULE_SPECS else None
         if spec is None:
             continue
         for p in spec["properties"]:
             if p in spec.get("transient_properties", ()) and not mod.get("properties", {}).get(p):
                 continue
-            if p not in taken:
-                taken[p] = "property"
-            elif taken[p] != "property":
-                errors.append(f"{w}.modules[{i}]: its property {p!r} is already a {taken[p]}")
+            d = data_name(mod, p)
+            if d not in taken:
+                taken[d] = "property"
+            elif taken[d] != "property":
+                errors.append(f"{w}.modules[{i}]: its property {d!r} is already a {taken[d]}")
         for m in spec["macros"]:
             if m in macro_owner:
                 errors.append(f"{w}.modules[{i}]: macro {m!r} is already defined by module "
@@ -2398,10 +2511,11 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     for i, mod in enumerate(md.get("modules", [])):
         for prop in used_properties(model, md, mod):
             pieces = mod.get("properties", {}).get(prop)
-            if prop in first and first[prop][1] != pieces:
+            d = data_name(mod, prop)
+            if d in first and first[d][1] != pieces:
                 errors.append(f"{w}.modules[{i}].properties.{prop}: defined otherwise by module "
-                              f"{first[prop][0] + 1} ({prop} is a data of the model, shared by its modules)")
-            first.setdefault(prop, (i, pieces))
+                              f"{first[d][0] + 1} ({d} is a data of the model, shared by its modules)")
+            first.setdefault(d, (i, pieces))
 
     # --- Terms
     tnames = [t.get("name") for t in md.get("terms", [])]
@@ -2522,7 +2636,7 @@ def _validate_graphics(graphics, where, errors) -> None:
 def used_properties(model: dict, md: dict, mod: dict) -> list[str]:
     """The properties a module uses (given): its transient properties only in
     time."""
-    spec = MODULE_SPECS.get(mod.get("type"), {})
+    spec = spec_of(mod)
     timed = in_time(model, md, mod)
     return [p for p in spec.get("properties", {}) if mod.get("properties", {}).get(p)
             and (p not in spec.get("transient_properties", ()) or timed)]
@@ -2530,10 +2644,10 @@ def used_properties(model: dict, md: dict, mod: dict) -> list[str]:
 
 def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, errors, anchored) -> None:
     mtype = mod.get("type")
-    spec = MODULE_SPECS.get(mtype)
-    if spec is None:
+    if mtype not in MODULE_SPECS:
         errors.append(f"{w}.type: {', '.join(MODULE_SPECS)} expected, got {mtype!r}")
         return
+    spec, base = spec_of(mod), MODULE_SPECS[mtype]
     # variables of the module
     for role, v in spec["variables"].items():
         name = mod.get(role, v["name"])
@@ -2543,6 +2657,12 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
             errors.append(f"{w}.{role}: unknown {what} {name!r} (the {v['label']})")
         elif kinds[name] != v["kind"]:
             errors.append(f"{w}.{role}: the {v['label']} {name!r} should be a {v['kind']} variable")
+    if mtype == "pde":
+        var = by_name(md.get("variables", []), mod.get("variable", "u"))
+        c = var.get("components", 1) if var else 1
+        if c not in (1, "dim") and c != dim:
+            errors.append(f"{w}.variable: a vector unknown of a PDE has the dimension of the space as "
+                          f"number of components (\"dim\"), {c!r} given")
     if "requires" in spec:
         other, role = spec["requires"]
         name = mod.get(role, spec["variables"][role]["name"])
@@ -2554,9 +2674,9 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
     for opt, value in mod.items():
         if opt in known:
             continue
-        if opt in spec["options"]:
-            if value not in spec["options"][opt]:
-                errors.append(f"{w}.{opt}: {', '.join(spec['options'][opt])} expected, got {value!r}")
+        if opt in base["options"]:
+            if value not in base["options"][opt]:
+                errors.append(f"{w}.{opt}: {', '.join(base['options'][opt])} expected, got {value!r}")
             elif opt == "plane" and dim is not None and dim != 2:
                 errors.append(f"{w}.plane: only meaningful in 2D")
         elif opt in spec["values"]:
@@ -2651,7 +2771,7 @@ def with_defaults(model: dict) -> dict:
             v.setdefault("degree", 1)
             v.setdefault("components", 1)
         for mod in md["modules"]:
-            spec = MODULE_SPECS.get(mod.get("type"), {})
+            spec = spec_of(mod)
             for role, v in spec.get("variables", {}).items():
                 mod.setdefault(role, v["name"])
             for key, value in spec.get("value_defaults", {}).items():

@@ -246,3 +246,33 @@ under the plate (``qin``), cooled by convection on the plate and the pins
 balanced by the convected power, and ``pins_area`` is the area of the
 pins in the air (``n``\ :sup:`2` times their side above the plate and
 their end).
+
+.. _gui-example-convection_diffusion:
+
+Convection-diffusion (``convection_diffusion.json``)
+----------------------------------------------------
+
+The ``pde`` module, in coefficient form: :math:`-\mathrm{div}(\kappa
+\nabla u) + \beta\cdot\nabla u = 1` on the unit square, ``u = 0`` on its
+boundary, with a small diffusion ``kappa`` = 0.002 and a unit convection at
+the angle ``theta``. The convection dominates (on a 32 x 32 mesh,
+:math:`|\beta| h/\kappa` is about 15): u grows along the streamlines
+and drops to 0 in thin boundary layers at the outflow. With its option
+``stabilization`` set to ``none`` (Galerkin), the solution overshoots
+(its maximum is above 2); with ``supg`` (the example), it stays
+between 0 and 1 (``max_u`` 0.93).
+
+.. _gui-example-membrane_wave:
+
+Membrane waves (``membrane_wave.json``)
+---------------------------------------
+
+The ``pde`` module of order 2 in time: the wave equation
+:math:`\partial^2 w/\partial t^2 - \mathrm{div}(c_0^2 \nabla w) = 0` on a
+square membrane fixed on its edges, from a Gaussian bump at rest (the
+initial value of ``w``). The transient solver uses Newmark's average
+acceleration scheme, which conserves the energy of a linear problem: the
+output ``energy`` stays at :math:`\pi/2` (that of the initial bump, the
+integral of :math:`c_0^2 |\nabla w|^2/2`) to six digits, while the waves
+reflect on the edges (``w`` changes sign). ``displaced_volume`` starts at
+:math:`\pi r_0^2`.

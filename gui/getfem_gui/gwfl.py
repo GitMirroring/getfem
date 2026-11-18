@@ -75,7 +75,7 @@ def expressions(model: dict) -> list[dict]:
             if f in M.model_fields(model, md):
                 users.setdefault(f"fields[{i}]", k)
         for i, mod in enumerate(md["modules"]):
-            spec = M.MODULE_SPECS.get(mod.get("type"), {})
+            spec = M.spec_of(mod)
             mw = f"{w}.modules[{i}]"
             for p, pieces in mod.get("properties", {}).items():
                 for j, pc in enumerate(pieces):
@@ -116,13 +116,14 @@ def _sample(model, md, name) -> float:
     """A representative value of a property or a field: its first numeric
     value (a neutral 1 could make a macro singular, e.g. nu = 1)."""
     for mod in md["modules"]:
-        for pc in mod.get("properties", {}).get(name, []):
+        key = next((p for p in mod.get("properties", {}) if M.data_name(mod, p) == name), name)
+        for pc in mod.get("properties", {}).get(key, []):
             v = M.material(model, pc["material"])["properties"].get(name) if "material" in pc \
                 and M.material(model, pc["material"]) else pc.get("value")
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 return float(v)
-        default = M.MODULE_SPECS.get(mod.get("type"), {}).get("property_defaults", {}).get(name)
-        if default is not None:
+        default = M.MODULE_SPECS.get(mod.get("type"), {}).get("property_defaults", {}).get(key)
+        if isinstance(default, (int, float)) and not isinstance(default, bool):
             return float(default)
     for f in M.model_fields(model, md):
         if f.get("name") == name:

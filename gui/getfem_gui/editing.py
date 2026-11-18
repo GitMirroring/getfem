@@ -181,7 +181,7 @@ def _model_of(model: dict, mod: dict) -> dict:
 def shown_properties(model: dict, mod: dict) -> list[str]:
     """The properties of a module in its form (those only needed in time if
     it is in time)."""
-    spec = M.MODULE_SPECS.get(mod.get("type"), {})
+    spec = M.spec_of(mod)
     return [p for p in spec.get("properties", {})
             if p not in spec.get("transient_properties", ()) or M.in_time(model, _model_of(model, mod), mod)]
 
@@ -210,7 +210,9 @@ def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, d
                                  (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
                                  op="piece_source", help=label))
                 name = ""
-            if "material" not in pc:
+            if "material" not in pc and M.property_kind(mod, p) == M.VECTOR:
+                out.append(Field(path + ("value",), name, "vector", size=dim, help=label))
+            elif "material" not in pc:
                 out.append(Field(path + ("value",), name, "value", help=MATRIX_HELP if tensor else label))
         if not pieces:
             out.append(Field(mpath, "", "info", help=f"{p} ({label}): not given (Add a domain for {p})"))
@@ -229,7 +231,7 @@ def _source_fields(mod: dict, spec: dict, mpath: Path, domains, dim: int) -> lis
     kind = spec.get("source")
     if kind is None:
         return []
-    label = SOURCE_LABELS.get(kind, "f")
+    label = "f (volume source)" if mod.get("type") == "pde" else SOURCE_LABELS.get(kind, "f")
     srcs = mod.get("sources", [])
     if not srcs:
         return [_value_field(mpath + ("sources",), label, kind, dim, op="first_source")]
@@ -301,11 +303,11 @@ def _time_properties(model: dict) -> None:
     for md in model.get("models", []):
         for mod in md.get("modules", []):
             if M.in_time(model, md, mod):
-                spec = M.MODULE_SPECS[mod["type"]]
+                spec = M.spec_of(mod)
                 props = mod.setdefault("properties", {})
                 for p in spec.get("transient_properties", ()):
                     if not props.get(p):
-                        props[p] = [{"selection": M.ALL, "value": spec["property_defaults"].get(p, 1.0)}]
+                        props[p] = [{"selection": M.ALL, "value": M.default_property(mod, p, M.model_dim(model, md) or 2)}]
 
 
 def _choices(names) -> tuple:
@@ -495,7 +497,7 @@ def _fields_node(path: Path, fields_: list) -> Node:
 
 
 def _module_node(md_path: Path, i: int, mod: dict) -> Node:
-    spec = M.MODULE_SPECS.get(mod.get("type"), {})
+    spec = M.spec_of(mod)
     path = md_path + ("modules", i)
     node = Node(path, spec.get("label", str(mod.get("type"))), "module")
     # (its properties and its source: in its form)
@@ -1092,6 +1094,70 @@ def _rows(value) -> list[list[str]] | None:
     return None
 
 
+_PDE_OPTIONS = {"form": "Form", "unknown": "Scalar or vector", "time_order": "Order in time", "diffusion": "Diffusion",
+                "stabilization": "Stabilization"}
+_PDE_OPTION_HELP = {
+    "form": "coefficients: ea d2u/dt2 + da du/dt - div(c grad u + al u - ga) + be.grad u + a u = f; "
+            "general: ea d2u/dt2 + da du/dt - div Gamma = f, Gamma (the flux) any expression of u "
+            "and its gradient (Grad_u)",
+    "unknown": "scalar, or a vector of the dimension of the space (its variable changed accordingly)",
+    "time_order": "the time derivative of the equation; whether it is solved in time, and its scheme, "
+                  "are chosen in the global solver (stationary otherwise: the derivatives are zero)",
+    "diffusion": "anisotropic: c is a dim x dim matrix",
+    "stabilization": "SUPG: a streamline upwind term for a dominant convection (be large compared "
+                     "with c/h): tau (be.grad v) times the residual of the equation",
+}
+
+
+def pde_option(model: dict, md: dict, mod: dict, opt: str, value, dim: int) -> None:
+    """An option of a PDE module changed: its properties follow (those of the
+    new spec kept, converted to their new kind: a number to a matrix and
+    back, otherwise their default; the others removed); the unknown scalar
+    or vector: its variable (if no other module uses it), its sources and
+    conditions too."""
+    old = M.spec_of(mod)
+    mod[opt] = value
+    new = M.spec_of(mod)
+    props = mod.setdefault("properties", {})
+    for p in list(props):
+        if p not in new["properties"]:
+            del props[p]
+    if opt == "time_order":                  # (da: the mass coefficient at order 1, a damping at order 2)
+        props.pop("da", None)
+    for p in new["properties"]:
+        was, kind = old.get("property_kinds", {}).get(p), new["property_kinds"][p]
+        if p not in props or not props[p]:
+            props[p] = [{"selection": M.ALL, "value": M.default_property(mod, p, dim)}]
+        elif was != kind:
+            for pc in props[p]:
+                if "value" not in pc:
+                    continue
+                if (was, kind) == (M.SCALAR, M.MATRIX):
+                    if not isinstance(pc["value"], (int, float)):       # (a number: times the identity)
+                        pc["value"] = to_matrix(pc["value"], dim)
+                elif (was, kind) == (M.MATRIX, M.SCALAR) and _rows(to_scalar(pc["value"])) is None:
+                    pc["value"] = to_scalar(pc["value"])     # (a multiple of the identity)
+                else:
+                    pc["value"] = M.default_property(mod, p, dim) if kind != M.MATRIX else 0.0
+    if opt == "unknown":
+        vector = value == "vector"
+        var = M.by_name(md.get("variables", []), mod.get("variable"))
+        users = [m for m, _, name in M.module_variables(md) if name == mod.get("variable")]
+        if var is not None and users == [mod]:
+            if vector:
+                var["components"] = "dim"
+            else:
+                var.pop("components", None)
+            var.pop("initial", None)
+            var.pop("initial_velocity", None)
+        kind = new["source"]
+        for src in mod.get("sources", []):
+            src["value"] = _zero(kind, dim)
+        for bc in mod.get("conditions", []):
+            for k2, kd in new["conditions"].get(bc.get("type"), {}).items():
+                bc[k2] = 1.0 if k2 == "q" else _zero(kd, dim)
+
+
 def to_matrix(value, dim: int):
     """A scalar value as the matrix it stands for (times the identity):
     [v, 0; 0, v]; a matrix or an expression unchanged."""
@@ -1122,7 +1188,7 @@ def _value_field(key, label, kind, dim, op=None) -> Field:
     return Field(key, label, "value", op=op)
 
 
-_LABELS = {"value": "Value", "h": "Exchange coefficient h", "T_ext": "External temperature",
+_LABELS = {"value": "Value", "h": "Exchange coefficient h", "q": "Coefficient q", "T_ext": "External temperature",
            "T_ref": "Reference temperature"}
 
 
@@ -1186,7 +1252,7 @@ def _model_fields(model, path) -> list[Field]:
             return [Field(path, "", "info", help="Predefined physics, with their properties per domain, "
                           "sources and conditions.")]
         mod = model["models"][k]["modules"][rest[1]]
-        spec = M.MODULE_SPECS.get(mod.get("type"), {})
+        spec = M.spec_of(mod)
         mpath = base + ("modules", rest[1])
         if n == 2:
             # sections: the equation (with the options which change it), the variables, the
@@ -1194,8 +1260,14 @@ def _model_fields(model, path) -> list[Field]:
             from . import equations
             out = [Field(mpath, "Equation", "section"),
                    Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod))]
+            labels = spec.get("option_labels", {})
             for opt, values in spec.get("options", {}).items():
                 if opt == "plane" and dim != 2:
+                    continue
+                if mod.get("type") == "pde":            # (its properties follow its options)
+                    out.append(Field(mpath + (opt,), _PDE_OPTIONS.get(opt, opt.capitalize()), "choice",
+                                     tuple((x, labels.get(opt, {}).get(x, x)) for x in values),
+                                     op="pde_option", help=_PDE_OPTION_HELP.get(opt, "")))
                     continue
                 tensor = any(o == opt for o, _ in spec.get("tensor_properties", {}).values())
                 out.append(Field(mpath + (opt,), "2D model" if opt == "plane" else opt.capitalize(), "choice",
@@ -2310,7 +2382,7 @@ def _zero(kind: str, dim: int):
 def _default_condition(btype: str, values: dict, selection: str, dim: int) -> dict:
     bc = {"type": btype, "selection": selection}
     for key, kind in values.items():
-        bc[key] = 20.0 if key == "T_ext" else (1.0 if key == "h" else _zero(kind, dim))
+        bc[key] = 20.0 if key == "T_ext" else (1.0 if key in ("h", "q") else _zero(kind, dim))
     return bc
 
 
@@ -2450,7 +2522,8 @@ def _share_property(model: dict, path: Path) -> None:
     prop = path[5]
     pieces = mod.get("properties", {}).get(prop)
     for other in md.get("modules", []):
-        if other is not mod and prop in M.MODULE_SPECS.get(other.get("type"), {}).get("properties", {}):
+        if other is not mod and prop in M.spec_of(other).get("properties", {}) \
+                and M.data_name(other, prop) == M.data_name(mod, prop):
             other.setdefault("properties", {})[prop] = copy.deepcopy(pieces) if pieces else []
 
 
@@ -2485,6 +2558,12 @@ def _apply(model: dict, f: Field, value) -> Path | None:
         sc.clear()
         sc.update(M.scheme_with_defaults({"type": value}))
         _time_properties(model)
+        return None
+    if f.op == "pde_option":                 # the properties of the new spec, converted or by default
+        mod = get_at(model, key[:-1])
+        md = owner(model, key)
+        if mod.get(key[-1]) != value:
+            pde_option(model, md, mod, key[-1], value, item_dim(model, key[:-1]))
         return None
     if f.op == "tensor_option":              # (an)isotropic: the values of its tensor properties converted
         mod = get_at(model, key[:-1])
@@ -2636,6 +2715,9 @@ def _apply(model: dict, f: Field, value) -> Path | None:
             md = owner(model, key)
             rename_identifier(md if md is not None else model, old, value)
             if f.op == "rename_variable":
+                if any(m.get("type") == "pde" and m.get("variable") == value for m in md.get("modules", [])):
+                    for q in list(M.MODULE_SPECS["pde"]["properties"]) + ["tau"]:   # c_u, ... of its PDE
+                        rename_identifier(md, f"{q}_{old}", f"{q}_{value}")
                 for other in model.get("models", []):
                     for im in other.get("imports", []):
                         if im.get("model") == md.get("name") and im.get("variable") == old:
@@ -2813,7 +2895,7 @@ def _apply(model: dict, f: Field, value) -> Path | None:
         bc = get_at(model, key[:-1])
         if bc.get("type") != value:
             mod = get_at(model, key[:-3])
-            spec = M.MODULE_SPECS[mod["type"]]
+            spec = M.spec_of(mod)
             set_at(model, key[:-1], _default_condition(value, spec["conditions"][value],
                                                        bc.get("selection", M.BOUNDARY), item_dim(model, key)))
     elif f.op == "cond_type":
@@ -2892,7 +2974,7 @@ def _fit_dimension(model: dict, gi: int, dim: int) -> None:
         if M.model_geometry(model, md) is not geom:
             continue
         for mod in md.get("modules", []):
-            spec = M.MODULE_SPECS.get(mod.get("type"), {})
+            spec = M.spec_of(mod)
             if dim != 2:
                 mod.pop("plane", None)
             elif "plane" in spec.get("options", {}):
@@ -3060,7 +3142,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif rest == ("graphics",):
         out.append(("add_graphic", "Add a graphic"))
     elif rest[:1] == ("modules",) and len(rest) == 2:
-        spec = M.MODULE_SPECS.get(get_at(model, path + ("type",)), {})
+        spec = M.spec_of(get_at(model, path))
         out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(model, get_at(model, path))]
         if spec.get("source") is not None:
             out.append(("add_source", "Add a domain for f"))
@@ -3435,7 +3517,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
                 old = v["name"]
                 v["name"] = unique_name(old, taken)
                 for mod in new["modules"]:
-                    for role in M.MODULE_SPECS[mod["type"]]["variables"]:
+                    for role in M.spec_of(mod)["variables"]:
                         if mod.get(role) == old:
                             mod[role] = v["name"]
         models.append(new)
@@ -3491,28 +3573,29 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
                 mods.insert(len(mods) - 1, M.new_module(other, dim, {"variable": names[role]}))
         for new in [m for m in mods if all(m is not b for b in before)]:     # the properties already given
             for prop in list(new.get("properties", {})):
-                given = next((b["properties"][prop] for b in before if b.get("properties", {}).get(prop)), None)
+                given = next((b["properties"][prop] for b in before if b.get("properties", {}).get(prop)
+                              and M.data_name(b, prop) == M.data_name(new, prop)), None)
                 if given:
                     new["properties"][prop] = copy.deepcopy(given)
         return base + ("modules", len(mods) - 1)
     if action.startswith("add_piece:"):
         p = action.split(":", 1)[1]
         pieces = get_at(model, path).setdefault("properties", {}).setdefault(p, [])
-        default = M.MODULE_SPECS[get_at(model, path + ("type",))]["property_defaults"].get(p, 1.0)
+        default = M.default_property(get_at(model, path), p, dim)
         pieces.append({"selection": M.ALL, "value": default})
         _share_property(model, path + ("properties", p))
         return path                                 # (edited in the form of the module)
     if action == "add_source":
         mpath = path[:4]
         mod = get_at(model, mpath)
-        spec = M.MODULE_SPECS[mod["type"]]
+        spec = M.spec_of(mod)
         srcs = mod.setdefault("sources", [])
         srcs.append({"selection": M.ALL, "value": _zero(spec.get("source", M.SCALAR), dim)})
         return mpath                                # (edited in the form of the module)
     if action == "add_bc":
         mpath = path[:4]
         mod = get_at(model, mpath)
-        spec = M.MODULE_SPECS[mod["type"]]
+        spec = M.spec_of(mod)
         bcs = mod.setdefault("conditions", [])
         btype = next(iter(spec["conditions"]))
         sel = _first_boundary(model, md, {bc.get("selection") for bc in bcs})

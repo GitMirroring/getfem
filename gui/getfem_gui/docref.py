@@ -311,6 +311,8 @@ def modules() -> str:
             "expression of the model.\n\n")
     for t, spec in M.MODULE_SPECS.items():
         out += f".. _gui-ref-module-{t}:\n\n" + _title(f"{t}: {spec['label']}", "-")
+        if spec.get("doc"):
+            out += spec["doc"] + "\n\n"
         rows = [[_lit(role), _esc(v["label"]), v["kind"], _lit(v["name"]),
                  "yes" if v.get("import") else ""] for role, v in spec["variables"].items()]
         out += _table(["Key", "Variable", "Kind", "Default name", "May be imported"], rows)
