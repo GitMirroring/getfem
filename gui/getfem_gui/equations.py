@@ -106,45 +106,27 @@ def _expansion(model: dict, md: dict, mod: dict) -> str:
 
 
 def _pde(model: dict, md: dict, mod: dict) -> str:
-    from .codegen import _is_zero
+    """All the terms of its form, of its order in time (whatever the values
+    of the coefficients: each one has its place), the names of the
+    coefficients in the expressions."""
     spec = M.spec_of(mod)
     u = html.escape(mod.get("variable", "u"))
-    props = mod.get("properties", {})
-    nz = {p for p in spec["properties"] if not _is_zero(props.get(p))}
-    lhs = []
-    if M.in_time(model, md, mod):
-        if spec["inertia"]["order"] == 2:
-            lhs.append(f"e<sub>a</sub> ∂²{u}/∂t²")
-        if spec["inertia"]["order"] == 1 or "da" in nz:
-            lhs.append(f"d<sub>a</sub> ∂{u}/∂t")
     vector = mod.get("unknown") == "vector"
+    order = spec.get("inertia", {}).get("order", 0)
+    lhs = ([f"m ∂²{u}/∂t²"] if order == 2 else []) + ([f"d ∂{u}/∂t"] if order else [])
     if mod.get("form") == "general":
-        lhs.append(f"{DIV} Γ")
-        gam = props.get("Gamma") or []
-        lines = [_sum(lhs) + " = f &nbsp; in Ω"]
-        if len(gam) == 1 and "value" in gam[0]:
-            lines.append(f"Γ = {_v(gam[0]['value'])} ({html.escape(M.data_name(mod, 'Gamma'))})")
-        else:
-            lines.append(f"Γ: the flux ({html.escape(M.data_name(mod, 'Gamma'))}), per domain")
+        lhs.append(f"{DIV} F")
     else:
-        c = "C" if mod.get("diffusion") == "anisotropic" else "c"
-        flux = ([f"{c} {NABLA}{u}"] if "c" in nz else []) + ([f"α {u}"] if "al" in nz else [])
-        text = " + ".join(flux) + (" − γ" if "ga" in nz else "")
-        if text:
-            lhs.append(f"{DIV}({text})")
-        if "be" in nz:
-            lhs.append(f"β·{NABLA}{u}" if not vector else f"({NABLA}{u}) β")
-        if "a" in nz:
-            lhs.append(f"a {u}")
-        lines = [_sum(lhs) + " = f &nbsp; in Ω"]
-        names = [(c, "c"), ("α", "al"), ("γ", "ga"), ("β", "be"), ("a", "a"),
-                 ("d<sub>a</sub>", "da"), ("e<sub>a</sub>", "ea")]
-        lines.append(", &nbsp;".join(f"{g}: {html.escape(M.data_name(mod, n))}" for g, n in names
-                                     if n in spec["properties"]))
-        if mod.get("stabilization") == "supg" and "stabilization" in spec["options"]:
-            lines.append(f"SUPG: + τ (β·{NABLA}v) (residual), &nbsp; τ = ((2|β|/h)² + 9 (4c/h²)²)<sup>−1/2</sup>")
+        lhs.append(f"{DIV}(K {NABLA}{u}" + ("" if vector else f" + b {u}") + " − j)")
+        lhs += [f"({NABLA}{u}) v" if vector else f"v·{NABLA}{u}", f"r {u}"]
+    lines = [_sum(lhs) + " = f &nbsp; in Ω"]
+    if mod.get("form") == "general":
+        lines.append(f"F: the flux, an expression of {u} and {NABLA}{u}")
+    lines.append("in the expressions: " + ", ".join(html.escape(M.data_name(mod, n)) for n in spec["properties"]))
+    if mod.get("stabilization") == "supg" and "stabilization" in spec["options"]:
+        lines.append(f"SUPG: + τ (v·{NABLA}w) (residual), &nbsp; τ = ((2|v|/h)² + 9 (4K/h²)²)<sup>−1/2</sup>")
     if vector:
-        lines.append(f"{u}: a vector; a, d<sub>a</sub>, e<sub>a</sub>: matrices")
+        lines.append(f"{u}: a vector; r, d, m: matrices")
     return _time(model, md, mod) + _block(lines)
 
 

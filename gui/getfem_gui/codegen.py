@@ -414,7 +414,7 @@ def _pde_parts(c: Ctx, mod: dict) -> dict:
     props = mod.get("properties", {})
     nonzero = {p for p in spec["properties"] if not _is_zero(props.get(p))}
     u = mod["variable"]
-    n = {q: f"{q}_{u}" for q in ("c", "al", "ga", "be", "a", "da", "ea", "Gamma", "tau")}
+    n = {q: f"{q}_{u}" for q in ("K", "b", "j", "v", "r", "d", "m", "F", "tau")}
     return {"u": u, "n": n, "vector": mod.get("unknown") == "vector", "spec": spec, "nz": nonzero,
             "general": mod.get("form") == "general",
             "aniso": mod.get("diffusion") == "anisotropic"}
@@ -424,17 +424,17 @@ def _pde_declare(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     p = _pde_parts(c, mod)
     u, md, n, nz = p["u"], c.py, p["n"], p["nz"]
     if p["general"]:
-        return                                      # (Gamma_u: a property)
-    diff = (f"Grad_{u}*{n['c']}" if p["vector"] else f"{n['c']}*Grad_{u}") if "c" in nz else "0"
-    flux = diff + (f" + {u}*{n['al']}" if "al" in nz else "") + (f" - {n['ga']}" if "ga" in nz else "")
-    w(f"{md}.add_macro({n['Gamma']!r}, {flux!r})  # the flux: c grad {u} + al {u} - ga")
+        return                                      # (F_u: a property)
+    diff = (f"Grad_{u}*{n['K']}" if p["vector"] else f"{n['K']}*Grad_{u}") if "K" in nz else "0"
+    flux = diff + (f" + {u}*{n['b']}" if "b" in nz else "") + (f" - {n['j']}" if "j" in nz else "")
+    w(f"{md}.add_macro({n['F']!r}, {flux!r})  # the flux: K grad {u} + b {u} - j")
     if mod.get("stabilization") == "supg" and "stabilization" in p["spec"]["options"]:
-        cc = f"Trace({n['c']})/meshdim" if p["aniso"] else n["c"]
+        cc = f"Trace({n['K']})/meshdim" if p["aniso"] else n["K"]
         k = int(c.var(u).get("degree", 1))
         h = "element_size" if k == 1 else f"(element_size/{k})"
-        w(f"# SUPG: tau = (|2 be/h|^2 + 9 |4 c/h^2|^2)^(-1/2), h the size of the element"
+        w(f"# SUPG: tau = (|2 v/h|^2 + 9 |4 K/h^2|^2)^(-1/2), h the size of the element"
           f"{'' if k == 1 else ' over the degree'}")
-        w(f"{md}.add_macro({n['tau']!r}, '1/sqrt(sqr(2*Norm({n['be']})/{h}) "
+        w(f"{md}.add_macro({n['tau']!r}, '1/sqrt(sqr(2*Norm({n['v']})/{h}) "
           f"+ 9*sqr(4*({cc})/sqr({h})) + 1e-300)')")
 
 
@@ -445,25 +445,25 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     dot, colon = (".", ":") if vec else ("*", ".")
     test = f"Test_{u}"
     if p["general"]:
-        w(f"# -div Gamma = f")
-        w(f"{lin}{n['Gamma'] + colon + 'Grad_' + test!r})")
+        w("# -div F = f")
+        w(f"{lin}{n['F'] + colon + 'Grad_' + test!r})")
     else:
-        w(f"# -div(c grad {u} + al {u} - ga) + be.grad {u} + a {u} = f")
-        cn, al, be, a = n["c"], n["al"], n["be"], n["a"]
-        if "c" in nz:
-            w(f"{lin}{(f'(Grad_{u}*{cn}):Grad_{test}' if vec else f'({cn}*Grad_{u}).Grad_{test}')!r})")
-        if "al" in nz:
-            w(f"{lin}{f'{u}*{al}.Grad_{test}'!r})")
-        if "be" in nz:
-            w(f"{lin}{(f'(Grad_{u}*{be}).{test}' if vec else f'({be}.Grad_{u})*{test}')!r})")
-        if "a" in nz:
-            w(f"{lin}{(f'({a}*{u}).{test}' if vec else f'{a}*{u}*{test}')!r})")
-        if "ga" in nz:
-            w(f"{md}.add_source_term({c.mim}, {n['ga'] + colon + 'Grad_' + test!r})")
+        w(f"# -div(K grad {u} + b {u} - j) + v.grad {u} + r {u} = f")
+        K, b, v, r = n["K"], n["b"], n["v"], n["r"]
+        if "K" in nz:
+            w(f"{lin}{(f'(Grad_{u}*{K}):Grad_{test}' if vec else f'({K}*Grad_{u}).Grad_{test}')!r})")
+        if "b" in nz:
+            w(f"{lin}{f'{u}*{b}.Grad_{test}'!r})")
+        if "v" in nz:
+            w(f"{lin}{(f'(Grad_{u}*{v}).{test}' if vec else f'({v}.Grad_{u})*{test}')!r})")
+        if "r" in nz:
+            w(f"{lin}{(f'({r}*{u}).{test}' if vec else f'{r}*{u}*{test}')!r})")
+        if "j" in nz:
+            w(f"{md}.add_source_term({c.mim}, {n['j'] + colon + 'Grad_' + test!r})")
     for src in mod["sources"]:
         f = gwfl_vec(src["value"], c.dim) if vec else gwfl(src["value"])
         w(f"{md}.add_source_term({c.mim}, {f + dot + test!r}, {c.rg(src['selection'])})")
-    if mod.get("stabilization") == "supg" and "stabilization" in p["spec"]["options"] and "be" in nz:
+    if mod.get("stabilization") == "supg" and "stabilization" in p["spec"]["options"] and "v" in nz:
         _supg(c, mod, p, w)
     for j, bc in enumerate(mod["conditions"], start=1):
         rg = c.rg(bc["selection"])
@@ -475,37 +475,38 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             c.fem_data(w, data, c.mfs[u], value)
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
         elif bc["type"] == "flux":
-            w(f"# Imposed flux on {bc['selection']}: Gamma.n = g")
+            w(f"# Imposed flux on {bc['selection']}: F.n = g")
             w(f"{md}.add_source_term({c.mim}, {value + dot + test!r}, {rg})")
         elif bc["type"] == "robin":
             q = gwfl_mat(bc["q"]) if vec else gwfl(bc["q"])
-            w(f"# Robin condition on {bc['selection']}: Gamma.n = g - q {u}")
+            w(f"# Robin condition on {bc['selection']}: F.n = g - q {u}")
             w(f"{lin}{(f'({q}*{u}).{test}' if vec else f'{q}*{u}*{test}')!r}, {rg})")
             w(f"{md}.add_source_term({c.mim}, {value + dot + test!r}, {rg})")
 
 
 def _supg(c: Ctx, mod: dict, p: dict, w: ScriptWriter) -> None:
-    """SUPG: tau (be.grad v) times the residual of the equation, added on each
-    element (the second derivatives of u from degree 2: c Laplacian u, the
-    gradient of c neglected; the time derivatives in time)."""
+    """SUPG: tau (v.grad w) times the residual of the equation (w the test
+    function), added on each element (the second derivatives of u from
+    degree 2: K Laplacian u, the gradient of K neglected; the time
+    derivatives in time)."""
     u, nz, md, n = p["u"], p["nz"], c.py, p["n"]
-    res = [f"{n['be']}.Grad_{u}"]
-    if "al" in nz:
-        res.append(f"{n['al']}.Grad_{u}")
-    if "a" in nz:
-        res.append(f"{n['a']}*{u}")
-    if "c" in nz and int(c.var(u).get("degree", 1)) >= 2:
-        res.append(f"-Trace({n['c']}*Hess_{u})" if p["aniso"] else f"-{n['c']}*Trace(Hess_{u})")
+    res = [f"{n['v']}.Grad_{u}"]
+    if "b" in nz:
+        res.append(f"{n['b']}.Grad_{u}")
+    if "r" in nz:
+        res.append(f"{n['r']}*{u}")
+    if "K" in nz and int(c.var(u).get("degree", 1)) >= 2:
+        res.append(f"-Trace({n['K']}*Hess_{u})" if p["aniso"] else f"-{n['K']}*Trace(Hess_{u})")
     inertia = p["spec"].get("inertia")
     if inertia and c.transient and M.in_time(c.model, c.md, mod):
         if inertia["order"] == 1:
-            res.append(f"{n['da']}*Dot_{u}")
+            res.append(f"{n['d']}*Dot_{u}")
         else:
-            res.append(f"{n['ea']}*{u}__inertia")
-            if "da" in nz:
-                res.append(f"{n['da']}*Dot_{u}")
-    weight = f"{n['tau']}*({n['be']}.Grad_Test_{u})"
-    w("# SUPG stabilization: tau (be.grad v) (residual of the equation)")
+            res.append(f"{n['m']}*{u}__inertia")
+            if "d" in nz:
+                res.append(f"{n['d']}*Dot_{u}")
+    weight = f"{n['tau']}*({n['v']}.Grad_Test_{u})"
+    w("# SUPG stabilization: tau (v.grad w) (residual of the equation)")
     w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, {weight + '*(' + ' + '.join(res) + ')'!r})")
     for src in mod["sources"]:
         w(f"{md}.add_source_term({c.mim}, {weight + '*' + gwfl(src['value'])!r}, {c.rg(src['selection'])})")
@@ -522,7 +523,7 @@ def _pde_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
     deg = max(int(c.var(u).get("degree", 1)) - 1, 0)
     w(f"mf_flux = gf.MeshFem({c.m}, {c.m}.dim())")
     w(f"mf_flux.set_classical_discontinuous_fem({deg})")
-    w(f"flux = {md}.interpolation({p['n']['Gamma']!r}, mf_flux)")
+    w(f"flux = {md}.interpolation({p['n']['F']!r}, mf_flux)")
     return ["mf_flux", "flux", "'flux'"]
 
 

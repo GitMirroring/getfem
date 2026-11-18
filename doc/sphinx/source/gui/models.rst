@@ -99,68 +99,68 @@ variant.
 PDE module
 ----------
 
-The ``pde`` module solves an equation given by its coefficients, as the
-coefficient form of COMSOL (whose names it takes):
+The ``pde`` module solves an equation given by its coefficients:
 
 .. math::
 
-   e_a \frac{\partial^2 u}{\partial t^2} + d_a \frac{\partial u}{\partial t}
-   - \mathrm{div}(c \nabla u + \alpha u - \gamma) + \beta\cdot\nabla u + a u = f,
+   m \frac{\partial^2 u}{\partial t^2} + d \frac{\partial u}{\partial t}
+   - \mathrm{div}(K \nabla u + b\, u - j) + v\cdot\nabla u + r u = f,
 
-of coefficients ``c`` (diffusion: a number or, with ``"diffusion":
-"anisotropic"``, a matrix), ``al`` (:math:`\alpha`, a vector), ``ga``
-(:math:`\gamma`, a vector), ``be`` (:math:`\beta`, the convection, a
-vector), ``a`` (absorption), ``da`` and ``ea``, or in general form
+of coefficients ``K`` (the diffusion: a number or, with ``"diffusion":
+"anisotropic"``, a matrix), ``b`` (a conservative convection, a vector),
+``j`` (a given flux, a vector), ``v`` (the convection velocity, a vector),
+``r`` (a reaction), ``d`` and ``m``, or in general form
 (``"form": "general"``),
 
 .. math::
 
-   e_a \frac{\partial^2 u}{\partial t^2} + d_a \frac{\partial u}{\partial t}
-   - \mathrm{div}\,\Gamma = f,
+   m \frac{\partial^2 u}{\partial t^2} + d \frac{\partial u}{\partial t}
+   - \mathrm{div}\,F = f,
 
-of flux ``Gamma`` (:math:`\Gamma`): any expression of ``u`` and of its
-gradient, ``(1 + sqr(u))*Grad_u`` for instance (the model is then nonlinear,
-solved by Newton's method). The coefficients are properties, given per
-domain selection, and the expressions may depend on the coordinates, the
-time and the variables; a zero coefficient adds no term. The equation shown
-in the form of the module has its nonzero terms only. In the expressions,
-the coefficients take the name of the unknown: ``c_u``, ``be_u``,
-``Gamma_u``... for an unknown ``u`` (renamed with it), so that they do not
-clash with the parameters (a parameter ``a`` may be the value of ``a``) and
-that two PDEs of a model, on two unknowns, have their own coefficients.
+of flux ``F``: any expression of ``u`` and of its gradient,
+``(1 + sqr(u))*Grad_u`` for instance (the model is then nonlinear, solved
+by Newton's method). The coefficients are properties, given per domain
+selection, and the expressions may depend on the coordinates, the time and
+the variables; a zero coefficient adds no term to the script. The equation
+shown in the form of the module has all the terms of its form and of its
+order in time, whatever the values of the coefficients. In the
+expressions, the coefficients take the name of the unknown: ``K_u``,
+``v_u``, ``F_u``... for an unknown ``u`` (renamed with it), so that they do
+not clash with the parameters (a parameter ``r`` may be the value of
+``r``) and that two PDEs of a model, on two unknowns, have their own
+coefficients.
 
 Its options:
 
 - ``unknown``: ``scalar``, or ``vector`` (as many components as the
-  dimension: changing it changes the variable). For a vector, ``c`` is the
+  dimension: changing it changes the variable). For a vector, ``K`` is the
   same for each component (a number or a matrix applied to the gradient of
-  each one), ``a``, ``da``, ``ea`` are matrices (a number standing for its
-  multiple of the identity) coupling the components, ``ga`` and ``Gamma``
-  are matrices (a row per component, as ``Grad_u``), and there is no
-  :math:`\alpha`.
-- ``time_order``: ``0``, ``1`` (:math:`d_a\,\partial u/\partial t`, as the
-  heat), ``2`` (:math:`e_a\,\partial^2 u/\partial t^2`, a wave, and
-  :math:`d_a` a damping, 0 by default). As for the other modules, the order
+  each one), ``r``, ``d``, ``m`` are matrices (a number standing for its
+  multiple of the identity) coupling the components, ``j`` and ``F`` are
+  matrices (a row per component, as ``Grad_u``), and there is no ``b``.
+- ``time_order``: ``0``, ``1`` (:math:`d\,\partial u/\partial t`, as the
+  heat), ``2`` (:math:`m\,\partial^2 u/\partial t^2`, a wave, and
+  :math:`d` a damping, 0 by default). As for the other modules, the order
   is part of the equation, and whether it is solved in time, and with which
   scheme, is chosen in the global solver (:ref:`gui-time-schemes`): a
   stationary solver solves it with zero time derivatives.
 - ``stabilization``: ``none`` or ``supg``, for a scalar unknown in
-  coefficient form. When the convection dominates (:math:`|\beta| h / c`
+  coefficient form. When the convection dominates (:math:`|v| h / K`
   large, h the size of the elements), the Galerkin solution oscillates;
   SUPG adds to the equation, on each element,
-  :math:`\tau\,(\beta\cdot\nabla v)\,R(u)` with :math:`R(u)` the residual of
-  the equation (its second derivatives from degree 2, the gradient of
-  :math:`c` neglected) and
-  :math:`\tau = ((2|\beta|/h)^2 + 9 (4c/h^2)^2)^{-1/2}`, h the size of the
+  :math:`\tau\,(v\cdot\nabla w)\,R(u)` with :math:`w` the test function,
+  :math:`R(u)` the residual of the equation (its second derivatives from
+  degree 2, the gradient of :math:`K` neglected) and
+  :math:`\tau = ((2|v|/h)^2 + 9 (4K/h^2)^2)^{-1/2}`, h the size of the
   element divided by the degree of the unknown. It is consistent: the
   exact solution satisfies it.
 
-Its conditions: ``imposed_value``, ``flux`` (:math:`\Gamma\cdot n = g`,
-with :math:`\Gamma = c \nabla u + \alpha u - \gamma` in coefficient form,
-the flux of the general form otherwise) and ``robin``
-(:math:`\Gamma\cdot n = g - q u`); a boundary without condition has a zero
-flux. The macro ``Gamma_u`` is the flux in coefficient form, exported as
-the field ``flux`` for a scalar unknown. ``examples/convection_diffusion.json`` and ``examples/membrane_wave.json``
+Its conditions: ``imposed_value``, ``flux`` (:math:`F\cdot n = g`, with
+:math:`F = K \nabla u + b\, u - j` in coefficient form, the flux of the
+general form otherwise) and ``robin`` (:math:`F\cdot n = g - q u`); a
+boundary without condition has a zero flux. The macro ``F_u`` is the flux
+in coefficient form, exported as the field ``flux`` for a scalar unknown.
+``examples/convection_diffusion.json`` and ``examples/membrane_wave.json``
 use it.
 
 Materials

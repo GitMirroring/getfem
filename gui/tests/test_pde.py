@@ -17,8 +17,8 @@
 """The PDE module: coefficient and general forms, scalar and vector
 unknowns, its conditions, SUPG, the orders in time (by the schemes of the
 global solver); manufactured solutions; its options in the form (the
-properties follow), the names of its coefficients (c_u: those of its
-unknown), the equation shown.
+properties follow), the names of its coefficients (K_u: those of its
+unknown), the equation shown (all the terms of its form).
 
     python -m pytest tests/test_pde.py      (or: python tests/test_pde.py)
 """
@@ -72,32 +72,32 @@ def run(m):
 
 def test_options_and_properties():
     """The properties follow the options: those of the form, of the order
-    in time; a vector unknown: its variable, matrices; da at order 2 a
+    in time; a vector unknown: its variable, matrices; d at order 2 a
     damping (0); the options shown."""
     m, md, mod = pde()
-    assert list(mod["properties"]) == ["c", "al", "ga", "be", "a"] and M.validate(m) == []
-    assert mod["properties"]["be"][0]["value"] == [0.0, 0.0]
+    assert list(mod["properties"]) == ["K", "b", "j", "v", "r"] and M.validate(m) == []
+    assert mod["properties"]["v"][0]["value"] == [0.0, 0.0]
     shown = [f.key[-1] for f in E.fields(m, ("models", 0, "modules", 0)) if f.op == "pde_option"]
     assert shown == ["form", "unknown", "time_order", "diffusion", "stabilization"]
     option(m, "time_order", "1")
-    assert mod["properties"]["da"] == [{"selection": "all", "value": 1.0}]
+    assert mod["properties"]["d"] == [{"selection": "all", "value": 1.0}]
     option(m, "time_order", "2")
-    assert mod["properties"]["da"][0]["value"] == 0.0 and mod["properties"]["ea"][0]["value"] == 1.0
+    assert mod["properties"]["d"][0]["value"] == 0.0 and mod["properties"]["m"][0]["value"] == 1.0
     option(m, "time_order", "0")
-    assert "da" not in mod["properties"] and "ea" not in mod["properties"]
-    mod["properties"]["c"][0]["value"] = 2.0
+    assert "d" not in mod["properties"] and "m" not in mod["properties"]
+    mod["properties"]["K"][0]["value"] = 2.0
     option(m, "diffusion", "anisotropic")
-    assert mod["properties"]["c"][0]["value"] == 2.0 and M.property_kind(mod, "c") == M.MATRIX
-    mod["properties"]["c"][0]["value"] = "[2, 0; 0, 2]"
+    assert mod["properties"]["K"][0]["value"] == 2.0 and M.property_kind(mod, "K") == M.MATRIX
+    mod["properties"]["K"][0]["value"] = "[2, 0; 0, 2]"
     option(m, "diffusion", "isotropic")
-    assert mod["properties"]["c"][0]["value"] == 2.0
+    assert mod["properties"]["K"][0]["value"] == 2.0
     option(m, "unknown", "vector")                       # its variable, its coefficients, its values
-    assert md["variables"][0]["components"] == "dim" and "al" not in mod["properties"]
-    assert M.property_kind(mod, "a") == M.MATRIX and M.property_kind(mod, "ga") == M.MATRIX
+    assert md["variables"][0]["components"] == "dim" and "b" not in mod["properties"]
+    assert M.property_kind(mod, "r") == M.MATRIX and M.property_kind(mod, "j") == M.MATRIX
     shown = [f.key[-1] for f in E.fields(m, ("models", 0, "modules", 0)) if f.op == "pde_option"]
     assert "stabilization" not in shown and M.validate(m) == []
     option(m, "form", "general")
-    assert list(mod["properties"]) == ["Gamma"] and mod["properties"]["Gamma"][0]["value"] == "Grad_u"
+    assert list(mod["properties"]) == ["F"] and mod["properties"]["F"][0]["value"] == "Grad_u"
     assert M.validate(m) == []
     option(m, "unknown", "scalar")
     assert md["variables"][0].get("components", 1) == 1 and M.validate(m) == []
@@ -108,21 +108,23 @@ def test_options_and_properties():
 
 def test_names_and_editing():
     """The coefficients are named after the unknown: no clash with a
-    parameter a; renaming the unknown renames them in the expressions; the
-    equation shows the nonzero terms; the GWFL terms of the script."""
+    parameter r; renaming the unknown renames them in the expressions; the
+    equation shows all the terms of the form; the GWFL terms of the script
+    (the nonzero ones)."""
     m, md, mod = pde()
-    m["parameters"] = [{"name": "a", "value": 2.0}, {"name": "c", "value": 3.0}]
-    mod["properties"]["a"] = [{"selection": "all", "value": "a"}]           # (the parameter a)
-    md["outputs"] = [{"name": "q", "expr": "a_u*u + c_u", "selection": "all"}]
+    m["parameters"] = [{"name": "r", "value": 2.0}, {"name": "K", "value": 3.0}]
+    mod["properties"]["r"] = [{"selection": "all", "value": "r"}]           # (the parameter r)
+    md["outputs"] = [{"name": "q", "expr": "r_u*u + K_u", "selection": "all"}]
     assert M.validate(m) == []
     eq = equations.equation(m, md, mod)
-    assert "−div(c ∇u) + a u = f" in eq and "a: a_u" in eq and "β" not in eq.split("<br>")[0]
+    assert "−div(K ∇u + b u − j) + v·∇u + r u = f" in eq and "K_u, b_u, j_u, v_u, r_u" in eq
+    assert "∂u/∂t" not in eq
     f = next(x for x in E.fields(m, ("models", 0, "variables", 0)) if x.key[-1] == "name")
     E.apply(m, f, "w")
-    assert mod["variable"] == "w" and md["outputs"][0]["expr"] == "a_w*w + c_w" and M.validate(m) == []
+    assert mod["variable"] == "w" and md["outputs"][0]["expr"] == "r_w*w + K_w" and M.validate(m) == []
     terms = next(x for x in E.fields(m, ("models", 0, "modules", 0)) if x.kind == "code").help
-    assert "(c_w*Grad_w).Grad_Test_w" in terms and "a_w*w*Test_w" in terms and "be_w" not in terms
-    mod["properties"]["be"][0]["value"] = [1, 0]
+    assert "(K_w*Grad_w).Grad_Test_w" in terms and "r_w*w*Test_w" in terms and "v_w" not in terms
+    mod["properties"]["v"][0]["value"] = [1, 0]
     option(m, "stabilization", "supg")
     terms = next(x for x in E.fields(m, ("models", 0, "modules", 0)) if x.kind == "code").help
     assert "tau_w := " in terms and "SUPG" in equations.equation(m, md, mod)
@@ -131,7 +133,7 @@ def test_names_and_editing():
     second = E.get_at(m, path)
     assert second["variable"] == "u" and [v["name"] for v in md["variables"]] == ["w", "u"]
     second["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": 0}]
-    assert M.validate(m) == [] and M.model_properties(md)[:2] == ["c_w", "al_w"] and "c_u" in M.model_properties(md)
+    assert M.validate(m) == [] and M.model_properties(md)[:2] == ["K_w", "b_w"] and "K_u" in M.model_properties(md)
 
 
 def test_coefficient_form():
@@ -142,7 +144,7 @@ def test_coefficient_form():
     errs = []
     for n in (8, 16):
         m, md, mod = pde(n)
-        mod["properties"]["a"] = [{"selection": "all", "value": 3.0}]
+        mod["properties"]["r"] = [{"selection": "all", "value": 3.0}]
         mod["sources"] = [{"selection": "all", "value": f"(2*sqr(pi) + 3)*{EXACT}"}]
         mod["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": 0}]
         md["outputs"] = [{"name": "err", "expr": f"sqr(u - {EXACT})", "selection": "all"}]
@@ -150,20 +152,20 @@ def test_coefficient_form():
     assert errs[1] < 2e-4 and 6 < errs[0] / errs[1] < 10, errs                 # (order 3 in L2)
     m, md, mod = pde(12)                                                        # anisotropic
     option(m, "diffusion", "anisotropic")
-    mod["properties"]["c"] = [{"selection": "all", "value": "[2, 0.5; 0.5, 1]"}]
+    mod["properties"]["K"] = [{"selection": "all", "value": "[2, 0.5; 0.5, 1]"}]
     mod["sources"] = [{"selection": "all", "value": f"3*sqr(pi)*{EXACT} - sqr(pi)*cos(pi*x)*cos(pi*y)"}]
     mod["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": 0}]
     md["outputs"] = [{"name": "err", "expr": f"sqr(u - {EXACT})", "selection": "all"}]
     assert run(m)["quantities"]["err"] < 1e-7
     # u = x^2: -div(grad u + al u - ga) + be.grad u = f with al = (1, 0), ga = (2, 0), be = (0, 1)
     m, md, mod = pde(6)
-    for p, v in (("al", [1, 0]), ("ga", [2, 0]), ("be", [0, 1])):
+    for p, v in (("b", [1, 0]), ("j", [2, 0]), ("v", [0, 1])):
         mod["properties"][p] = [{"selection": "all", "value": v}]
     mod["sources"] = [{"selection": "all", "value": "-2 - 2*x"}]
     mod["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": "sqr(x)"}]
     md["outputs"] = [{"name": "err", "expr": "sqr(u - sqr(x))", "selection": "all"}]
     assert run(m)["quantities"]["err"] < 1e-20
-    # -u'' = 0, Robin on xmin (Gamma.n = -u' = g - q u: u(0) = 1/2 with q = 2, g = 0), flux 1 on xmax
+    # -u'' = 0, Robin on xmin (F.n = -u' = g - q u: u(0) = 1/2 with q = 2, g = 0), flux 1 on xmax
     m, md, mod = pde(4)
     mod["conditions"] = [{"type": "robin", "selection": "xmin", "q": 2.0, "value": 0.0},
                          {"type": "flux", "selection": "xmax", "value": 1.0}]
@@ -179,14 +181,14 @@ def test_vector_and_general_form():
         return
     m, md, mod = pde(12)
     option(m, "unknown", "vector")
-    mod["properties"]["a"] = [{"selection": "all", "value": "[2, 1; 1, 2]"}]
+    mod["properties"]["r"] = [{"selection": "all", "value": "[2, 1; 1, 2]"}]
     mod["sources"] = [{"selection": "all", "value": [f"(2*sqr(pi) + 2)*{EXACT}", EXACT]}]
     mod["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": [0, 0]}]
     md["outputs"] = [{"name": "err", "expr": f"sqr(u(1) - {EXACT}) + sqr(u(2))", "selection": "all"}]
     assert run(m)["quantities"]["err"] < 1e-7
     m, md, mod = pde(8)
     option(m, "form", "general")
-    mod["properties"]["Gamma"] = [{"selection": "all", "value": "(1 + sqr(u))*Grad_u"}]
+    mod["properties"]["F"] = [{"selection": "all", "value": "(1 + sqr(u))*Grad_u"}]
     mod["sources"] = [{"selection": "all", "value": "-2*x"}]
     mod["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": "x"}]
     md["outputs"] = [{"name": "err", "expr": "sqr(u - x)", "selection": "all"}]
@@ -203,8 +205,8 @@ def test_supg():
 
     def layer(k, stab, degree):
         m, md, mod = pde(20, degree)
-        mod["properties"]["c"] = [{"selection": "all", "value": k}]
-        mod["properties"]["be"] = [{"selection": "all", "value": [1, 0]}]
+        mod["properties"]["K"] = [{"selection": "all", "value": k}]
+        mod["properties"]["v"] = [{"selection": "all", "value": [1, 0]}]
         option(m, "stabilization", stab)
         mod["conditions"] = [{"type": "imposed_value", "selection": "xmin", "value": 0},
                              {"type": "imposed_value", "selection": "xmax", "value": 1}]
@@ -224,13 +226,13 @@ def test_in_time():
         return
     m, md, mod = pde(8)
     option(m, "time_order", "1")
-    mod["properties"]["da"] = [{"selection": "all", "value": 2.0}]
+    mod["properties"]["d"] = [{"selection": "all", "value": 2.0}]
     mod["sources"] = [{"selection": "all", "value": 1.0}]
     mod["conditions"] = [{"type": "imposed_value", "selection": "boundary", "value": 0}]
     md["outputs"] = [{"name": "mean", "expr": "u", "selection": "all"}]
     m["solvers"] = [{"name": "main", "type": "transient", "steps": ["pde"],
                      "time": {"start": 0, "end": 0.05, "step": 0.01}}]
-    assert "d<sub>a</sub> ∂u/∂t − div(c ∇u) = f" in equations.equation(m, md, mod)
+    assert "d ∂u/∂t − div(K ∇u + b u − j) + v·∇u + r u = f" in equations.equation(m, md, mod)
     s1 = run(m)["series"]["mean"]
     h = copy.deepcopy(m)
     hm = h["models"][0]
@@ -251,6 +253,7 @@ def test_in_time():
     m["solvers"] = [{"name": "main", "type": "transient", "steps": ["pde"],
                      "time": {"start": 0, "end": 0.3, "step": 0.01}}]
     assert M.with_defaults(m)["solvers"][0]["schemes"]["pde/u"]["type"] == "newmark"
+    assert "m ∂²u/∂t² + d ∂u/∂t − div(K ∇u" in equations.equation(m, md, mod)
     assert max(run(m)["series"]["err"]) < 1e-6
     m["solvers"] = []                                     # stationary: no time derivative
     assert run(m)["max_u"] < 1e-12

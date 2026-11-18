@@ -467,22 +467,22 @@ MODULE_SPECS = {
     },
     # A partial differential equation of a scalar unknown or of a vector one (dim components),
     # of order 0, 1 or 2 in time, in coefficient form,
-    #   ea d2u/dt2 + da du/dt - div(c grad u + al u - ga) + be.grad u + a u = f,
-    # or in general form, ea d2u/dt2 + da du/dt - div Gamma = f (Gamma: the flux, any
-    # expression of u and its gradient). Its spec depends on its options: pde_spec.
+    #   m d2u/dt2 + d du/dt - div(K grad u + b u - j) + v.grad u + r u = f,
+    # or in general form, m d2u/dt2 + d du/dt - div F = f (F: the flux, any expression of u
+    # and its gradient). Its spec depends on its options: pde_spec.
     "pde": {
         "label": "PDE (coefficient or general form)",
         "doc": "Its properties and their kinds depend on its options (see :ref:`gui-models-pde`): "
-               "c, al, ga, be, a in coefficient form, Gamma in general form; da at order 1 in time, "
-               "ea and da at order 2; the unknown, the source and the conditions scalar, or vectors with "
+               "K, b, j, v, r in coefficient form, F in general form; d at order 1 in time, "
+               "m and d at order 2; the unknown, the source and the conditions scalar, or vectors with "
                "\"unknown\": \"vector\". In the expressions, a coefficient takes the name of the "
-               "unknown: c_u for the c of an unknown u.",
+               "unknown: K_u for the K of an unknown u.",
         "variables": {"variable": {"name": "u", "kind": SCALAR, "degree": 2, "label": "unknown"}},
-        "properties": {"c": "diffusion", "al": "α, flux convection", "ga": "γ, flux source",
-                       "be": "β, convection", "a": "absorption", "Gamma": "Γ, the flux",
-                       "da": "mass at order 1, damping at order 2", "ea": "mass"},
-        "property_defaults": {"c": 1.0, "al": 0.0, "ga": 0.0, "be": 0.0, "a": 0.0, "Gamma": "Grad_u",
-                              "da": 1.0, "ea": 1.0},
+        "properties": {"K": "diffusion", "b": "conservative convection", "j": "given flux",
+                       "v": "convection velocity", "r": "reaction", "F": "the flux",
+                       "d": "mass at order 1, damping at order 2", "m": "mass"},
+        "property_defaults": {"K": 1.0, "b": 0.0, "j": 0.0, "v": 0.0, "r": 0.0, "F": "Grad_u",
+                              "d": 1.0, "m": 1.0},
         "options": {"form": ("coefficients", "general"), "unknown": ("scalar", "vector"),
                     "time_order": ("0", "1", "2"), "diffusion": ("isotropic", "anisotropic"),
                     "stabilization": ("none", "supg")},
@@ -505,30 +505,32 @@ MODULE_SPECS = {
 
 def pde_spec(mod: dict) -> dict:
     """The spec of a PDE module with its options: its properties (those of
-    its form, the time ones of its order), their kinds (scalar unknown: c a
-    number or, anisotropic, a matrix, al, be, ga vectors; vector
-    unknown: c, the same for each component, a, da, ea matrices (a number
-    standing for itself times the identity), ga and Gamma matrices (a row
-    per component), no al), its time derivative, its options shown."""
+    its form, the time ones of its order), their kinds (scalar unknown: K a
+    number or, anisotropic, a matrix, b, j, v vectors; vector unknown: K,
+    the same for each component, r, d, m matrices (a number standing for
+    itself times the identity), j and F matrices (a row per component), no
+    b), its time derivative, its options shown."""
     base = MODULE_SPECS["pde"]
     opt = {k: mod.get(k, v[0]) for k, v in base["options"].items()}
     vector = opt["unknown"] == "vector"
     general = opt["form"] == "general"
     order = int(opt["time_order"]) if opt["time_order"] in ("0", "1", "2") else 0
-    names = ["Gamma"] if general else ["c"] + ([] if vector else ["al"]) + ["ga", "be", "a"]
-    timed = {1: ["da"], 2: ["ea", "da"]}.get(order, [])
-    kinds = {"c": MATRIX if opt["diffusion"] == "anisotropic" else SCALAR,
-             "a": MATRIX if vector else SCALAR, "da": MATRIX if vector else SCALAR,
-             "ea": MATRIX if vector else SCALAR, "al": VECTOR, "be": VECTOR,
-             "ga": MATRIX if vector else VECTOR, "Gamma": MATRIX if vector else VECTOR}
+    names = ["F"] if general else ["K"] + ([] if vector else ["b"]) + ["j", "v", "r"]
+    timed = {1: ["d"], 2: ["m", "d"]}.get(order, [])
+    kinds = {"K": MATRIX if opt["diffusion"] == "anisotropic" else SCALAR,
+             "r": MATRIX if vector else SCALAR, "d": MATRIX if vector else SCALAR,
+             "m": MATRIX if vector else SCALAR, "b": VECTOR, "v": VECTOR,
+             "j": MATRIX if vector else VECTOR, "F": MATRIX if vector else VECTOR}
     kind = VECTOR if vector else SCALAR
     dot = "." if vector else "*"
-    mass = "(ea_{u}*{u}__inertia).Test_{u}" if vector else "ea_{u}*{u}__inertia*Test_{u}"
-    damp = "(da_{u}*Dot_{u}).Test_{u}" if vector else "da_{u}*Dot_{u}*Test_{u}"
+    mass = "(m_{u}*{u}__inertia).Test_{u}" if vector else "m_{u}*{u}__inertia*Test_{u}"
+    damp = "(d_{u}*Dot_{u}).Test_{u}" if vector else "d_{u}*Dot_{u}*Test_{u}"
     u = mod.get("variable", "u")
     spec = dict(base)
     spec["variables"] = {"variable": dict(base["variables"]["variable"], kind=kind)}
     spec["properties"] = {p: base["properties"][p] for p in names + timed}
+    if "d" in spec["properties"]:
+        spec["properties"]["d"] = "damping" if order == 2 else "mass"
     spec["transient_properties"] = tuple(timed)
     spec["property_kinds"] = {p: kinds[p] for p in spec["properties"]}
     spec["options"] = {k: v for k, v in base["options"].items()
@@ -536,13 +538,13 @@ def pde_spec(mod: dict) -> dict:
     if order == 1:
         spec["inertia"] = {"order": 1, "variable": "variable", "expr": damp}
     elif order == 2:
-        spec["inertia"] = {"order": 2, "variable": "variable", "expr": mass, "damping": {"da": damp}}
+        spec["inertia"] = {"order": 2, "variable": "variable", "expr": mass, "damping": {"d": damp}}
     spec["source"] = kind
     q = MATRIX if vector else SCALAR
     spec["conditions"] = {"imposed_value": {"value": kind}, "flux": {"value": kind}, "robin": {"q": q, "value": kind}}
-    spec["macros"] = (() if general else (f"Gamma_{u}",)) + \
+    spec["macros"] = (() if general else (f"F_{u}",)) + \
         ((f"tau_{u}",) if "stabilization" in spec["options"] and opt["stabilization"] == "supg" else ())
-    spec["exports"] = {} if vector else {"flux": (f"Gamma_{u}", VECTOR)}
+    spec["exports"] = {} if vector else {"flux": (f"F_{u}", VECTOR)}
     spec["dot"] = dot
     return spec
 
@@ -551,7 +553,7 @@ def data_name(mod: dict, prop: str) -> str:
     """The name of a property of a module in the expressions (a data of its
     model, shared by the modules which have it: rho of a heat conduction and
     of an elasticity); the coefficients of a PDE take the name of its
-    unknown (c_u, a_u: those of each PDE, apart from the parameters)."""
+    unknown (K_u, r_u: those of each PDE, apart from the parameters)."""
     if mod.get("type") == "pde":
         return f"{prop}_{mod.get('variable', 'u')}"
     return prop
@@ -621,9 +623,9 @@ def default_property(mod: dict, prop: str, dim: int = 2):
     """The default value of a property of a module: a vector of its default
     (a number) for a vector property; for the PDE flux, of its unknown."""
     v = MODULE_SPECS[mod["type"]]["property_defaults"].get(prop, 1.0)
-    if prop == "Gamma" and mod.get("type") == "pde":
+    if prop == "F" and mod.get("type") == "pde":
         return f"Grad_{mod.get('variable', 'u')}"
-    if prop == "da" and mod.get("type") == "pde" and mod.get("time_order") == "2":
+    if prop == "d" and mod.get("type") == "pde" and mod.get("time_order") == "2":
         v = 0.0                                     # (second order: a damping, none by default)
     if property_kind(mod, prop) == VECTOR and isinstance(v, (int, float)):
         return [v] * dim

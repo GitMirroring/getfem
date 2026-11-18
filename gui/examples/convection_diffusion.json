@@ -65,13 +65,13 @@
           "diffusion": "isotropic",
           "stabilization": "supg",
           "properties": {
-            "c": [
+            "K": [
               {
                 "selection": "all",
                 "value": "kappa"
               }
             ],
-            "al": [
+            "b": [
               {
                 "selection": "all",
                 "value": [
@@ -80,7 +80,7 @@
                 ]
               }
             ],
-            "ga": [
+            "j": [
               {
                 "selection": "all",
                 "value": [
@@ -89,7 +89,7 @@
                 ]
               }
             ],
-            "be": [
+            "v": [
               {
                 "selection": "all",
                 "value": [
@@ -98,7 +98,7 @@
                 ]
               }
             ],
-            "a": [
+            "r": [
               {
                 "selection": "all",
                 "value": 0.0

@@ -253,10 +253,10 @@ Convection-diffusion (``convection_diffusion.json``)
 ----------------------------------------------------
 
 The ``pde`` module, in coefficient form: :math:`-\mathrm{div}(\kappa
-\nabla u) + \beta\cdot\nabla u = 1` on the unit square, ``u = 0`` on its
+\nabla u) + v\cdot\nabla u = 1` on the unit square, ``u = 0`` on its
 boundary, with a small diffusion ``kappa`` = 0.002 and a unit convection at
 the angle ``theta``. The convection dominates (on a 32 x 32 mesh,
-:math:`|\beta| h/\kappa` is about 15): u grows along the streamlines
+:math:`|v| h/\kappa` is about 15): u grows along the streamlines
 and drops to 0 in thin boundary layers at the outflow. With its option
 ``stabilization`` set to ``none`` (Galerkin), the solution overshoots
 (its maximum is above 2); with ``supg`` (the example), it stays

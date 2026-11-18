@@ -32,7 +32,7 @@ leaves this list (its design goes to the documentation and to
   instance).
 - The PDE module: a vector unknown of any number of components (now: the
   dimension of the space; the values of the module are sized by it), its
-  conservative convection α for a vector unknown, SUPG for a vector
+  conservative convection b for a vector unknown, SUPG for a vector
   unknown and in general form.
 - Polar and spherical coordinates.
 - Thin structures (plates, shells, beams).

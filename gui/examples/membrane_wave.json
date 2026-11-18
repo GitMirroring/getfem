@@ -66,13 +66,13 @@
           "diffusion": "isotropic",
           "stabilization": "none",
           "properties": {
-            "c": [
+            "K": [
               {
                 "selection": "all",
                 "value": "sqr(c0)"
               }
             ],
-            "al": [
+            "b": [
               {
                 "selection": "all",
                 "value": [
@@ -81,7 +81,7 @@
                 ]
               }
             ],
-            "ga": [
+            "j": [
               {
                 "selection": "all",
                 "value": [
@@ -90,7 +90,7 @@
                 ]
               }
             ],
-            "be": [
+            "v": [
               {
                 "selection": "all",
                 "value": [
@@ -99,19 +99,19 @@
                 ]
               }
             ],
-            "a": [
+            "r": [
               {
                 "selection": "all",
                 "value": 0.0
               }
             ],
-            "ea": [
+            "m": [
               {
                 "selection": "all",
                 "value": 1.0
               }
             ],
-            "da": [
+            "d": [
               {
                 "selection": "all",
                 "value": 0.0

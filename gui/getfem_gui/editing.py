@@ -180,10 +180,11 @@ def _model_of(model: dict, mod: dict) -> dict:
 
 def shown_properties(model: dict, mod: dict) -> list[str]:
     """The properties of a module in its form (those only needed in time if
-    it is in time)."""
+    it is in time; a PDE: all those of its order in time, as its equation)."""
     spec = M.spec_of(mod)
     return [p for p in spec.get("properties", {})
-            if p not in spec.get("transient_properties", ()) or M.in_time(model, _model_of(model, mod), mod)]
+            if p not in spec.get("transient_properties", ()) or mod.get("type") == "pde"
+            or M.in_time(model, _model_of(model, mod), mod)]
 
 
 def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, dim: int = 2) -> list[Field]:
@@ -1097,15 +1098,15 @@ def _rows(value) -> list[list[str]] | None:
 _PDE_OPTIONS = {"form": "Form", "unknown": "Scalar or vector", "time_order": "Order in time", "diffusion": "Diffusion",
                 "stabilization": "Stabilization"}
 _PDE_OPTION_HELP = {
-    "form": "coefficients: ea d2u/dt2 + da du/dt - div(c grad u + al u - ga) + be.grad u + a u = f; "
-            "general: ea d2u/dt2 + da du/dt - div Gamma = f, Gamma (the flux) any expression of u "
+    "form": "coefficients: m d2u/dt2 + d du/dt - div(K grad u + b u - j) + v.grad u + r u = f; "
+            "general: m d2u/dt2 + d du/dt - div F = f, F (the flux) any expression of u "
             "and its gradient (Grad_u)",
     "unknown": "scalar, or a vector of the dimension of the space (its variable changed accordingly)",
     "time_order": "the time derivative of the equation; whether it is solved in time, and its scheme, "
                   "are chosen in the global solver (stationary otherwise: the derivatives are zero)",
-    "diffusion": "anisotropic: c is a dim x dim matrix",
-    "stabilization": "SUPG: a streamline upwind term for a dominant convection (be large compared "
-                     "with c/h): tau (be.grad v) times the residual of the equation",
+    "diffusion": "anisotropic: K is a dim x dim matrix",
+    "stabilization": "SUPG: a streamline upwind term for a dominant convection (v large compared "
+                     "with K/h): tau (v.grad w) times the residual of the equation, w the test function",
 }
 
 
@@ -1122,8 +1123,8 @@ def pde_option(model: dict, md: dict, mod: dict, opt: str, value, dim: int) -> N
     for p in list(props):
         if p not in new["properties"]:
             del props[p]
-    if opt == "time_order":                  # (da: the mass coefficient at order 1, a damping at order 2)
-        props.pop("da", None)
+    if opt == "time_order":                  # (d: the mass coefficient at order 1, a damping at order 2)
+        props.pop("d", None)
     for p in new["properties"]:
         was, kind = old.get("property_kinds", {}).get(p), new["property_kinds"][p]
         if p not in props or not props[p]:

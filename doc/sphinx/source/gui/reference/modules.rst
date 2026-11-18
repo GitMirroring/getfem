@@ -205,7 +205,7 @@ Requires a ``linear_elasticity`` module (on its displacement).
 pde: PDE (coefficient or general form)
 --------------------------------------
 
-Its properties and their kinds depend on its options (see :ref:`gui-models-pde`): c, al, ga, be, a in coefficient form, Gamma in general form; da at order 1 in time, ea and da at order 2; the unknown, the source and the conditions scalar, or vectors with "unknown": "vector". In the expressions, a coefficient takes the name of the unknown: c_u for the c of an unknown u.
+Its properties and their kinds depend on its options (see :ref:`gui-models-pde`): K, b, j, v, r in coefficient form, F in general form; d at order 1 in time, m and d at order 2; the unknown, the source and the conditions scalar, or vectors with "unknown": "vector". In the expressions, a coefficient takes the name of the unknown: K_u for the K of an unknown u.
 
 .. list-table::
    :header-rows: 1
@@ -230,35 +230,35 @@ Properties:
      - Meaning
      - Unit (SI)
      - Default
-   * - ``c``
+   * - ``K``
      - diffusion
      -
      - ``1.0``
-   * - ``al``
-     - α, flux convection
+   * - ``b``
+     - conservative convection
      -
      - ``0.0``
-   * - ``ga``
-     - γ, flux source
+   * - ``j``
+     - given flux
      -
      - ``0.0``
-   * - ``be``
-     - β, convection
+   * - ``v``
+     - convection velocity
      -
      - ``0.0``
-   * - ``a``
-     - absorption
+   * - ``r``
+     - reaction
      -
      - ``0.0``
-   * - ``Gamma``
-     - Γ, the flux
+   * - ``F``
+     - the flux
      -
      - ``Grad_u``
-   * - ``da``
+   * - ``d``
      - mass at order 1, damping at order 2
      -
      - ``1.0``
-   * - ``ea``
+   * - ``m``
      - mass
      -
      - ``1.0``
