@@ -122,6 +122,18 @@ def test_quadratic_source_p2():
     assert abs(r["max_T"] - 0.25) < 1e-10
 
 
+def test_source_depending_on_the_temperature():
+    """A source f(T) (a term: its dependence kept), linear and nonlinear
+    (Newton): x(1-x) exact in P2."""
+    exact = "X(1)*(1-X(1))"
+    for f in (f"2 + T - {exact}", f"2 + sqr(T) - sqr({exact})"):
+        m = base(degree=2)
+        mod(m)["sources"] = [{"selection": "all", "value": f}]
+        mod(m)["conditions"][1]["value"] = 0.0
+        r = solve(error_quantity(m, exact))
+        assert l2_error(r) < 1e-10, (f, l2_error(r))
+
+
 def test_convection_on_quadrilaterals():
     m = base(element="quad")
     mod(m)["conditions"] = [

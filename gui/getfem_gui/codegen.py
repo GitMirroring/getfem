@@ -284,12 +284,24 @@ def _heat_declare(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     w(f"{c.py}.add_macro('q', '-k*Grad_{u}')  # heat flux vector")
 
 
+def _term(c: Ctx, w: ScriptWriter, expr: str, rg: str | None = None) -> None:
+    """A term of the weak formulation (linear if GetFEM accepts it as such)."""
+    w(f"LINEAR[{c.md['name']!r}] &= add_term({c.py}, {c.mim}, {expr!r}" + (f", {rg})" if rg else ")"))
+
+
+def _source(c: Ctx, w: ScriptWriter, expr: str, rg: str | None = None) -> None:
+    """A source (a right-hand side): a term, not a source term of GetFEM, so
+    that it may depend on the unknowns (f(T), a coupling: its tangent; still
+    linear when it is affine)."""
+    _term(c, w, "-(" + expr + ")", rg)
+
+
 def _heat_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     u, md = mod["variable"], c.py
     w(f"# -div(k grad {u}) = f")
     w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, 'k*Grad_{u}.Grad_Test_{u}')")
     for src in mod["sources"]:
-        w(f"{md}.add_source_term({c.mim}, {gwfl(src['value']) + '*Test_' + u!r}, {c.rg(src['selection'])})")
+        _source(c, w, gwfl(src["value"]) + "*Test_" + u, c.rg(src["selection"]))
     for j, bc in enumerate(mod["conditions"], start=1):
         rg = c.rg(bc["selection"])
         w("")
@@ -301,12 +313,12 @@ def _heat_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
         elif bc["type"] == "heat_flux":
             w(f"# Imposed incoming flux on {bc['selection']}: k grad {u}.n = q")
-            w(f"{md}.add_source_term({c.mim}, {gwfl(bc['value']) + '*Test_' + u!r}, {rg})")
+            _source(c, w, gwfl(bc["value"]) + "*Test_" + u, rg)
         elif bc["type"] == "convection":
             h, text = gwfl(bc["h"]), gwfl(bc["T_ext"])
             w(f"# Convection on {bc['selection']}: -k grad {u}.n = h ({u} - T_ext)")
-            w(f"{md}.add_linear_term({c.mim}, {h + '*' + u + '*Test_' + u!r}, {rg})")
-            w(f"{md}.add_source_term({c.mim}, {h + '*' + text + '*Test_' + u!r}, {rg})")
+            _term(c, w, h + "*" + u + "*Test_" + u, rg)
+            _source(c, w, h + "*" + text + "*Test_" + u, rg)
 
 
 def _heat_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
@@ -369,8 +381,7 @@ def _elasticity_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     w(f"# -div sigma({u}) = f")
     w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, 'sigma:Grad_Test_{u}')")
     for src in mod["sources"]:
-        w(f"{md}.add_source_term({c.mim}, {gwfl_vec(src['value'], dim) + '.Test_' + u!r}, "
-          f"{c.rg(src['selection'])})")
+        _source(c, w, gwfl_vec(src["value"], dim) + ".Test_" + u, c.rg(src["selection"]))
     for j, bc in enumerate(mod["conditions"], start=1):
         rg = c.rg(bc["selection"])
         w("")
@@ -389,10 +400,10 @@ def _elasticity_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
               f"'nitsche_gamma0', {rg}, 1.0)")
         elif bc["type"] == "traction":
             w(f"# Surface traction on {bc['selection']}: sigma.n = g")
-            w(f"{md}.add_source_term({c.mim}, {gwfl_vec(bc['value'], dim) + '.Test_' + u!r}, {rg})")
+            _source(c, w, gwfl_vec(bc["value"], dim) + ".Test_" + u, rg)
         elif bc["type"] == "pressure":
             w(f"# Pressure on {bc['selection']}: sigma.n = -p n")
-            w(f"{md}.add_source_term({c.mim}, {'-' + gwfl(bc['value']) + '*(Normal.Test_' + u + ')'!r}, {rg})")
+            _source(c, w, "-" + gwfl(bc["value"]) + "*(Normal.Test_" + u + ")", rg)
 
 
 def _elasticity_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
@@ -446,8 +457,7 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
     test = f"Test_{u}"
 
     def source(expr: str, rg: str | None = None) -> None:
-        # a term, not a source term: the sources may depend on the unknowns (a coupling of PDEs)
-        w(f"{lin}{'-(' + expr + ')'!r}" + (f", {rg})" if rg else ")"))
+        _source(c, w, expr, rg)
     if p["general"]:
         w("# -div F = f")
         w(f"{lin}{n['F'] + colon + 'Grad_' + test!r})")
@@ -583,12 +593,12 @@ def _conditions(c: Ctx, w: ScriptWriter) -> None:
                   f"{rg}, {data!r})")
         elif t == "neumann":
             w(f"# Neumann condition on {cd['selection']}: incoming flux")
-            w(f"{md}.add_source_term({c.mim}, {c.value(cd['value'], kind) + test + u!r}, {rg})")
+            _source(c, w, c.value(cd["value"], kind) + test + u, rg)
         elif t == "robin":
             h, g = gwfl(cd["h"]), c.value(cd["value"], kind)
             w(f"# Robin condition on {cd['selection']}: flux = h ({u} - g)")
-            w(f"{md}.add_linear_term({c.mim}, {h + '*' + u + test + u!r}, {rg})")
-            w(f"{md}.add_source_term({c.mim}, {h + '*' + g + test + u!r}, {rg})")
+            _term(c, w, h + "*" + u + test + u, rg)
+            _source(c, w, h + "*" + g + test + u, rg)
 
 
 # ---------------------------------------------------------------- models

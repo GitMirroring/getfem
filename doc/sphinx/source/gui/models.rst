@@ -57,7 +57,10 @@ properties are given per domain selection (*Add a domain
 for k*: the last one listed wins), by a value (a number or an expression,
 possibly of the variables: a conductivity ``k(T)`` makes the model
 nonlinear) or by a material. The source is 0 by default, a value or an
-expression of the coordinates, the time, the variables; *Add a domain for f*
+expression of the coordinates, the time, the variables (a source ``f(T)``,
+or depending on another variable: the script adds it as a term, linear when
+it is affine, so that its dependence is kept; the same for the values of
+the flux, traction, pressure, convection and Robin conditions); *Add a domain for f*
 gives sources on domain selections, which add up. Editing the domain or the
 value of a property or of a source shows its domain in the view, where the
 regions clicked are added to it (or removed). The **conditions** (nodes
