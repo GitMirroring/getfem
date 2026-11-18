@@ -34,7 +34,8 @@ os.environ.setdefault("GETFEM_GUI_NO_3D", "1")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
-    from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QMenu, QPushButton
+    from PySide6.QtWidgets import (QApplication, QComboBox, QLineEdit, QMenu, QPlainTextEdit,
+                                   QPushButton, QToolButton)
 except ImportError:  # pragma: no cover
     QApplication = None
     if "pytest" in sys.modules:
@@ -631,6 +632,35 @@ def test_variants_of_an_action_in_one_menu():
     menu = win._populate(QMenu(), root, False)
     titles = [a.text() for a in menu.actions()]
     assert "Add" in titles and "Put in" in titles and not any(t.startswith("Add a") for t in titles)
+    close(win)
+
+
+def test_sections_of_a_module_form():
+    """The form of a module in sections: the equation (with its options),
+    the variables, the parameters, the GWFL terms (closed); a section
+    opened or closed stays so for the other modules; a section with a
+    wrong field is open."""
+    win = window("thermoelastic_plate.json")
+    path = ("models", 0, "modules", 0)
+    labels = [f.label for f in E.fields(win.model, path) if f.kind == "section"]
+    assert labels == ["Equation", "Variable", "Parameters", "GWFL terms"]
+    kinds = [f.kind for f in E.fields(win.model, path)]
+    assert kinds[:3] == ["section", "rich", "choice"]                 # (the conductivity option)
+    win.select(path)
+    sec = lambda name: win.props.findChild(QToolButton, f"section:{name}")   # noqa: E731
+    code = win.props.findChild(QPlainTextEdit, "code")
+    assert sec("Parameters").isChecked() and not sec("GWFL terms").isChecked() and not code.isVisibleTo(win.props)
+    sec("GWFL terms").click()
+    assert win.props.findChild(QPlainTextEdit, "code").isVisibleTo(win.props)
+    sec("Parameters").click()
+    assert not win.props.editor(path + ("sources",)).isVisibleTo(win.props)
+    win.select(("models", 1, "modules", 0))                           # (the elasticity: as left)
+    assert sec("GWFL terms").isChecked() and not sec("Parameters").isChecked()
+    win.model["models"][1]["modules"][0]["properties"]["E"] = [{"selection": "all", "value": ""}]
+    win._changed(select=("models", 1, "modules", 0))                  # a wrong field: its section open
+    QApplication.processEvents()                                      # (the new widgets shown)
+    assert win.errors and sec("Parameters").isChecked()
+    assert win.props.editor(("models", 1, "modules", 0, "properties", "E", 0, "value")).isVisibleTo(win.props)
     close(win)
 
 

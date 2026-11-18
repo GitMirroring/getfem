@@ -87,12 +87,12 @@ Module
    * - Field
      - Key
      - Value
-   * - Temperature
-     - ``variable``
-     - one of ``T``
    * - Conductivity
      - ``conductivity``
      - one of ``isotropic``, ``anisotropic``. anisotropic: the conductivity is a dim x dim matrix (its values turned into matrices)
+   * - Temperature
+     - ``variable``
+     - one of ``T``
    * - k (thermal conductivity)
      - ``properties.k.0``
      - one of ``value`` (a value), ``material:steel`` (material steel). thermal conductivity

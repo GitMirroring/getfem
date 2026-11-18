@@ -75,12 +75,14 @@ class Field:
     label: str
     kind: str                     # text, ident, value, vector, numbers, ints, int, number,
                                   # choice, names, file, info, parameter_table (a whole list),
-                                  # material_table, vertex_table (the points of a polygon)
+                                  # material_table, vertex_table (the points of a polygon),
+                                  # section (a header: the fields after it, up to the next one)
     choices: tuple = ()           # ((value, label), ...) for choice and names
     size: int | None = None       # number of components (vector, numbers, ints)
     op: str | None = None         # special operation instead of a plain assignment
     help: str = ""
     remove: Path | None = None    # what a "remove" button next to the field deletes
+    closed: bool = False          # a section (the fields up to the next one): closed by default
 
     @property
     def removable(self) -> bool:
@@ -1187,13 +1189,11 @@ def _model_fields(model, path) -> list[Field]:
         spec = M.MODULE_SPECS.get(mod.get("type"), {})
         mpath = base + ("modules", rest[1])
         if n == 2:
-            out = []
-            kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
-            for role, v in spec.get("variables", {}).items():
-                names = [x for x, kd in kinds.items() if kd == v["kind"]]
-                if v.get("import"):
-                    names += [im.get("name") for im in md.get("imports", [])]
-                out.append(Field(mpath + (role,), v["label"].capitalize(), "choice", _choices(names)))
+            # sections: the equation (with the options which change it), the variables, the
+            # parameters (properties per domain, values, source), the GWFL terms (closed)
+            from . import equations
+            out = [Field(mpath, "Equation", "section"),
+                   Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod))]
             for opt, values in spec.get("options", {}).items():
                 if opt == "plane" and dim != 2:
                     continue
@@ -1203,15 +1203,23 @@ def _model_fields(model, path) -> list[Field]:
                                  op="tensor_option" if tensor else None,
                                  help="anisotropic: the conductivity is a dim x dim matrix (its values "
                                       "turned into matrices)" if tensor else ""))
+            roles = spec.get("variables", {})
+            out.append(Field(mpath, "Variables" if len(roles) > 1 else "Variable", "section"))
+            kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
+            for role, v in roles.items():
+                names = [x for x, kd in kinds.items() if kd == v["kind"]]
+                if v.get("import"):
+                    names += [im.get("name") for im in md.get("imports", [])]
+                out.append(Field(mpath + (role,), v["label"].capitalize(), "choice", _choices(names)))
+            out.append(Field(mpath, "Parameters", "section"))
+            out += _property_fields(model, mod, spec, mpath, domains, dim)
             for key, kind in spec.get("values", {}).items():
                 out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
-            from . import equations
-            out.append(Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod)))
-            out += _property_fields(model, mod, spec, mpath, domains, dim)
             out += _source_fields(mod, spec, mpath, domains, dim)
             terms = equations.gwfl_terms(model, k, rest[1])
             if terms:
-                out.append(Field(mpath, "GWFL terms of the script", "code", help="\n".join(terms)))
+                out += [Field(mpath, "GWFL terms", "section", closed=True),
+                        Field(mpath, "GWFL terms of the script", "code", help="\n".join(terms))]
             return out
         if rest[2] == "properties" and n == 5:
             p, j = rest[3], rest[4]

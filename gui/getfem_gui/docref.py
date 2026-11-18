@@ -117,7 +117,7 @@ def _fields_doc(model: dict, path: tuple, base: tuple | None = None, skip=()) ->
     base = path if base is None else base
     rows, notes = [], []
     for f in E.fields(model, path):
-        if f.kind in ("rich", "code"):            # (what the module solves: shown, not edited)
+        if f.kind in ("rich", "code", "section"):  # (shown, not edited)
             continue
         if f.kind == "info":
             notes += [x for x in f.help.split("\n") if x and not x.startswith(("No ", "Edges:", "Faces:",

@@ -43,9 +43,14 @@ A module is a predefined physics acting on variables
    another model) with a linear elasticity module: it adds
    :math:`-\beta\alpha(T - T_{ref})I` to the stress.
 
-The form of a module shows the equation it solves, its **properties** and
-its **source** :math:`f`, edited there, and the GWFL terms that the script
-adds for it. The properties are given per domain selection (*Add a domain
+The form of a module is in sections, opened or closed by a click on their
+title: *Equation* (the equation it solves, with the options which change
+it: isotropic or anisotropic, plane strain or stress), *Variable* (the
+variables of the model it acts on), *Parameters* (its **properties** and its
+**source** :math:`f`, edited there) and *GWFL terms* (the terms that the
+script adds for it, closed by default). A section opened or closed stays so
+for the other modules; a section with a wrong field is shown open. The
+properties are given per domain selection (*Add a domain
 for k*: the last one listed wins), by a value (a number or an expression,
 possibly of the variables: a conductivity ``k(T)`` makes the model
 nonlinear) or by a material. The source is 0 by default, a value or an

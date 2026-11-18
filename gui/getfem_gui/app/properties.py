@@ -131,6 +131,7 @@ class PropertiesPanel(QScrollArea):
         self.setWidgetResizable(True)
         self.setMinimumWidth(280)
         self._fields: dict[tuple, QWidget] = {}
+        self._open: dict[str, bool] = {}      # a section opened or closed by the user, by its label
         self._build_empty()
 
     def _build_empty(self):
@@ -217,9 +218,16 @@ class PropertiesPanel(QScrollArea):
         self._build_empty()
         self._base_dir = base_dir
         self._title(title)
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-        for f in fields:
+        in_section = False
+        form = None if fields and fields[0].kind == "section" else self._form()
+        for i, f in enumerate(fields):
+            if f.kind == "section":
+                rest = fields[i + 1:]
+                end = next((j for j, x in enumerate(rest) if x.kind == "section"), len(rest))
+                wrong = any(E.errors_at(errors, x.key) for x in rest[:end] if x.kind not in ("rich", "code"))
+                form = self._section(f, wrong)
+                in_section = True
+                continue
             if f.kind == "info":
                 lab = QLabel(f.help)
                 lab.setWordWrap(True)
@@ -232,7 +240,7 @@ class PropertiesPanel(QScrollArea):
                 lab.setTextFormat(Qt.TextFormat.RichText)
                 lab.setWordWrap(True)
                 lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-                if f.label:
+                if f.label and not in_section:     # (its section says what it is)
                     form.addRow(QLabel(f"<b>{f.label}</b>"))
                 form.addRow(lab)
                 continue
@@ -243,7 +251,8 @@ class PropertiesPanel(QScrollArea):
                 box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
                 box.setStyleSheet("font-family: monospace; color: #333;")
                 box.setMaximumHeight(min(260, 22 + 16 * (f.help.count("\n") + 1)))
-                form.addRow(QLabel(f"<b>{f.label}</b>"))
+                if not in_section:
+                    form.addRow(QLabel(f"<b>{f.label}</b>"))
                 form.addRow(box)
                 continue
             if f.kind == "parameter_table":
@@ -288,11 +297,48 @@ class PropertiesPanel(QScrollArea):
             else:
                 form.addRow(f.label, widget)
             self._fields[f.key] = widget
+        self._messages([e.partition(": ")[2] or e for e in node_errors])
+        self._buttons(actions)
+
+    def _form(self) -> QFormLayout:
+        """A new form (its holder added to the panel), for the next fields."""
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         holder = QWidget()
         holder.setLayout(form)
         self.layout_.addWidget(holder)
-        self._messages([e.partition(": ")[2] or e for e in node_errors])
-        self._buttons(actions)
+        return form
+
+    def _section(self, f: E.Field, wrong: bool) -> QFormLayout:
+        """A section header, opened or closed by a click (as the user left it,
+        otherwise as the field says; open if one of its fields is wrong), and
+        the form of its fields."""
+        button = QToolButton()
+        button.setObjectName(f"section:{f.label}")
+        button.setText(f.label)
+        button.setCheckable(True)
+        button.setAutoRaise(True)
+        button.setStyleSheet("QToolButton { border: none; padding: 2px 0px; }")   # (not a pressed look)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        font = button.font()
+        font.setBold(True)
+        button.setFont(font)
+        self.layout_.addWidget(button)
+        form = self._form()
+        holder = form.parentWidget()
+        holder.setContentsMargins(12, 0, 0, 0)
+
+        def show(opened: bool, user: bool = False):
+            button.setArrowType(Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow)
+            holder.setVisible(opened)
+            if user:
+                self._open[f.label] = opened
+
+        opened = wrong or self._open.get(f.label, not f.closed)
+        button.setChecked(opened)
+        show(opened)
+        button.toggled.connect(lambda on: show(on, True))
+        return form
 
     def _parameter_table(self, model, f: E.Field, errors) -> QWidget:
         """All the parameters of a list in one table: name, value (number or
