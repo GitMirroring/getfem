@@ -81,7 +81,7 @@ def test_validation():
     assert M.variable_order(md, "u") == 2 and M.time_variables(m, md) == ["u"]
     assert M.schemes_for(2) == ["stationary", "newmark", "hht", "generalized_alpha"]
     for sc, msg in [({"type": "theta"}, "stationary, newmark, hht, generalized_alpha expected"),
-                    ({"type": "newmark", "beta": 0}, "beta: number in ]0, 0.5] expected"),
+                    ({"type": "newmark", "beta": -0.1}, "beta: number in [0, 0.5] expected"),
                     ({"type": "newmark", "gamma": 0.4}, "gamma: number in [0.5, 1] expected"),
                     ({"type": "hht", "alpha": 0.1}, "alpha: number in [-0.3333, 0] expected"),
                     ({"type": "generalized_alpha", "rho_inf": 2}, "rho_inf: number in [0, 1] expected"),

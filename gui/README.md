@@ -311,6 +311,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
 | `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
+| `tests/test_explicit.py` | the explicit scheme (Newmark, beta = 0): stability limit, lumped mass, second order, with implicit variables |
 | `tests/test_pde.py` | the PDE module: manufactured solutions (both forms, scalar and vector), SUPG, orders in time |
 | `tests/test_coupling.py` | thermal expansion (monolithic, sequence), staggered two-way coupling, user terms and generic conditions |
 | `tests/test_editing.py` | editing operations, on every node of every example |

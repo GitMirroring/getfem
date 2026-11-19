@@ -312,7 +312,7 @@ SCHEMES = {
     "stationary": "stationary (no time derivative: quasi-static)",
     "theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)",
     "bdf2": "BDF2 (second order; its first step: implicit Euler, or Crank-Nicolson)",
-    "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration)",
+    "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration; beta = 0: explicit)",
     "hht": "HHT-alpha (Hilber-Hughes-Taylor, numerical damping)",
     "generalized_alpha": "generalized-alpha (Chung-Hulbert, numerical damping)",
 }
@@ -320,12 +320,15 @@ SCHEME_ORDER = {"theta": 1, "bdf2": 1, "newmark": 2, "hht": 2, "generalized_alph
 # the parameters of the schemes: (default, lower bound, upper bound, lower bound excluded)
 SCHEME_PARAMETERS = {
     "theta": {"theta": (1.0, 0.0, 1.0, True)},
-    "newmark": {"beta": (0.25, 0.0, 0.5, True), "gamma": (0.5, 0.5, 1.0, False)},
+    "newmark": {"beta": (0.25, 0.0, 0.5, False), "gamma": (0.5, 0.5, 1.0, False)},
     "hht": {"alpha": (-0.05, -1 / 3, 0.0, False)},
     "generalized_alpha": {"rho_inf": (0.8, 0.0, 1.0, False)},
 }
 PARAMETER_LABELS = {"theta": "Theta", "beta": "Beta", "gamma": "Gamma", "alpha": "Alpha",
                     "rho_inf": "Spectral radius at infinity (rho_inf)"}
+# the mass matrix of an explicit scheme (Newmark, beta = 0): M a = -G at each time step
+MASS_MATRICES = {"consistent": "consistent (factorized once)",
+                 "lumped": "lumped (diagonal: the sums of its rows; P1, Q1 elements)"}
 INITIAL_ACCELERATIONS = {"equation": "from the equation at the start time",
                          "zero": "zero (at rest)"}
 # the first step of BDF2 (both keep the second order: one step of local error O(dt^2))
@@ -355,6 +358,8 @@ def scheme_with_defaults(sc: dict) -> dict:
         out.setdefault(p, default)
     if SCHEME_ORDER.get(sc.get("type")) == 2:
         out.setdefault("initial_acceleration", "equation")
+    if is_explicit(sc):
+        out.setdefault("mass", "consistent")
     if sc.get("type") == "bdf2":
         out.setdefault("start", "implicit_euler")
     return out
@@ -1068,11 +1073,20 @@ def second_order_coefficients(sc: dict) -> dict[str, list[float]]:
       all the other terms) written M Atilde_{n+1} + G_{n+1} = 0, G_n =
       -M m_n."""
     b, g, am, af = second_order_parameters(sc)
+    if b == 0.0:
+        raise ValueError("an explicit scheme (beta = 0): no coefficients (its own time step)")
     A = [1 / b, -1 / b, 1 - 1 / (2 * b)]
     V = [g * A[0], 1 + g * A[1], (1 - g) + g * A[2]]
     k = (1 - am) / (1 - af)
     inertia = [k * A[0], k * A[1], k * A[2] + am / (1 - af), -af / (1 - af)]
     return {"acc": A, "vel": V, "inertia": inertia}
+
+
+def is_explicit(sc: dict | None) -> bool:
+    """Whether a scheme is explicit: Newmark with beta = 0 (u_n+1 known
+    before the step, from u_n, v_n, a_n; the unknown of the step: the
+    acceleration, M a_n+1 = -G(u_n+1, ...))."""
+    return bool(sc) and sc.get("type") == "newmark" and float(sc.get("beta", 0.25)) == 0.0
 
 
 def scheme_needs_rate(sc: dict) -> bool:
@@ -1095,6 +1109,10 @@ def scheme_label(sc: dict | None) -> str:
             return f"generalized-α ρ∞ = {float(sc['rho_inf']):g}"
         if (float(sc["beta"]), float(sc["gamma"])) == (0.25, 0.5):
             return "Newmark (average acceleration)"
+        if float(sc["beta"]) == 0.0:
+            return "explicit Newmark" + (" (central difference)" if float(sc["gamma"]) == 0.5
+                                         else f" γ = {float(sc['gamma']):g}") + \
+                (", lumped mass" if sc.get("mass") == "lumped" else "")
         return f"Newmark β = {float(sc['beta']):g}, γ = {float(sc['gamma']):g}"
     th = float(sc.get("theta", 1.0))
     return {1.0: "implicit Euler", 0.5: "Crank-Nicolson"}.get(th, f"θ-method θ = {th:g}")
@@ -2384,6 +2402,15 @@ def _validate_transient(model, s, where, steps, errors) -> None:
             errors.append(f"{w}.initial_acceleration: {', '.join(INITIAL_ACCELERATIONS)} expected")
         if sc["type"] == "bdf2" and sc.get("start", "implicit_euler") not in BDF2_STARTS:
             errors.append(f"{w}.start: {', '.join(BDF2_STARTS)} expected")
+        if is_explicit(sc):
+            if sc.get("mass", "consistent") not in MASS_MATRICES:
+                errors.append(f"{w}.mass: {', '.join(MASS_MATRICES)} expected")
+            for i, cd in enumerate(md.get("conditions", [])):
+                if cd.get("variable") == u and (cd.get("type") == "normal_dirichlet"
+                                                or cd.get("method") == "multiplier"):
+                    errors.append(f"{w}: explicit, {u} cannot have the condition {i + 1} of its model "
+                                  "(a normal component, or a multiplier): a Dirichlet condition by "
+                                  "simplification or penalization")
 
 
 def _where(model, key, item, owner) -> str:

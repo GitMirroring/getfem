@@ -103,6 +103,13 @@ class Ctx:
     partial: bool = False         # solved by partial steps (some of its variables at a time)
     t0: float = 0.0               # the time at the start
     timed: list = field(default_factory=list)    # data depending on t: (name, mf, GWFL expression)
+    dirichlet: dict = field(default_factory=dict)  # variable -> its Dirichlet conditions by simplification:
+                                                   # [(region, data name or None: zero)]
+
+    @property
+    def explicit(self) -> dict:
+        """The variables of an explicit scheme (Newmark, beta = 0): their schemes."""
+        return {u: sc for u, sc in self.schemes.items() if M.is_explicit(sc)}
 
     @property
     def m(self) -> str:
@@ -311,6 +318,7 @@ def _heat_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             w(f"# Imposed temperature on {bc['selection']}")
             c.fem_data(w, data, mf, gwfl(bc["value"]))
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+            c.dirichlet.setdefault(u, []).append((rg, data))
         elif bc["type"] == "heat_flux":
             w(f"# Imposed incoming flux on {bc['selection']}: k grad {u}.n = q")
             _source(c, w, gwfl(bc["value"]) + "*Test_" + u, rg)
@@ -388,12 +396,14 @@ def _elasticity_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
         if bc["type"] == "fixed":
             w(f"# Fixed on {bc['selection']}: {u} = 0")
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg})")
+            c.dirichlet.setdefault(u, []).append((rg, None))
         elif bc["type"] == "displacement":
             data = f"{u}_D{i}_{j}"
             mf = c.mfs[u]
             w(f"# Imposed displacement on {bc['selection']}")
             c.fem_data(w, data, mf, gwfl_vec(bc["value"], dim))
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+            c.dirichlet.setdefault(u, []).append((rg, data))
         elif bc["type"] == "roller":
             w(f"# Roller on {bc['selection']}: {u}.n = 0, free tangential displacement")
             w(f"{md}.add_normal_Dirichlet_condition_with_Nitsche_method({c.mim}, {u!r}, 'sigma*Normal', "
@@ -488,6 +498,7 @@ def _pde_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
             w(f"# Imposed value on {bc['selection']}")
             c.fem_data(w, data, c.mfs[u], value)
             w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+            c.dirichlet.setdefault(u, []).append((rg, data))
         elif bc["type"] == "flux":
             w(f"# Imposed flux on {bc['selection']}: F.n = g")
             source(value + dot + test, rg)
@@ -583,6 +594,8 @@ def _conditions(c: Ctx, w: ScriptWriter) -> None:
             name = "add_normal_Dirichlet_condition" if normal else "add_Dirichlet_condition"
             if cd["method"] == "simplification":
                 w(f"{md}.{name}_with_simplification({u!r}, {rg}, {data!r})")
+                if not normal:
+                    c.dirichlet.setdefault(u, []).append((rg, data))
             elif cd["method"] == "multiplier" and c.partial:     # (its multiplier disabled with u)
                 w(f"ib = {md}.{name}_with_multipliers({c.mim}, {u!r}, {deg}, {rg}, {data!r})")
                 w(f"MULTIPLIERS[{c.md['name']!r}].setdefault({u!r}, []).append({md}.mult_varname_Dirichlet(ib))")
@@ -651,6 +664,9 @@ def time_declarations(c: Ctx, w: ScriptWriter) -> None:
       "data of the model)') from None")
     for u, sc in c.schemes.items():
         mf = c.mfs[u]
+        if M.is_explicit(sc):
+            _explicit_declarations(c, u, sc, w)
+            continue
         if M.SCHEME_ORDER[sc["type"]] == 2:
             _second_order_declarations(c, u, sc, w)
             continue
@@ -700,6 +716,129 @@ def _second_order_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> Non
     m = f" + {u}__inertia_c(4)*{u}__mem" if mem else ""
     w(f"{md}.add_macro('{u}__inertia', '{u}__inertia_c(1)*{d}/sqr(timestep) + {u}__inertia_c(2)*{u}__rate/timestep "
       f"+ {u}__inertia_c(3)*{u}__rate2{m}')")
+
+
+def _explicit_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> None:
+    """An explicit scheme (Newmark, beta = 0): u_n+1 = u_n + dt v_n + dt^2/2
+    a_n is known before the step; the unknown of the step is the
+    acceleration, M a_n+1 = -G(u_n+1, v*, t_n+1) (G: all the other terms,
+    v* = v_n + (1 - gamma) dt a_n), solved by explicit_<model>(); then
+    v_n+1 = v* + gamma dt a_n+1. Dot2_u, Dot_u, u__inertia: the data u__a,
+    u__v (a_n+1 and v_n+1 once the step is done, 0 and v* before)."""
+    md, mf = c.py, c.mfs[u]
+    w(f"# Time scheme of {u}: {M.scheme_label(sc)} (beta = 0, gamma = {float(sc.get('gamma', 0.5)):.6g}):")
+    w(f"#   {u} known before the step, its acceleration the unknown of the step (explicit_{ident(c.md['name'])})")
+    for name in ("prev", "rate", "rate2", "a", "v"):
+        w(f"{md}.add_initialized_fem_data('{u}__{name}', {mf}, np.zeros({mf}.nbdof()))")
+    w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
+    w(f"{md}.add_macro('Previous_Dot_{u}', '{u}__rate')")
+    w(f"{md}.add_macro('Previous_Dot2_{u}', '{u}__rate2')")
+    w(f"{md}.add_macro('Dot2_{u}', '{u}__a')")
+    w(f"{md}.add_macro('Dot_{u}', '{u}__v')")
+    w(f"{md}.add_macro('{u}__inertia', '{u}__a')")
+
+
+def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
+    """explicit_setup_<model>(): the mass matrix of each explicit variable
+    (its free dofs: those of no Dirichlet condition), factorized once or
+    lumped, the stability limit of the time step (the largest eigenvalue of
+    M^-1 K by power iterations: dt omega_max <= 1/sqrt(gamma/2)); and
+    explicit_<model>(predict): a step, M a = -G (G: the residual without
+    the inertia), on the Dirichlet dofs the derivatives of the imposed
+    values (central differences in time of their expression)."""
+    md, name = c.py, ident(c.md["name"])
+    exp = c.explicit
+    info = {}
+    for u, sc in exp.items():
+        mass = None
+        for mod in c.md["modules"]:
+            inertia = M.spec_of(mod).get("inertia")
+            if inertia and mod.get(inertia["variable"]) == u:
+                mass = inertia["expr"].replace("{u}", u).replace(f"{u}__inertia", u)
+        timed = {n: e for n, _mf, e in c.timed}
+        bcs = [(rg, d, timed.get(d)) for rg, d in c.dirichlet.get(u, [])]
+        info[u] = (float(sc.get("gamma", 0.5)), sc.get("mass", "consistent") == "lumped", mass, bcs)
+    w("")
+    w(f"EXPLICIT_{name} = {{}}   # variable: (i0, n, free dofs, Dirichlet dofs, M solve, M_ID, gamma)")
+    w("")
+    w(f"def explicit_setup_{name}():")
+    w(f'    """The mass matrices of the explicit variables of {c.md["name"]!r}, the stability limit."""')
+    w.indent = "    "
+    w(f"{md}.assembly('build_matrix')")
+    w(f"K = {md}.tangent_matrix()")
+    w("dt = (T_END - T_START) / N_STEPS")
+    for u, (g, lumped, mass, bcs) in info.items():
+        mf = c.mfs[u]
+        w(f"i0, n = {md}.interval_of_variable({u!r})")
+        w(f"Mfull = gf.asm_generic({c.mim}, 2, {mass!r}, -1, {md})   # (the inertia term: its mass)")
+        w("D = np.unique(np.concatenate([np.zeros(0, dtype=int)] + ["
+          + ", ".join(f"np.asarray({mf}.basic_dof_on_region({rg}), dtype=int)" for rg, _d, _e in bcs) + "]))")
+        w("I = np.setdiff1d(np.arange(n), D)")
+        w("Muu = gf.Spmat('copy', Mfull, range(i0, i0 + n), range(i0, i0 + n))")
+        w(f"solve_M, M_ID = mass_solver(Muu, I, D, {lumped!r}, {u!r})")
+        w(f"EXPLICIT_{name}[{u!r}] = (i0, n, I, D, solve_M, M_ID, {g!r})")
+        w("KII = gf.Spmat('copy', gf.Spmat('copy', K, range(i0, i0 + n), range(i0, i0 + n)), I, I)")
+        w(f"omega = np.sqrt(max(power_iteration(lambda x: solve_M(np.asarray(KII.mult(x))), len(I)), 0.0))")
+        w(f"limit = (1 / np.sqrt({g / 2!r})) / omega if omega > 0 else np.inf")
+        w(f"results['models'][{c.md['name']!r}].setdefault('stable_time_step', {{}})[{u!r}] = float(limit)")
+        w("if dt > limit:")
+        w(f"    raise RuntimeError(f'explicit scheme of {u}: the time step {{dt:.4g}} exceeds its stability "
+          f"limit {{limit:.4g}} (dt omega_max <= {1 / (g / 2) ** 0.5:.4g}): at least "
+          "{int(np.ceil((T_END - T_START) / limit))} time steps')")
+        w("if dt > 0.9 * limit:")
+        w(f"    results.setdefault('warnings', []).append(f'explicit scheme of {u}: the time step {{dt:.4g}} close to "
+          "its stability limit {limit:.4g}')")
+    w.indent = ""
+    w("")
+    w(f"def explicit_{name}(predict=True):")
+    w('    """A time step of the explicit variables (predict: their values at the new time from the')
+    w('    previous ones; otherwise: the initial acceleration at the current values)."""')
+    w.indent = "    "
+    w(f"dt = float({md}.variable('timestep')[0])")
+    w("t = T_NOW[0]")
+    for u, (g, lumped, mass, bcs) in info.items():
+        mf = c.mfs[u]
+        w(f"un, vn, an = ({md}.variable('{u}__prev'), {md}.variable('{u}__rate'), {md}.variable('{u}__rate2'))")
+        w("if predict:")
+        w(f"    {md}.set_variable({u!r}, un + dt * vn + 0.5 * dt * dt * an)")
+        w(f"    {md}.set_variable('{u}__v', vn + (1 - {g!r}) * dt * an)")
+        w("else:")
+        w(f"    {md}.set_variable('{u}__v', vn)")
+        w(f"{md}.set_variable('{u}__a', 0 * an)")
+        if bcs:                                 # the imposed values at t, their derivatives
+            w(f"uu, vv, aa = {md}.variable({u!r}), {md}.variable('{u}__v'), np.zeros(len(an))")
+            for rg, d, expr in bcs:
+                w(f"dofs = np.asarray({mf}.basic_dof_on_region({rg}), dtype=int)")
+                if d is None:
+                    w("uu[dofs], vv[dofs] = 0.0, 0.0")
+                    continue
+                w(f"uu[dofs] = {md}.variable({d!r})[dofs]")
+                if expr is None:
+                    w("vv[dofs] = 0.0")
+                    continue
+                w(f"g = time_derivatives({md}, {expr!r}, {mf}, t, dt)")
+                w("vv[dofs], aa[dofs] = g[1][dofs], g[2][dofs]")
+            w(f"{md}.set_variable({u!r}, uu)")
+            w(f"{md}.set_variable('{u}__v', vv)")
+            w(f"BC_ACC_{name}[{u!r}] = aa")
+    w(f"{md}.assembly('build_all')")
+    w(f"r = np.array({md}.rhs())")
+    w(f"if LINEAR[{c.md['name']!r}]:      # (a linear model: its right-hand side F, not its residual)")
+    w(f"    r = r - {md}.tangent_matrix().mult({md}.from_variables())")
+    for u, (g, lumped, mass, bcs) in info.items():
+        w(f"i0, n, I, D, solve_M, M_ID, gamma = EXPLICIT_{name}[{u!r}]")
+        w(f"a = np.array(BC_ACC_{name}.get({u!r}, np.zeros(n)))" if bcs else "a = np.zeros(n)")
+        w("rI = r[i0:i0 + n][I]")
+        w("if M_ID is not None and len(D):")
+        w("    rI = rI - np.asarray(M_ID.mult(a[D]))")
+        w("a[I] = solve_M(rI)")
+        w(f"{md}.set_variable('{u}__a', a)")
+        w("if predict:              # (on the Dirichlet dofs: the derivative of the imposed value)")
+        w(f"    v = np.array({md}.variable('{u}__v'))")
+        w("    v[I] += gamma * dt * a[I]")
+        w(f"    {md}.set_variable('{u}__v', v)")
+    w.indent = ""
+    w(f"BC_ACC_{name} = {{}}")
 
 
 def _is_zero(pieces) -> bool:
@@ -793,6 +932,53 @@ def add_term(md, mim, expr, region=-1, linear='auto'):
 SOLVED = set()
 
 
+def mass_solver(Muu, I, D, lumped, name):
+    """M a = r on the free dofs I of an explicit variable (D: its Dirichlet
+    dofs): lumped (the sums of the rows of M), or factorized once (SciPy's
+    SuperLU if available, GetFEM's otherwise); and M_ID (None if lumped)."""
+    if lumped:
+        d = np.asarray(Muu.mult(np.ones(Muu.size()[1])))[I]
+        if np.any(d <= 0):
+            raise RuntimeError(f'the lumped mass of {name} is not positive (P2 elements on simplices?): '
+                               'take the consistent mass')
+        return (lambda r: r / d), None
+    MII = gf.Spmat('copy', Muu, list(I), list(I))
+    MID = gf.Spmat('copy', Muu, list(I), list(D)) if len(D) else None
+    try:
+        import scipy.sparse
+        import scipy.sparse.linalg
+        jc, ir = MII.csc_ind()
+        lu = scipy.sparse.linalg.splu(scipy.sparse.csc_matrix((MII.csc_val(), ir, jc), shape=MII.size()))
+        return lu.solve, MID
+    except ImportError:
+        return (lambda r: np.asarray(gf.linsolve_superlu(MII, r)[0]).ravel()), MID
+
+
+def power_iteration(op, n, iterations=100):
+    """The largest eigenvalue of op (M^-1 K: real, positive), by power iterations."""
+    if n == 0:
+        return 0.0
+    x, lam = np.random.default_rng(0).standard_normal(n), 0.0
+    for _ in range(iterations):
+        y = op(x)
+        lam = np.linalg.norm(y) / np.linalg.norm(x)
+        if lam == 0.0:
+            break
+        x = y / np.linalg.norm(y)
+    return float(lam)
+
+
+def time_derivatives(md, expr, mf, t, dt):
+    """An expression of the time t interpolated on mf, its first and second
+    derivatives in time (central differences, h = dt/10)."""
+    h, g = 0.1 * dt, []
+    for s in (t - h, t, t + h):
+        md.set_time(s)
+        g.append(np.asarray(md.interpolation(expr, mf)))
+    md.set_time(t)
+    return g[1], (g[2] - g[0]) / (2 * h), (g[2] - 2 * g[1] + g[0]) / h**2
+
+
 def first_solve(name):
     """Whether a model is solved for the first time."""
     first = name not in SOLVED
@@ -856,6 +1042,9 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
     by = {c.md["name"]: c for c in ctxs}
     for c in ctxs:
         s = c.md["solver"]
+        exp = list(c.explicit) if c.transient else []
+        if exp:
+            _explicit_code(c, w)
         w("")
         if c.partial:
             names = [v["name"] for v in c.md["variables"]]
@@ -882,7 +1071,25 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
         linear = "True" if s["type"] == "linear" else "False" if s["type"] == "newton" else f"LINEAR[{c.md['name']!r}]"
         if c.transient:                  # (the linear system checked at the first time step only)
             linear = f"{linear} and first_solve({c.md['name']!r})"
-        if c.partial:
+        if exp:                          # the explicit variables: their step, then given to the others
+            if not c.partial:
+                w("given = []")
+            if c.partial:
+                w(f"if only is None or any(v in only for v in {exp!r}):")
+                w(f"    explicit_{ident(c.md['name'])}()")
+            else:
+                w(f"explicit_{ident(c.md['name'])}()")
+            w(f"given += [v for v in {exp!r} if v not in given]")
+            w("for v in given:")
+            w(f"    {c.py}.disable_variable(v)")
+            rest = [v["name"] for v in c.md["variables"] if v["name"] not in exp]
+            w("try:")
+            w(f"    if [v for v in {rest!r} if v not in given]:      # (the other variables, implicit)")
+            w(f"        solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
+            w("finally:")
+            w("    for v in given:")
+            w(f"        {c.py}.enable_variable(v)")
+        elif c.partial:
             w("try:")
             w(f"    solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
             w("finally:")
@@ -949,8 +1156,11 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     by = {c.md["name"]: c for c in ctxs}
     w(f"T_START, T_END, N_STEPS = {t0!r}, {t1!r}, {n}   # time step {(t1 - t0) / n!r}")
     w("")
+    w("T_NOW = [T_START]   # the current time")
+    w("")
     w("def set_time(t, dt):")
     w('    """The time and the time step of the models, the data depending on t."""')
+    w("    T_NOW[0] = t")
     for c in cs:
         w(f"    {c.py}.set_time(t)")
         w(f"    {c.py}.set_time_step(dt)")
@@ -963,6 +1173,12 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     lines = 0
     for c in cs:
         for u, sc in c.schemes.items():
+            if M.is_explicit(sc):                        # (the step done: u__v, u__a at the new time)
+                w(f"    {c.py}.set_variable('{u}__rate', {c.py}.variable('{u}__v'))")
+                w(f"    {c.py}.set_variable('{u}__rate2', {c.py}.variable('{u}__a'))")
+                w(f"    {c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
+                lines += 1
+                continue
             if M.SCHEME_ORDER[sc["type"]] == 2:          # (all from the values before the shift)
                 mem = M.second_order_coefficients(sc)["inertia"][3] != 0.0
                 names = [("rate", f"Dot_{u}"), ("rate2", f"Dot2_{u}")] + ([("mem", f"{u}__inertia")] if mem else [])
@@ -988,6 +1204,8 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     post = []                    # the coefficients giving the derivatives at the saved time (after shift)
     for c in cs:
         for u, sc in c.schemes.items():
+            if M.is_explicit(sc):                        # (u__v, u__a: those of the saved time)
+                continue
             if M.SCHEME_ORDER[sc["type"]] == 2:
                 post += [(c.py, f"{u}__acc", [0.0, 0.0, 1.0]), (c.py, f"{u}__vel", [0.0, 1.0, 0.0]),
                          (c.py, f"{u}__inertia_c", [0.0, 0.0, 1.0, 0.0])]
@@ -1095,7 +1313,19 @@ def _initial_accelerations(c: Ctx, by: dict, w: ScriptWriter) -> None:
     r (eps = 1e-6 dt): dU = eps^2 a0 + O(eps^4), with no difference of
     values (no cancellation); the memory of HHT and generalized-alpha starts
     from it. Or zero ("initial_acceleration": "zero")."""
-    two = {u: sc for u, sc in c.schemes.items() if M.SCHEME_ORDER[sc["type"]] == 2}
+    two = {u: sc for u, sc in c.schemes.items() if M.SCHEME_ORDER[sc["type"]] == 2 and not M.is_explicit(sc)}
+    if c.explicit:
+        name = ident(c.md["name"])
+        w(f"# The explicit variables of {c.md['name']!r}: their mass matrices, the stability limit; their initial")
+        w("# acceleration: M a0 = -G(u0, v0, t0)")
+        for im in c.md["imports"]:
+            w(f"{c.py}.set_variable({im['name']!r}, {by[im['model']].py}.variable({im['variable']!r}))")
+        w(f"explicit_setup_{name}()")
+        w(f"explicit_{name}(predict=False)")
+        for u, sc in c.explicit.items():
+            if sc.get("initial_acceleration", "equation") == "zero":
+                w(f"{c.py}.set_variable('{u}__a', 0 * {c.py}.variable('{u}__a'))")
+            w(f"{c.py}.set_variable('{u}__rate2', {c.py}.variable('{u}__a'))")
     if not two:
         return
     md = c.py

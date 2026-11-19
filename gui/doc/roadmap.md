@@ -26,6 +26,12 @@ leaves this list (its design goes to the documentation and to
   iterative one): a separate limit in the core (`lin_model_pb`), as for
   Newton.
 
+## Time schemes
+
+- The explicit generalized-alpha scheme (Hulbert and Chung), on the
+  mechanism of the explicit Newmark one; a mass matrix depending on the
+  time or on the unknowns for the explicit schemes (assembled once now).
+
 ## Models
 
 - Several heat conduction modules in one model (on different domains, for

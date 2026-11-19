@@ -319,6 +319,8 @@ parameters of the scheme):
   - ``{"type": "newmark", "beta": 0.25, "gamma": 0.5}``: Newmark's scheme,
     by default the average acceleration (second order, unconditionally
     stable, no numerical damping: the energy is conserved; the default);
+    with :math:`\beta = 0`, explicit (:ref:`see below <gui-explicit>`; with
+    :math:`\gamma = 1/2`, the central difference scheme);
   - ``{"type": "hht", "alpha": -0.05}``: HHT-:math:`\alpha`
     (Hilber-Hughes-Taylor), :math:`\alpha \in [-1/3, 0]`: second order,
     unconditionally stable, a numerical damping of the high frequencies
@@ -493,6 +495,46 @@ initial values, then :math:`(M/\varepsilon^2 + K) \, \delta = r`
 without any difference of values (no cancellation), the conditions taken
 into account by the system. ``"initial_acceleration": "zero"`` starts at
 rest instead.
+
+.. _gui-explicit:
+
+**The explicit scheme** (Newmark, :math:`\beta = 0`). The displacement at
+the new time is then known before the step,
+:math:`U_{n+1} = U_n + \Delta t\, V_n + \tfrac{1}{2}\Delta t^2 A_n`, and the
+unknown of the step is the acceleration: the equation is still written at
+:math:`t_{n+1}`,
+
+.. math::
+
+   M A_{n+1} = -G(U_{n+1}, V^*, t_{n+1}), \qquad
+   V^* = V_n + (1 - \gamma) \Delta t\, A_n, \qquad
+   V_{n+1} = V^* + \gamma \Delta t\, A_{n+1},
+
+:math:`G` (all the terms but the inertia, a damping taken at the predicted
+velocity :math:`V^*`) is only evaluated, never solved: no Newton iteration,
+also for a nonlinear model. The script does it before the solve of the
+model (``explicit_<model>()``): the residual assembled with the inertia set
+to zero, then the system of the mass matrix :math:`M` alone (that of the
+inertia term, assembled once: the density must not change with the time or
+the unknowns), on the free dofs. The mass is **consistent** (factorized
+once, ``"mass": "consistent"``, the default) or **lumped** (``"lumped"``:
+diagonal, the sums of its rows; a larger stable time step, for P1 or Q1
+elements: with P2 on simplices, some sums are not positive and the script
+says so). On the dofs of a Dirichlet condition, the displacement is the
+imposed value at :math:`t_{n+1}`, the velocity and acceleration its time
+derivatives (central differences of its expression). The other variables
+of the model (implicit) are then solved with the explicit ones given, as a
+partial step.
+
+The scheme is stable if :math:`\Delta t\, \omega_{max} \le
+1/\sqrt{\gamma/2}` (2 for the central difference), :math:`\omega_{max}^2`
+the largest eigenvalue of :math:`M^{-1}K` (about the wave speed over the
+size of the elements). The script estimates it at the start (power
+iterations), reports the stable time step (``stable_time_step``), stops
+with an error giving the number of time steps needed if the time step is
+larger, and warns when it is close. A Dirichlet condition of an explicit
+variable is by simplification (or by penalization, which stiffens: a much
+smaller stable time step), not by a multiplier nor on a normal component.
 
 **The implementation.** The scheme is written in the script with GWFL macros
 and data of the model, updated by the time loop (they can be read in the

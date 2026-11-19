@@ -254,7 +254,9 @@ _SCHEME_HELP = {
     "theta": {"theta": "The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson "
                        "(second order, may oscillate)"},
     "newmark": {"beta": "Newmark's beta: 1/4 with gamma = 1/2, the average acceleration (second order, "
-                        "unconditionally stable, no numerical damping)",
+                        "unconditionally stable, no numerical damping); 0: explicit (central difference "
+                        "with gamma = 1/2): the acceleration solved with the mass matrix only, no Newton, "
+                        "but a time step below the stability limit (checked at the start)",
                 "gamma": "Newmark's gamma: 1/2 (second order); more damps, at first order"},
     "hht": {"alpha": "HHT-alpha: 0 is Newmark's average acceleration; down to -1/3, more numerical damping of "
                      "the high frequencies (second order, unconditionally stable)"},
@@ -1694,6 +1696,13 @@ def fields(model: dict, path: Path) -> list[Field]:
                                               "Euler step (monotone), or a Crank-Nicolson step (a smaller error, "
                                               "but it may overshoot when the initial values do not satisfy the "
                                               "conditions); both keep the second order"))
+                    if M.is_explicit(sc):
+                        out.append(Field(path + ("schemes", key, "mass"), f"Mass matrix of {u}", "choice",
+                                         tuple(M.MASS_MATRICES.items()), op="scheme_param",
+                                         help="Explicit: M a = -G at each time step. The consistent mass "
+                                              "matrix, factorized once; or lumped (diagonal: the sums of its "
+                                              "rows), a larger stable time step, for P1 or Q1 elements (with "
+                                              "P2 on simplices some sums are not positive)"))
                     if M.SCHEME_ORDER.get(sc.get("type")) == 2:
                         out.append(Field(path + ("schemes", key, "initial_acceleration"),
                                          f"Initial acceleration of {u}", "choice",
@@ -2600,6 +2609,9 @@ def _apply(model: dict, f: Field, value) -> Path | None:
         sc = get_at(model, key[:-2]).setdefault(key[-2], _default_of(model, key[:-1]))
         sc.update(M.scheme_with_defaults(sc))
         sc[key[-1]] = value
+        sc.update(M.scheme_with_defaults(sc))        # (explicit: its mass matrix)
+        if not M.is_explicit(sc):
+            sc.pop("mass", None)
         return None
     if f.op == "solver_steps":               # its models; in time: the schemes of their variables
         s = get_at(model, key[:-1])
