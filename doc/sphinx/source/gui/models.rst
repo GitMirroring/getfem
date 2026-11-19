@@ -512,9 +512,15 @@ unknown of the step is the acceleration: the equation is still written at
 
 :math:`G` (all the terms but the inertia, a damping taken at the predicted
 velocity :math:`V^*`) is only evaluated, never solved: no Newton iteration,
-also for a nonlinear model. The script does it before the solve of the
-model (``explicit_<model>()``): the residual assembled with the inertia set
-to zero, then the system of the mass matrix :math:`M` alone (that of the
+also for a nonlinear model. At each time step, the script sets the explicit
+variables at the new time (``explicit_predict_<model>()``), solves the other
+variables of the model, implicit, with them given (as a partial step: a
+temperature with the displacement at :math:`t_{n+1}`; their velocity
+``Dot_u`` meanwhile :math:`V_n + \Delta t\, A_n`, their acceleration
+:math:`A_n`), then
+(``explicit_solve_<model>()``) assembles the residual with the inertia set
+to zero, all the variables at :math:`t_{n+1}`, and solves the system of the
+mass matrix :math:`M` alone (that of the
 inertia term, assembled once: the density must not change with the time or
 the unknowns), on the free dofs. The mass is **consistent** (factorized
 once, ``"mass": "consistent"``, the default) or **lumped** (``"lumped"``:
@@ -522,9 +528,9 @@ diagonal, the sums of its rows; a larger stable time step, for P1 or Q1
 elements: with P2 on simplices, some sums are not positive and the script
 says so). On the dofs of a Dirichlet condition, the displacement is the
 imposed value at :math:`t_{n+1}`, the velocity and acceleration its time
-derivatives (central differences of its expression). The other variables
-of the model (implicit) are then solved with the explicit ones given, as a
-partial step.
+derivatives (central differences of its expression). An explicit
+displacement coupled with an implicit temperature (thermoelasticity) gives
+the same result in one model or in two (the temperature solved first).
 
 The scheme is stable if :math:`\Delta t\, \omega_{max} \le
 1/\sqrt{\gamma/2}` (2 for the central difference), :math:`\omega_{max}^2`

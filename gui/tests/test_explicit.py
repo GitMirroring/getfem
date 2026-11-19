@@ -191,6 +191,38 @@ def test_with_implicit_variables():
     assert np.abs(u1 - u2).max() < 3e-3 * u2.max() and np.abs(w1 - w2).max() < 3e-3 * w2.max() and w2[-1] > 0.1
 
 
+def test_thermoelastic_shock():
+    """The thermal shock of the strip, its displacement explicit, its
+    temperature implicit (BDF2), in two models (the temperature imported)
+    and in one: the same, and as the implicit scheme (a few hundred time
+    steps below the stability limit, about 1.7e-8 s)."""
+    if not _getfem():
+        return
+
+    def strip(scheme, one):
+        m = M.load(Path(__file__).resolve().parents[1] / "examples" / "thermal_shock_strip.json")
+        s = m["solvers"][0]
+        s["time"], s["save"] = {"start": 0, "end": 5e-6, "step": 1.5e-8}, {"every": 20}
+        if one:
+            thermal, mech = m["models"]
+            mech.pop("imports")
+            for k in ("variables", "modules", "outputs"):
+                thermal[k] += mech[k]
+            m["models"], s["steps"] = [thermal], ["thermal"]
+            s["schemes"] = {"thermal/T": {"type": "bdf2"}, "thermal/u": dict(scheme)}
+        else:
+            s["schemes"]["mechanical/u"] = dict(scheme)
+        assert M.validate(m) == [], M.validate(m)
+        r, R = run(m, "thermal" if one else "mechanical")
+        assert r.ok, r.error
+        return np.array(R["series"]["tip_deflection"])
+    two, one = strip(CENTRAL, False), strip(CENTRAL, True)
+    implicit = strip({"type": "generalized_alpha", "rho_inf": 0.9}, False)
+    assert np.abs(implicit).max() > 0
+    assert np.abs(one - two).max() < 1e-9 * np.abs(two).max()
+    assert np.abs(two - implicit).max() < 1e-4 * np.abs(implicit).max()
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

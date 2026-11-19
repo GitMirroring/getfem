@@ -722,12 +722,14 @@ def _explicit_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> None:
     """An explicit scheme (Newmark, beta = 0): u_n+1 = u_n + dt v_n + dt^2/2
     a_n is known before the step; the unknown of the step is the
     acceleration, M a_n+1 = -G(u_n+1, v*, t_n+1) (G: all the other terms,
-    v* = v_n + (1 - gamma) dt a_n), solved by explicit_<model>(); then
-    v_n+1 = v* + gamma dt a_n+1. Dot2_u, Dot_u, u__inertia: the data u__a,
+    v* = v_n + (1 - gamma) dt a_n), solved by explicit_solve_<model>()
+    once the implicit variables of the model are solved; then v_n+1 = v* +
+    gamma dt a_n+1. Dot2_u, Dot_u, u__inertia: the data u__a,
     u__v (a_n+1 and v_n+1 once the step is done, 0 and v* before)."""
     md, mf = c.py, c.mfs[u]
     w(f"# Time scheme of {u}: {M.scheme_label(sc)} (beta = 0, gamma = {float(sc.get('gamma', 0.5)):.6g}):")
-    w(f"#   {u} known before the step, its acceleration the unknown of the step (explicit_{ident(c.md['name'])})")
+    w(f"#   {u} known before the step (explicit_predict_{ident(c.md['name'])}), its acceleration the unknown "
+      f"of the step (explicit_solve_{ident(c.md['name'])})")
     for name in ("prev", "rate", "rate2", "a", "v"):
         w(f"{md}.add_initialized_fem_data('{u}__{name}', {mf}, np.zeros({mf}.nbdof()))")
     w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
@@ -790,21 +792,23 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
           "its stability limit {limit:.4g}')")
     w.indent = ""
     w("")
-    w(f"def explicit_{name}(predict=True):")
-    w('    """A time step of the explicit variables (predict: their values at the new time from the')
-    w('    previous ones; otherwise: the initial acceleration at the current values)."""')
+    w(f"def explicit_predict_{name}(predict=True):")
+    w('    """The explicit variables at the new time (known before the step: from the previous values;')
+    w('    predict False: the current ones, for the initial acceleration), their predicted velocity, on')
+    w('    the Dirichlet dofs the imposed values and their derivatives; Dot2_u: a_n meanwhile."""')
     w.indent = "    "
     w(f"dt = float({md}.variable('timestep')[0])")
     w("t = T_NOW[0]")
     for u, (g, lumped, mass, bcs) in info.items():
         mf = c.mfs[u]
         w(f"un, vn, an = ({md}.variable('{u}__prev'), {md}.variable('{u}__rate'), {md}.variable('{u}__rate2'))")
-        w("if predict:")
+        w("if predict:              # (Dot_u meanwhile, for the implicit variables: v_n + dt a_n)")
         w(f"    {md}.set_variable({u!r}, un + dt * vn + 0.5 * dt * dt * an)")
-        w(f"    {md}.set_variable('{u}__v', vn + (1 - {g!r}) * dt * an)")
+        w(f"    {md}.set_variable('{u}__v', vn + dt * an)")
+        w(f"    {md}.set_variable('{u}__a', an)")
         w("else:")
         w(f"    {md}.set_variable('{u}__v', vn)")
-        w(f"{md}.set_variable('{u}__a', 0 * an)")
+        w(f"    {md}.set_variable('{u}__a', 0 * an)")
         if bcs:                                 # the imposed values at t, their derivatives
             w(f"uu, vv, aa = {md}.variable({u!r}), {md}.variable('{u}__v'), np.zeros(len(an))")
             for rg, d, expr in bcs:
@@ -821,6 +825,22 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
             w(f"{md}.set_variable({u!r}, uu)")
             w(f"{md}.set_variable('{u}__v', vv)")
             w(f"BC_ACC_{name}[{u!r}] = aa")
+            w(f"BC_VEL_{name}[{u!r}] = vv")
+    w.indent = ""
+    w("")
+    w(f"def explicit_solve_{name}(predict=True):")
+    w('    """Their acceleration at the new time, M a = -G (G: the residual without the inertia, the')
+    w('    other variables at the new time), and their velocity."""')
+    w.indent = "    "
+    w(f"dt = float({md}.variable('timestep')[0])")
+    for u, (g, lumped, mass, bcs) in info.items():
+        w(f"vn, an = {md}.variable('{u}__rate'), {md}.variable('{u}__rate2')")
+        w(f"v = np.array(vn + (1 - {g!r}) * dt * an if predict else vn)   # (v*: the damping)")
+        if bcs:
+            w(f"i0, n, I, D, solve_M, M_ID, gamma = EXPLICIT_{name}[{u!r}]")
+            w(f"v[D] = BC_VEL_{name}[{u!r}][D]")
+        w(f"{md}.set_variable('{u}__v', v)")
+        w(f"{md}.set_variable('{u}__a', 0 * an)")
     w(f"{md}.assembly('build_all')")
     w(f"r = np.array({md}.rhs())")
     w(f"if LINEAR[{c.md['name']!r}]:      # (a linear model: its right-hand side F, not its residual)")
@@ -838,7 +858,7 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
         w("    v[I] += gamma * dt * a[I]")
         w(f"    {md}.set_variable('{u}__v', v)")
     w.indent = ""
-    w(f"BC_ACC_{name} = {{}}")
+    w(f"BC_ACC_{name}, BC_VEL_{name} = {{}}, {{}}")
 
 
 def _is_zero(pieces) -> bool:
@@ -1074,11 +1094,13 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
         if exp:                          # the explicit variables: their step, then given to the others
             if not c.partial:
                 w("given = []")
+            n = ident(c.md["name"])
             if c.partial:
-                w(f"if only is None or any(v in only for v in {exp!r}):")
-                w(f"    explicit_{ident(c.md['name'])}()")
+                w(f"step = only is None or any(v in only for v in {exp!r})")
+                w("if step:")
+                w(f"    explicit_predict_{n}()   # (known before the step: given to the implicit variables)")
             else:
-                w(f"explicit_{ident(c.md['name'])}()")
+                w(f"explicit_predict_{n}()   # (known before the step: given to the implicit variables)")
             w(f"given += [v for v in {exp!r} if v not in given]")
             w("for v in given:")
             w(f"    {c.py}.disable_variable(v)")
@@ -1089,6 +1111,11 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
             w("finally:")
             w("    for v in given:")
             w(f"        {c.py}.enable_variable(v)")
+            if c.partial:
+                w("if step:")
+                w(f"    explicit_solve_{n}()     # (their acceleration, the others at the new time)")
+            else:
+                w(f"explicit_solve_{n}()     # (their acceleration, the others at the new time)")
         elif c.partial:
             w("try:")
             w(f"    solve({c.py}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
@@ -1321,7 +1348,8 @@ def _initial_accelerations(c: Ctx, by: dict, w: ScriptWriter) -> None:
         for im in c.md["imports"]:
             w(f"{c.py}.set_variable({im['name']!r}, {by[im['model']].py}.variable({im['variable']!r}))")
         w(f"explicit_setup_{name}()")
-        w(f"explicit_{name}(predict=False)")
+        w(f"explicit_predict_{name}(predict=False)")
+        w(f"explicit_solve_{name}(predict=False)")
         for u, sc in c.explicit.items():
             if sc.get("initial_acceleration", "equation") == "zero":
                 w(f"{c.py}.set_variable('{u}__a', 0 * {c.py}.variable('{u}__a'))")
