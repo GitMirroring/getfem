@@ -312,19 +312,22 @@ SCHEMES = {
     "stationary": "stationary (no time derivative: quasi-static)",
     "theta": "theta-method (1: implicit Euler, 0.5: Crank-Nicolson)",
     "bdf2": "BDF2 (second order; its first step: implicit Euler, or Crank-Nicolson)",
-    "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration; beta = 0: explicit)",
+    "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration)",
     "hht": "HHT-alpha (Hilber-Hughes-Taylor, numerical damping)",
     "generalized_alpha": "generalized-alpha (Chung-Hulbert, numerical damping)",
-    "explicit_generalized_alpha": "explicit generalized-alpha (Hulbert-Chung, explicit with numerical damping)",
+    # explicit (conditionally stable: the acceleration solved with the mass matrix only, no Newton)
+    "explicit_newmark": "explicit Newmark (beta = 0; gamma = 1/2: central difference)",
+    "explicit_generalized_alpha": "explicit generalized-alpha (Hulbert-Chung, numerical damping)",
 }
 SCHEME_ORDER = {"theta": 1, "bdf2": 1, "newmark": 2, "hht": 2, "generalized_alpha": 2,
-                "explicit_generalized_alpha": 2}
+                "explicit_newmark": 2, "explicit_generalized_alpha": 2}
 # the parameters of the schemes: (default, lower bound, upper bound, lower bound excluded)
 SCHEME_PARAMETERS = {
     "theta": {"theta": (1.0, 0.0, 1.0, True)},
-    "newmark": {"beta": (0.25, 0.0, 0.5, False), "gamma": (0.5, 0.5, 1.0, False)},
+    "newmark": {"beta": (0.25, 0.0, 0.5, True), "gamma": (0.5, 0.5, 1.0, False)},
     "hht": {"alpha": (-0.05, -1 / 3, 0.0, False)},
     "generalized_alpha": {"rho_inf": (0.8, 0.0, 1.0, False)},
+    "explicit_newmark": {"gamma": (0.5, 0.5, 1.0, False)},
     "explicit_generalized_alpha": {"rho_b": (0.8, 0.3247, 1.0, False)},
 }
 PARAMETER_LABELS = {"theta": "Theta", "beta": "Beta", "gamma": "Gamma", "alpha": "Alpha",
@@ -705,9 +708,16 @@ def load(path: str | Path) -> dict:
 def upgrade_schemes(model: dict) -> bool:
     """The time schemes of an earlier form of the format: one per model in
     the transient solver, the modules "transient" (in time) or not, made one
-    per variable ("model/variable", "stationary" for a module not in time).
-    Returns whether something changed."""
+    per variable ("model/variable", "stationary" for a module not in time);
+    Newmark with beta = 0, now "explicit_newmark". Returns whether something
+    changed."""
     changed = False
+    for s in model.get("solvers", []):
+        for sc in (s.get("schemes") or {}).values():
+            if isinstance(sc, dict) and sc.get("type") == "newmark" and sc.get("beta") in (0, 0.0):
+                sc["type"] = "explicit_newmark"
+                del sc["beta"]
+                changed = True
     for s in model.get("solvers", []):
         old = s.get("schemes")
         if s.get("type") != "transient" or not isinstance(old, dict) or all("/" in k for k in old):
@@ -1061,7 +1071,7 @@ def second_order_parameters(sc: dict) -> tuple[float, float, float, float]:
         r = float(sc["rho_inf"])
         am, af = (2 * r - 1) / (r + 1), r / (r + 1)
         return (1 - am + af) ** 2 / 4, 0.5 - am + af, am, af
-    if sc["type"] == "explicit_generalized_alpha":
+    if is_explicit(sc):
         am, b, g = explicit_parameters(sc)
         return b, g, am, 0.0
     return float(sc["beta"]), float(sc["gamma"]), 0.0, 0.0
@@ -1092,14 +1102,14 @@ def second_order_coefficients(sc: dict) -> dict[str, list[float]]:
 def is_explicit(sc: dict | None) -> bool:
     """Whether a scheme is explicit: Newmark with beta = 0 (u_n+1 known
     before the step, from u_n, v_n, a_n; the unknown of the step: the
-    acceleration, M a_n+1 = -G(u_n+1, ...))."""
-    return bool(sc) and (sc.get("type") == "explicit_generalized_alpha"
-                         or sc.get("type") == "newmark" and float(sc.get("beta", 0.25)) == 0.0)
+    acceleration, M a_n+1 = -G(u_n+1, ...)), or the explicit
+    generalized-alpha."""
+    return bool(sc) and sc.get("type") in ("explicit_newmark", "explicit_generalized_alpha")
 
 
 def explicit_parameters(sc: dict) -> tuple[float, float, float]:
-    """(alpha_m, beta, gamma) of an explicit scheme: Newmark beta = 0
-    (alpha_m = 0); the explicit generalized-alpha of Hulbert and Chung
+    """(alpha_m, beta, gamma) of an explicit scheme: the explicit Newmark
+    (alpha_m = beta = 0); the explicit generalized-alpha of Hulbert and Chung
     (1996) from rho_b, the spectral radius at the bifurcation of the
     eigenvalues of its amplification matrix (1: no numerical damping; down
     to 0.3247, more damping of the high frequencies): alpha_m =
@@ -1123,7 +1133,7 @@ def explicit_radius(sc: dict, om: float) -> float:
     am, b, g = explicit_parameters(sc)
     a = np.zeros((3, 3))
     for j, (d, v, acc) in enumerate(np.eye(3)):
-        if sc.get("type") == "newmark":                # (a_n+1 from u_n+1)
+        if sc.get("type") == "explicit_newmark":       # (a_n+1 from u_n+1)
             d1 = d + v + 0.5 * acc
             a1 = -om * om * d1
         else:
@@ -1137,7 +1147,7 @@ def explicit_limit(sc: dict) -> float:
     """The stability limit of an explicit scheme, Omega = dt omega_max: the
     largest one where the spectral radius of its amplification matrix is
     at most 1 (by bisection); 1/sqrt(gamma/2) for Newmark beta = 0."""
-    if sc.get("type") == "newmark":
+    if sc.get("type") == "explicit_newmark":
         return 1.0 / (explicit_parameters(sc)[2] / 2) ** 0.5
     lo, hi = 0.1, 4.0
     for _ in range(60):                                 # (the radius grows past the limit)
@@ -1164,15 +1174,16 @@ def scheme_label(sc: dict | None) -> str:
             return f"HHT-α α = {float(sc['alpha']):g}"
         if sc["type"] == "generalized_alpha":
             return f"generalized-α ρ∞ = {float(sc['rho_inf']):g}"
+        if sc["type"] == "explicit_newmark":
+            return "explicit Newmark" + (" (central difference)" if float(sc["gamma"]) == 0.5
+                                         else f" γ = {float(sc['gamma']):g}") + \
+                (", lumped mass" if sc.get("mass") == "lumped" else "")
         if sc["type"] == "explicit_generalized_alpha":
             return f"explicit generalized-α ρb = {float(sc['rho_b']):g}" + \
                 (", lumped mass" if sc.get("mass") == "lumped" else "")
         if (float(sc["beta"]), float(sc["gamma"])) == (0.25, 0.5):
             return "Newmark (average acceleration)"
-        if float(sc["beta"]) == 0.0:
-            return "explicit Newmark" + (" (central difference)" if float(sc["gamma"]) == 0.5
-                                         else f" γ = {float(sc['gamma']):g}") + \
-                (", lumped mass" if sc.get("mass") == "lumped" else "")
+
         return f"Newmark β = {float(sc['beta']):g}, γ = {float(sc['gamma']):g}"
     th = float(sc.get("theta", 1.0))
     return {1.0: "implicit Euler", 0.5: "Crank-Nicolson"}.get(th, f"θ-method θ = {th:g}")

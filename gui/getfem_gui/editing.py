@@ -254,15 +254,18 @@ _SCHEME_HELP = {
     "theta": {"theta": "The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson "
                        "(second order, may oscillate)"},
     "newmark": {"beta": "Newmark's beta: 1/4 with gamma = 1/2, the average acceleration (second order, "
-                        "unconditionally stable, no numerical damping); 0: explicit (central difference "
-                        "with gamma = 1/2): the acceleration solved with the mass matrix only, no Newton, "
-                        "but a time step below the stability limit (checked at the start)",
+                        "unconditionally stable, no numerical damping); beta = 0: the explicit Newmark "
+                        "scheme, apart",
                 "gamma": "Newmark's gamma: 1/2 (second order); more damps, at first order"},
     "hht": {"alpha": "HHT-alpha: 0 is Newmark's average acceleration; down to -1/3, more numerical damping of "
                      "the high frequencies (second order, unconditionally stable)"},
     "generalized_alpha": {"rho_inf": "The spectral radius at infinity: 1, no numerical damping (Newmark's "
                                      "average acceleration); 0, the high frequencies damped at once (second "
                                      "order, unconditionally stable, optimal dissipation)"},
+    "explicit_newmark": {"gamma": "Explicit (beta = 0): the acceleration solved with the mass matrix only, "
+                                  "no Newton, a time step below the stability limit (checked at the start, "
+                                  "dt omega_max <= 1/sqrt(gamma/2)); gamma = 1/2: the central difference "
+                                  "scheme (second order, no numerical damping), larger: damped, first order"},
     "explicit_generalized_alpha": {"rho_b": "Explicit (Hulbert and Chung): the spectral radius at the "
                                             "bifurcation, 1: no numerical damping (stable up to dt omega_max = "
                                             "2); smaller, the high frequencies damped (a slightly smaller "

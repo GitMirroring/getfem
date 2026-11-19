@@ -734,7 +734,7 @@ def _explicit_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> None:
     w(f"# Time scheme of {u}: {M.scheme_label(sc)} (alpha_m = {am:.6g}, beta = {b:.6g}, gamma = {g:.6g}):")
     w(f"#   {u} known before the step (explicit_predict_{ident(c.md['name'])}), the mass system solved "
       f"after it (explicit_solve_{ident(c.md['name'])})")
-    names = ("prev", "rate", "rate2", "a", "v") + (("mem",) if sc["type"] != "newmark" else ())
+    names = ("prev", "rate", "rate2", "a", "v") + (("mem",) if sc["type"] != "explicit_newmark" else ())
     for name in names:
         w(f"{md}.add_initialized_fem_data('{u}__{name}', {mf}, np.zeros({mf}.nbdof()))")
     w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
@@ -830,7 +830,7 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
         w(f"i0, n, I, D, solve_M, M_ID = EXPLICIT_{name}[{u!r}]")
         w(f"un, vn, an = ({md}.variable('{u}__prev'), {md}.variable('{u}__rate'), {md}.variable('{u}__rate2'))")
         w("if predict:")
-        if sc["type"] == "newmark":
+        if sc["type"] == "explicit_newmark":
             w("    u1, v1, a1 = un + dt * vn + 0.5 * dt * dt * an, vn + dt * an, an")
         else:
             w(f"    a1 = ({md}.variable('{u}__mem') - {am!r} * an) / {1 - am!r}")
@@ -841,7 +841,7 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
         w("u1, v1, a1 = np.array(u1), np.array(v1), np.array(a1)")
         if bcs:
             w(f"g = bc_{name}_{ident(u)}(t, dt)")
-            if sc["type"] == "newmark":
+            if sc["type"] == "explicit_newmark":
                 w("u1[D], v1[D], a1[D] = g[0][D], g[1][D], g[2][D]")
             else:           # (a1: the acceleration of the scheme, from the memory, also there)
                 w("u1[D], v1[D] = g[0][D], g[1][D]")
@@ -862,7 +862,7 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
     w(f"dt = float({md}.variable('timestep')[0])")
     w("t = T_NOW[0]")
     for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
-        if sc["type"] == "newmark":
+        if sc["type"] == "explicit_newmark":
             w(f"vn, an = {md}.variable('{u}__rate'), {md}.variable('{u}__rate2')")
             w(f"v = np.array(vn + {1 - g!r} * dt * an if predict else vn)   # (v*: the damping)")
             if bcs:
@@ -885,7 +885,7 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
     for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
         w(f"i0, n, I, D, solve_M, M_ID = EXPLICIT_{name}[{u!r}]")
         acc_now = f"bc_{name}_{ident(u)}(t, dt)[2]" if bcs else "np.zeros(n)"
-        if sc["type"] == "newmark":
+        if sc["type"] == "explicit_newmark":
             w(f"a = mass_system(i0, n, I, D, solve_M, M_ID, {acc_now})")
             w(f"{md}.set_variable('{u}__a', a)")
             w("if predict:              # (on the Dirichlet dofs: the derivative of the imposed value)")
@@ -1279,7 +1279,7 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     if post:
         w("# at a saved time (after shift), Dot_u (Dot2_u) are the derivatives kept: Previous_Dot_u...")
         w("AT_SAVE = [" + ", ".join(f"({py}, {n!r}, {v!r})" for py, n, v in post) + "]")
-    mems = [(c.py, u) for c in cs for u, sc in c.explicit.items() if sc["type"] != "newmark"]
+    mems = [(c.py, u) for c in cs for u, sc in c.explicit.items() if sc["type"] != "explicit_newmark"]
     if mems:     # (the acceleration of the scheme: at first order; its memory, M^-1 G: at second order)
         w("# at a saved time, Dot2_u of an explicit generalized-alpha: its memory (the acceleration at t)")
         w("MEMORIES = [" + ", ".join(f"({py}, {u!r})" for py, u in mems) + "]")

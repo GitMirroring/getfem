@@ -14,7 +14,8 @@
 # You  should  have received a copy of the GNU Lesser General Public License
 # along  with  this program. If not, see https://www.gnu.org/licenses/.
 
-"""The explicit scheme (Newmark, beta = 0): the acceleration solved with
+"""The explicit schemes (Newmark, beta = 0; the explicit generalized-alpha):
+the acceleration solved with
 the mass matrix (consistent or lumped), the stability limit checked, the
 Dirichlet values and their time derivatives, the second order, an explicit
 variable with implicit ones in the same model; validation and editing.
@@ -36,7 +37,7 @@ from getfem_gui import editing as E, model as M, runner  # noqa: E402
 import test_elastodynamics as B  # noqa: E402
 import test_pde as P  # noqa: E402
 
-CENTRAL = {"type": "newmark", "beta": 0.0, "gamma": 0.5}
+CENTRAL = {"type": "explicit_newmark", "gamma": 0.5}
 AVERAGE = {"type": "newmark", "beta": 0.25, "gamma": 0.5}
 EGA = {"type": "explicit_generalized_alpha", "rho_b": 0.8}
 
@@ -75,18 +76,25 @@ def moving_boundary(dt, scheme=CENTRAL):
 
 
 def test_validation_and_editing():
-    """beta = 0 accepted (explicit), its mass matrix offered; no multiplier
-    nor normal condition on an explicit variable."""
+    """The explicit Newmark scheme apart from the implicit one (after the
+    implicit schemes in the menu; Newmark with beta = 0 of an earlier file:
+    made explicit), its mass matrix offered; no multiplier nor normal
+    condition on an explicit variable."""
     m = B.beam(dict(CENTRAL))
     assert M.validate(m) == [] and M.is_explicit(m["solvers"][0]["schemes"]["beam/u"])
     assert M.scheme_label(CENTRAL) == "explicit Newmark (central difference)"
     f = next(x for x in E.fields(m, ("solvers", 0)) if x.key[-1] == "mass")
     E.apply(m, f, "lumped")
     assert m["solvers"][0]["schemes"]["beam/u"]["mass"] == "lumped" and M.validate(m) == []
-    f = next(x for x in E.fields(m, ("solvers", 0)) if x.key[-1] == "beta")
-    E.apply(m, f, 0.25)
+    f = next(x for x in E.fields(m, ("solvers", 0)) if x.key[-1] == "type" and "schemes" in x.key)
+    assert [k for k, _ in f.choices] == ["stationary", "newmark", "hht", "generalized_alpha",
+                                         "explicit_newmark", "explicit_generalized_alpha"]
+    E.apply(m, f, "newmark")
     assert "mass" not in m["solvers"][0]["schemes"]["beam/u"]
     assert not any(x.key[-1] == "mass" for x in E.fields(m, ("solvers", 0)))
+    m = B.beam({"type": "newmark", "beta": 0.0, "gamma": 0.5})
+    assert any("beta: number in ]0, 0.5] expected" in e for e in M.validate(m))
+    assert M.upgrade_schemes(m) and m["solvers"][0]["schemes"]["beam/u"] == CENTRAL and M.validate(m) == []
     m = B.beam(dict(CENTRAL, mass="diagonal"))
     assert any("mass: consistent, lumped expected" in e for e in M.validate(m))
     m = B.beam(dict(CENTRAL))

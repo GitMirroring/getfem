@@ -80,9 +80,10 @@ def test_validation():
     md = m["models"][0]
     assert M.variable_order(md, "u") == 2 and M.time_variables(m, md) == ["u"]
     assert M.schemes_for(2) == ["stationary", "newmark", "hht", "generalized_alpha",
-                                          "explicit_generalized_alpha"]
-    for sc, msg in [({"type": "theta"}, "stationary, newmark, hht, generalized_alpha, explicit_generalized_alpha expected"),
-                    ({"type": "newmark", "beta": -0.1}, "beta: number in [0, 0.5] expected"),
+                                          "explicit_newmark", "explicit_generalized_alpha"]
+    for sc, msg in [({"type": "theta"}, "stationary, newmark, hht, generalized_alpha, explicit_newmark, "
+                                       "explicit_generalized_alpha expected"),
+                    ({"type": "newmark", "beta": 0}, "beta: number in ]0, 0.5] expected"),
                     ({"type": "newmark", "gamma": 0.4}, "gamma: number in [0.5, 1] expected"),
                     ({"type": "hht", "alpha": 0.1}, "alpha: number in [-0.3333, 0] expected"),
                     ({"type": "generalized_alpha", "rho_inf": 2}, "rho_inf: number in [0, 1] expected"),
@@ -259,7 +260,7 @@ def test_editing():
     fields = {f.label: f for f in E.fields(m, path)}
     f = fields["Scheme of u (beam)"]
     assert [k for k, _ in f.choices] == ["stationary", "newmark", "hht", "generalized_alpha",
-                                          "explicit_generalized_alpha"]
+                                          "explicit_newmark", "explicit_generalized_alpha"]
     assert {"Beta of u", "Gamma of u", "Initial acceleration of u"} <= set(fields)
     assert E.field_value(m, fields["Beta of u"]) == 0.25
     E.apply(m, f, "hht")

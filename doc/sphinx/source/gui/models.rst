@@ -318,9 +318,8 @@ parameters of the scheme):
 
   - ``{"type": "newmark", "beta": 0.25, "gamma": 0.5}``: Newmark's scheme,
     by default the average acceleration (second order, unconditionally
-    stable, no numerical damping: the energy is conserved; the default);
-    with :math:`\beta = 0`, explicit (:ref:`see below <gui-explicit>`; with
-    :math:`\gamma = 1/2`, the central difference scheme);
+    stable, no numerical damping: the energy is conserved; the default),
+    :math:`0 < \beta \le 1/2`;
   - ``{"type": "hht", "alpha": -0.05}``: HHT-:math:`\alpha`
     (Hilber-Hughes-Taylor), :math:`\alpha \in [-1/3, 0]`: second order,
     unconditionally stable, a numerical damping of the high frequencies
@@ -333,6 +332,14 @@ parameters of the scheme):
     frequencies for a given accuracy of the low ones (:math:`\rho_\infty =
     1`: the average acceleration, no damping; :math:`\rho_\infty = 0`: the
     high frequencies damped at once);
+  - the explicit schemes (:ref:`see below <gui-explicit>`), after the
+    implicit ones in the menu of the solver, their resolution being
+    different (the acceleration solved with the mass matrix only, a time
+    step below a stability limit):
+  - ``{"type": "explicit_newmark", "gamma": 0.5}``: the explicit Newmark
+    scheme (:math:`\beta = 0`; :math:`\gamma = 1/2`: the central
+    difference scheme, second order); a Newmark scheme with :math:`\beta =
+    0` of an earlier file is made so at its opening;
   - ``{"type": "explicit_generalized_alpha", "rho_b": 0.8}``: the explicit
     generalized-:math:`\alpha` scheme of Hulbert and Chung
     (:ref:`see below <gui-explicit>`), :math:`\rho_b \in [0.3247, 1]`
@@ -504,7 +511,8 @@ rest instead.
 
 .. _gui-explicit:
 
-**The explicit schemes.** Newmark with :math:`\beta = 0`: the displacement at
+**The explicit schemes.** The explicit Newmark scheme (``explicit_newmark``,
+Newmark with :math:`\beta = 0`): the displacement at
 the new time is then known before the step,
 :math:`U_{n+1} = U_n + \Delta t\, V_n + \tfrac{1}{2}\Delta t^2 A_n`, and the
 unknown of the step is the acceleration: the equation is still written at
