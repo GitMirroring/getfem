@@ -719,39 +719,44 @@ def _second_order_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> Non
 
 
 def _explicit_declarations(c: Ctx, u: str, sc: dict, w: ScriptWriter) -> None:
-    """An explicit scheme (Newmark, beta = 0): u_n+1 = u_n + dt v_n + dt^2/2
-    a_n is known before the step; the unknown of the step is the
-    acceleration, M a_n+1 = -G(u_n+1, v*, t_n+1) (G: all the other terms,
-    v* = v_n + (1 - gamma) dt a_n), solved by explicit_solve_<model>()
-    once the implicit variables of the model are solved; then v_n+1 = v* +
-    gamma dt a_n+1. Dot2_u, Dot_u, u__inertia: the data u__a,
-    u__v (a_n+1 and v_n+1 once the step is done, 0 and v* before)."""
+    """An explicit scheme: Newmark beta = 0 (u_n+1 = u_n + dt v_n + dt^2/2
+    a_n known before the step, M a_n+1 = -G(u_n+1, v*, t_n+1), v* = v_n +
+    (1 - gamma) dt a_n, v_n+1 = v* + gamma dt a_n+1), or the explicit
+    generalized-alpha (M atilde_n = -G(u_n, v_n, t_n), atilde_n the memory
+    u__mem: a_n+1 = (atilde_n - alpha_m a_n)/(1 - alpha_m), then u_n+1,
+    v_n+1, all known before the step). explicit_predict_<model>() sets them
+    at the new time, the implicit variables of the model are solved with
+    them given, explicit_solve_<model>() solves the mass system with all the
+    variables at the new time. Dot2_u, Dot_u: the data u__a, u__v; the
+    inertia term of the model: zero (the mass solved apart)."""
     md, mf = c.py, c.mfs[u]
-    w(f"# Time scheme of {u}: {M.scheme_label(sc)} (beta = 0, gamma = {float(sc.get('gamma', 0.5)):.6g}):")
-    w(f"#   {u} known before the step (explicit_predict_{ident(c.md['name'])}), its acceleration the unknown "
-      f"of the step (explicit_solve_{ident(c.md['name'])})")
-    for name in ("prev", "rate", "rate2", "a", "v"):
+    am, b, g = M.explicit_parameters(sc)
+    w(f"# Time scheme of {u}: {M.scheme_label(sc)} (alpha_m = {am:.6g}, beta = {b:.6g}, gamma = {g:.6g}):")
+    w(f"#   {u} known before the step (explicit_predict_{ident(c.md['name'])}), the mass system solved "
+      f"after it (explicit_solve_{ident(c.md['name'])})")
+    names = ("prev", "rate", "rate2", "a", "v") + (("mem",) if sc["type"] != "newmark" else ())
+    for name in names:
         w(f"{md}.add_initialized_fem_data('{u}__{name}', {mf}, np.zeros({mf}.nbdof()))")
     w(f"{md}.add_macro('Previous_{u}', '{u}__prev')")
     w(f"{md}.add_macro('Previous_Dot_{u}', '{u}__rate')")
     w(f"{md}.add_macro('Previous_Dot2_{u}', '{u}__rate2')")
     w(f"{md}.add_macro('Dot2_{u}', '{u}__a')")
     w(f"{md}.add_macro('Dot_{u}', '{u}__v')")
-    w(f"{md}.add_macro('{u}__inertia', '{u}__a')")
+    w(f"{md}.add_macro('{u}__inertia', '0*{u}__a')   # (the inertia: the mass system, apart)")
 
 
 def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
     """explicit_setup_<model>(): the mass matrix of each explicit variable
     (its free dofs: those of no Dirichlet condition), factorized once or
     lumped, the stability limit of the time step (the largest eigenvalue of
-    M^-1 K by power iterations: dt omega_max <= 1/sqrt(gamma/2)); and
-    explicit_<model>(predict): a step, M a = -G (G: the residual without
-    the inertia), on the Dirichlet dofs the derivatives of the imposed
-    values (central differences in time of their expression)."""
+    M^-1 K by power iterations, dt omega_max below the limit of the scheme);
+    explicit_predict_<model>(predict) and explicit_solve_<model>(predict):
+    a time step (predict False: the initial acceleration, at the current
+    values). On the Dirichlet dofs, the imposed values and their time
+    derivatives (central differences in time of their expression)."""
     md, name = c.py, ident(c.md["name"])
-    exp = c.explicit
     info = {}
-    for u, sc in exp.items():
+    for u, sc in c.explicit.items():
         mass = None
         for mod in c.md["modules"]:
             inertia = M.spec_of(mod).get("inertia")
@@ -759,9 +764,29 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
                 mass = inertia["expr"].replace("{u}", u).replace(f"{u}__inertia", u)
         timed = {n: e for n, _mf, e in c.timed}
         bcs = [(rg, d, timed.get(d)) for rg, d in c.dirichlet.get(u, [])]
-        info[u] = (float(sc.get("gamma", 0.5)), sc.get("mass", "consistent") == "lumped", mass, bcs)
+        info[u] = (sc, M.explicit_parameters(sc), sc.get("mass", "consistent") == "lumped", mass, bcs)
     w("")
-    w(f"EXPLICIT_{name} = {{}}   # variable: (i0, n, free dofs, Dirichlet dofs, M solve, M_ID, gamma)")
+    w(f"EXPLICIT_{name} = {{}}   # variable: (i0, n, free dofs, Dirichlet dofs, M solve, M_ID)")
+    for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
+        mf = c.mfs[u]
+        w("")
+        w(f"def bc_{name}_{ident(u)}(t, dt):")
+        w(f'    """{u} imposed at t on its Dirichlet dofs, its velocity, its acceleration (zero elsewhere)."""')
+        w.indent = "    "
+        w(f"n = {md}.interval_of_variable({u!r})[1]")
+        w("out = [np.zeros(n), np.zeros(n), np.zeros(n)]")
+        for rg, d, expr in bcs:
+            if d is None:
+                continue
+            w(f"dofs = np.asarray({mf}.basic_dof_on_region({rg}), dtype=int)")
+            if expr is None:
+                w(f"out[0][dofs] = {md}.variable({d!r})[dofs]")
+            else:
+                w(f"g = time_derivatives({md}, {expr!r}, {mf}, t, dt)")
+                w("for k in range(3):")
+                w("    out[k][dofs] = g[k][dofs]")
+        w("return out")
+        w.indent = ""
     w("")
     w(f"def explicit_setup_{name}():")
     w(f'    """The mass matrices of the explicit variables of {c.md["name"]!r}, the stability limit."""')
@@ -769,8 +794,9 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
     w(f"{md}.assembly('build_matrix')")
     w(f"K = {md}.tangent_matrix()")
     w("dt = (T_END - T_START) / N_STEPS")
-    for u, (g, lumped, mass, bcs) in info.items():
+    for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
         mf = c.mfs[u]
+        limit = M.explicit_limit(sc)
         w(f"i0, n = {md}.interval_of_variable({u!r})")
         w(f"Mfull = gf.asm_generic({c.mim}, 2, {mass!r}, -1, {md})   # (the inertia term: its mass)")
         w("D = np.unique(np.concatenate([np.zeros(0, dtype=int)] + ["
@@ -778,87 +804,99 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
         w("I = np.setdiff1d(np.arange(n), D)")
         w("Muu = gf.Spmat('copy', Mfull, range(i0, i0 + n), range(i0, i0 + n))")
         w(f"solve_M, M_ID = mass_solver(Muu, I, D, {lumped!r}, {u!r})")
-        w(f"EXPLICIT_{name}[{u!r}] = (i0, n, I, D, solve_M, M_ID, {g!r})")
-        w("KII = gf.Spmat('copy', gf.Spmat('copy', K, range(i0, i0 + n), range(i0, i0 + n)), I, I)")
-        w(f"omega = np.sqrt(max(power_iteration(lambda x: solve_M(np.asarray(KII.mult(x))), len(I)), 0.0))")
-        w(f"limit = (1 / np.sqrt({g / 2!r})) / omega if omega > 0 else np.inf")
+        w(f"EXPLICIT_{name}[{u!r}] = (i0, n, I, D, solve_M, M_ID)")
+        w("KII = gf.Spmat('copy', gf.Spmat('copy', K, range(i0, i0 + n), range(i0, i0 + n)), list(I), list(I))")
+        w("omega = np.sqrt(max(power_iteration(lambda x: solve_M(np.asarray(KII.mult(x))), len(I)), 0.0))")
+        w(f"limit = {limit!r} / omega if omega > 0 else np.inf   # (dt omega_max <= {limit:.4g})")
         w(f"results['models'][{c.md['name']!r}].setdefault('stable_time_step', {{}})[{u!r}] = float(limit)")
         w("if dt > limit:")
         w(f"    raise RuntimeError(f'explicit scheme of {u}: the time step {{dt:.4g}} exceeds its stability "
-          f"limit {{limit:.4g}} (dt omega_max <= {1 / (g / 2) ** 0.5:.4g}): at least "
+          f"limit {{limit:.4g}} (dt omega_max <= {limit:.4g}): at least "
           "{int(np.ceil((T_END - T_START) / limit))} time steps')")
         w("if dt > 0.9 * limit:")
-        w(f"    results.setdefault('warnings', []).append(f'explicit scheme of {u}: the time step {{dt:.4g}} close to "
-          "its stability limit {limit:.4g}')")
+        w(f"    results.setdefault('warnings', []).append(f'explicit scheme of {u}: the time step {{dt:.4g}} "
+          "close to its stability limit {limit:.4g}')")
     w.indent = ""
     w("")
     w(f"def explicit_predict_{name}(predict=True):")
     w('    """The explicit variables at the new time (known before the step: from the previous values;')
-    w('    predict False: the current ones, for the initial acceleration), their predicted velocity, on')
-    w('    the Dirichlet dofs the imposed values and their derivatives; Dot2_u: a_n meanwhile."""')
+    w('    predict False: the current ones, for the initial acceleration), their velocity and')
+    w('    acceleration (Newmark beta = 0: v_n + dt a_n and a_n meanwhile, for the implicit variables),')
+    w('    on the Dirichlet dofs the imposed values and their derivatives."""')
     w.indent = "    "
     w(f"dt = float({md}.variable('timestep')[0])")
     w("t = T_NOW[0]")
-    for u, (g, lumped, mass, bcs) in info.items():
-        mf = c.mfs[u]
+    for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
+        w(f"i0, n, I, D, solve_M, M_ID = EXPLICIT_{name}[{u!r}]")
         w(f"un, vn, an = ({md}.variable('{u}__prev'), {md}.variable('{u}__rate'), {md}.variable('{u}__rate2'))")
-        w("if predict:              # (Dot_u meanwhile, for the implicit variables: v_n + dt a_n)")
-        w(f"    {md}.set_variable({u!r}, un + dt * vn + 0.5 * dt * dt * an)")
-        w(f"    {md}.set_variable('{u}__v', vn + dt * an)")
-        w(f"    {md}.set_variable('{u}__a', an)")
+        w("if predict:")
+        if sc["type"] == "newmark":
+            w("    u1, v1, a1 = un + dt * vn + 0.5 * dt * dt * an, vn + dt * an, an")
+        else:
+            w(f"    a1 = ({md}.variable('{u}__mem') - {am!r} * an) / {1 - am!r}")
+            w(f"    u1 = un + dt * vn + dt * dt * ({0.5 - b!r} * an + {b!r} * a1)")
+            w(f"    v1 = vn + dt * ({1 - g!r} * an + {g!r} * a1)")
         w("else:")
-        w(f"    {md}.set_variable('{u}__v', vn)")
-        w(f"    {md}.set_variable('{u}__a', 0 * an)")
-        if bcs:                                 # the imposed values at t, their derivatives
-            w(f"uu, vv, aa = {md}.variable({u!r}), {md}.variable('{u}__v'), np.zeros(len(an))")
-            for rg, d, expr in bcs:
-                w(f"dofs = np.asarray({mf}.basic_dof_on_region({rg}), dtype=int)")
-                if d is None:
-                    w("uu[dofs], vv[dofs] = 0.0, 0.0")
-                    continue
-                w(f"uu[dofs] = {md}.variable({d!r})[dofs]")
-                if expr is None:
-                    w("vv[dofs] = 0.0")
-                    continue
-                w(f"g = time_derivatives({md}, {expr!r}, {mf}, t, dt)")
-                w("vv[dofs], aa[dofs] = g[1][dofs], g[2][dofs]")
-            w(f"{md}.set_variable({u!r}, uu)")
-            w(f"{md}.set_variable('{u}__v', vv)")
-            w(f"BC_ACC_{name}[{u!r}] = aa")
-            w(f"BC_VEL_{name}[{u!r}] = vv")
+        w(f"    u1, v1, a1 = {md}.variable({u!r}), vn, 0 * an")
+        w("u1, v1, a1 = np.array(u1), np.array(v1), np.array(a1)")
+        if bcs:
+            w(f"g = bc_{name}_{ident(u)}(t, dt)")
+            if sc["type"] == "newmark":
+                w("u1[D], v1[D], a1[D] = g[0][D], g[1][D], g[2][D]")
+            else:           # (a1: the acceleration of the scheme, from the memory, also there)
+                w("u1[D], v1[D] = g[0][D], g[1][D]")
+                w("if not predict:")
+                w("    a1[D] = g[2][D]")
+        w(f"{md}.set_variable({u!r}, u1)")
+        w(f"{md}.set_variable('{u}__v', v1)")
+        w(f"{md}.set_variable('{u}__a', a1)")
     w.indent = ""
     w("")
     w(f"def explicit_solve_{name}(predict=True):")
-    w('    """Their acceleration at the new time, M a = -G (G: the residual without the inertia, the')
-    w('    other variables at the new time), and their velocity."""')
+    w('    """The mass system, the other variables at the new time: M a = -G (G: the residual without')
+    w('    the inertia). Newmark beta = 0: a_n+1 (the velocity v* + gamma dt a_n+1; v*, the damping, at the')
+    w('    predicted velocity); generalized-alpha: the memory atilde_n+1, the acceleration at t_n+1 (on the')
+    w('    dofs of a Dirichlet condition, that of the imposed value). predict False: the initial')
+    w('    acceleration (and memory)."""')
     w.indent = "    "
     w(f"dt = float({md}.variable('timestep')[0])")
-    for u, (g, lumped, mass, bcs) in info.items():
-        w(f"vn, an = {md}.variable('{u}__rate'), {md}.variable('{u}__rate2')")
-        w(f"v = np.array(vn + (1 - {g!r}) * dt * an if predict else vn)   # (v*: the damping)")
-        if bcs:
-            w(f"i0, n, I, D, solve_M, M_ID, gamma = EXPLICIT_{name}[{u!r}]")
-            w(f"v[D] = BC_VEL_{name}[{u!r}][D]")
-        w(f"{md}.set_variable('{u}__v', v)")
-        w(f"{md}.set_variable('{u}__a', 0 * an)")
+    w("t = T_NOW[0]")
+    for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
+        if sc["type"] == "newmark":
+            w(f"vn, an = {md}.variable('{u}__rate'), {md}.variable('{u}__rate2')")
+            w(f"v = np.array(vn + {1 - g!r} * dt * an if predict else vn)   # (v*: the damping)")
+            if bcs:
+                w(f"D = EXPLICIT_{name}[{u!r}][3]")
+                w(f"v[D] = np.asarray({md}.variable('{u}__v'))[D]")
+            w(f"{md}.set_variable('{u}__v', v)")
     w(f"{md}.assembly('build_all')")
     w(f"r = np.array({md}.rhs())")
     w(f"if LINEAR[{c.md['name']!r}]:      # (a linear model: its right-hand side F, not its residual)")
     w(f"    r = r - {md}.tangent_matrix().mult({md}.from_variables())")
-    for u, (g, lumped, mass, bcs) in info.items():
-        w(f"i0, n, I, D, solve_M, M_ID, gamma = EXPLICIT_{name}[{u!r}]")
-        w(f"a = np.array(BC_ACC_{name}.get({u!r}, np.zeros(n)))" if bcs else "a = np.zeros(n)")
-        w("rI = r[i0:i0 + n][I]")
-        w("if M_ID is not None and len(D):")
-        w("    rI = rI - np.asarray(M_ID.mult(a[D]))")
-        w("a[I] = solve_M(rI)")
-        w(f"{md}.set_variable('{u}__a', a)")
-        w("if predict:              # (on the Dirichlet dofs: the derivative of the imposed value)")
-        w(f"    v = np.array({md}.variable('{u}__v'))")
-        w("    v[I] += gamma * dt * a[I]")
-        w(f"    {md}.set_variable('{u}__v', v)")
+    w("")
+    w("def mass_system(i0, n, I, D, solve_M, M_ID, aD):")
+    w("    a = np.array(aD)")
+    w("    rI = r[i0:i0 + n][I]")
+    w("    if M_ID is not None and len(D):")
+    w("        rI = rI - np.asarray(M_ID.mult(a[D]))")
+    w("    a[I] = solve_M(rI)")
+    w("    return a")
+    w("")
+    for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
+        w(f"i0, n, I, D, solve_M, M_ID = EXPLICIT_{name}[{u!r}]")
+        acc_now = f"bc_{name}_{ident(u)}(t, dt)[2]" if bcs else "np.zeros(n)"
+        if sc["type"] == "newmark":
+            w(f"a = mass_system(i0, n, I, D, solve_M, M_ID, {acc_now})")
+            w(f"{md}.set_variable('{u}__a', a)")
+            w("if predict:              # (on the Dirichlet dofs: the derivative of the imposed value)")
+            w(f"    v = np.array({md}.variable('{u}__v'))")
+            w(f"    v[I] += {g!r} * dt * a[I]")
+            w(f"    {md}.set_variable('{u}__v', v)")
+        else:
+            w(f"{md}.set_variable('{u}__mem', mass_system(i0, n, I, D, solve_M, M_ID, {acc_now}))")
+            w("if not predict:          # (the initial acceleration: M a_0 = -G_0)")
+            w(f"    {md}.set_variable('{u}__a', mass_system(i0, n, I, D, solve_M, M_ID, {acc_now}))")
     w.indent = ""
-    w(f"BC_ACC_{name}, BC_VEL_{name} = {{}}, {{}}")
 
 
 def _is_zero(pieces) -> bool:
@@ -1241,12 +1279,20 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     if post:
         w("# at a saved time (after shift), Dot_u (Dot2_u) are the derivatives kept: Previous_Dot_u...")
         w("AT_SAVE = [" + ", ".join(f"({py}, {n!r}, {v!r})" for py, n, v in post) + "]")
+    mems = [(c.py, u) for c in cs for u, sc in c.explicit.items() if sc["type"] != "newmark"]
+    if mems:     # (the acceleration of the scheme: at first order; its memory, M^-1 G: at second order)
+        w("# at a saved time, Dot2_u of an explicit generalized-alpha: its memory (the acceleration at t)")
+        w("MEMORIES = [" + ", ".join(f"({py}, {u!r})" for py, u in mems) + "]")
     w("def save(k, t):")
     w('    """The results at a saved time: the fields (a VTU file each), the scalars."""')
     if post:
         w("    kept = [(md, name, md.variable(name)) for md, name, _ in AT_SAVE]")
         w("    for md, name, value in AT_SAVE:")
         w("        md.set_variable(name, value)")
+    if mems:
+        w("    algorithmic = [(md, u, md.variable(u + '__a')) for md, u in MEMORIES]")
+        w("    for md, u in MEMORIES:")
+        w("        md.set_variable(u + '__a', md.variable(u + '__mem'))")
     for c in cs:
         name = c.md["name"]
         stem = Path(c.md["vtu"]).stem if c.md.get("vtu") else None
@@ -1262,6 +1308,9 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     if post:
         w("    for md, name, value in kept:")
         w("        md.set_variable(name, value)")
+    if mems:
+        w("    for md, u, value in algorithmic:")
+        w("        md.set_variable(u + '__a', value)")
     w("")
     w("# The initial values" + (": the state left by the previous solver" if previous else ""))
     for c in cs:

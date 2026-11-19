@@ -333,6 +333,12 @@ parameters of the scheme):
     frequencies for a given accuracy of the low ones (:math:`\rho_\infty =
     1`: the average acceleration, no damping; :math:`\rho_\infty = 0`: the
     high frequencies damped at once);
+  - ``{"type": "explicit_generalized_alpha", "rho_b": 0.8}``: the explicit
+    generalized-:math:`\alpha` scheme of Hulbert and Chung
+    (:ref:`see below <gui-explicit>`), :math:`\rho_b \in [0.3247, 1]`
+    the spectral radius at the bifurcation: second order, explicit, a
+    numerical damping of the high frequencies as :math:`\rho_b` decreases
+    (:math:`\rho_b = 1`: none);
   - each with ``"initial_acceleration"``: ``"equation"`` (the default:
     from the equation at the start time, :math:`M a_0 = -G(u_0, v_0,
     t_0)`) or ``"zero"`` (at rest).
@@ -498,7 +504,7 @@ rest instead.
 
 .. _gui-explicit:
 
-**The explicit scheme** (Newmark, :math:`\beta = 0`). The displacement at
+**The explicit schemes.** Newmark with :math:`\beta = 0`: the displacement at
 the new time is then known before the step,
 :math:`U_{n+1} = U_n + \Delta t\, V_n + \tfrac{1}{2}\Delta t^2 A_n`, and the
 unknown of the step is the acceleration: the equation is still written at
@@ -532,8 +538,35 @@ derivatives (central differences of its expression). An explicit
 displacement coupled with an implicit temperature (thermoelasticity) gives
 the same result in one model or in two (the temperature solved first).
 
-The scheme is stable if :math:`\Delta t\, \omega_{max} \le
-1/\sqrt{\gamma/2}` (2 for the central difference), :math:`\omega_{max}^2`
+The **explicit generalized-**:math:`\alpha` scheme (Hulbert and Chung,
+1996) adds a numerical damping of the high frequencies, as HHT and the
+generalized-:math:`\alpha` scheme do for the implicit ones (HHT itself
+weights the stiffness at the new time: it is implicit),
+
+.. math::
+
+   M \big((1 - \alpha_m) A_{n+1} + \alpha_m A_n\big) = -G(U_n, V_n, t_n),
+   \quad U_{n+1} = U_n + \Delta t V_n + \Delta t^2 \big((\tfrac12 - \beta)
+   A_n + \beta A_{n+1}\big), \quad V_{n+1} = V_n + \Delta t
+   \big((1 - \gamma) A_n + \gamma A_{n+1}\big),
+
+with :math:`\alpha_m = (2\rho_b - 1)/(1 + \rho_b)`, :math:`\beta = (5 -
+3\rho_b)/((1 + \rho_b)^2(2 - \rho_b))`, :math:`\gamma = 3/2 - \alpha_m`.
+It is written with the same steps: the **memory** :math:`\tilde A_n =
+-M^{-1} G(U_n, V_n, t_n)`, solved at the end of the previous step with all
+the variables at :math:`t_n` (``u__mem``), gives :math:`A_{n+1}`, then
+:math:`U_{n+1}` and :math:`V_{n+1}`, all known before the step; the
+implicit variables are solved with them given; then the memory of the
+next step. ``Dot2_u`` in the outputs is the memory, the acceleration at the
+saved time (second order; the acceleration :math:`A_{n+1}` of the scheme is
+only first order).
+
+An explicit scheme is stable if :math:`\Delta t\, \omega_{max} \le
+\Omega`: :math:`1/\sqrt{\gamma/2}` for Newmark (2 for the central
+difference); for the explicit generalized-:math:`\alpha` scheme, the largest
+:math:`\Omega` where the spectral radius of its amplification matrix is at
+most 1 (2 for :math:`\rho_b = 1`, 1.98 for 0.8, 1.77 for 0.3247),
+:math:`\omega_{max}^2`
 the largest eigenvalue of :math:`M^{-1}K` (about the wave speed over the
 size of the elements). The script estimates it at the start (power
 iterations), reports the stable time step (``stable_time_step``), stops

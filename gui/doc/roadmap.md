@@ -28,9 +28,13 @@ leaves this list (its design goes to the documentation and to
 
 ## Time schemes
 
-- The explicit generalized-alpha scheme (Hulbert and Chung), on the
-  mechanism of the explicit Newmark one; a mass matrix depending on the
-  time or on the unknowns for the explicit schemes (assembled once now).
+- Explicit Runge-Kutta schemes (RK2, RK4) for the problems which allow
+  them: first order in time (M du/dt = -G(u, t): a diffusion, a PDE of
+  order 1, the mass system solved at each stage), and second order ones
+  written as first order systems; their stability limits (the eigenvalues
+  of M^-1 K in their stability region).
+- A mass matrix depending on the time or on the unknowns for the explicit
+  schemes (assembled once now).
 
 ## Models
 

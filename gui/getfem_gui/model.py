@@ -315,17 +315,21 @@ SCHEMES = {
     "newmark": "Newmark (beta = 1/4, gamma = 1/2: average acceleration; beta = 0: explicit)",
     "hht": "HHT-alpha (Hilber-Hughes-Taylor, numerical damping)",
     "generalized_alpha": "generalized-alpha (Chung-Hulbert, numerical damping)",
+    "explicit_generalized_alpha": "explicit generalized-alpha (Hulbert-Chung, explicit with numerical damping)",
 }
-SCHEME_ORDER = {"theta": 1, "bdf2": 1, "newmark": 2, "hht": 2, "generalized_alpha": 2}
+SCHEME_ORDER = {"theta": 1, "bdf2": 1, "newmark": 2, "hht": 2, "generalized_alpha": 2,
+                "explicit_generalized_alpha": 2}
 # the parameters of the schemes: (default, lower bound, upper bound, lower bound excluded)
 SCHEME_PARAMETERS = {
     "theta": {"theta": (1.0, 0.0, 1.0, True)},
     "newmark": {"beta": (0.25, 0.0, 0.5, False), "gamma": (0.5, 0.5, 1.0, False)},
     "hht": {"alpha": (-0.05, -1 / 3, 0.0, False)},
     "generalized_alpha": {"rho_inf": (0.8, 0.0, 1.0, False)},
+    "explicit_generalized_alpha": {"rho_b": (0.8, 0.3247, 1.0, False)},
 }
 PARAMETER_LABELS = {"theta": "Theta", "beta": "Beta", "gamma": "Gamma", "alpha": "Alpha",
-                    "rho_inf": "Spectral radius at infinity (rho_inf)"}
+                    "rho_inf": "Spectral radius at infinity (rho_inf)",
+                    "rho_b": "Spectral radius at the bifurcation (rho_b)"}
 # the mass matrix of an explicit scheme (Newmark, beta = 0): M a = -G at each time step
 MASS_MATRICES = {"consistent": "consistent (factorized once)",
                  "lumped": "lumped (diagonal: the sums of its rows; P1, Q1 elements)"}
@@ -1057,6 +1061,9 @@ def second_order_parameters(sc: dict) -> tuple[float, float, float, float]:
         r = float(sc["rho_inf"])
         am, af = (2 * r - 1) / (r + 1), r / (r + 1)
         return (1 - am + af) ** 2 / 4, 0.5 - am + af, am, af
+    if sc["type"] == "explicit_generalized_alpha":
+        am, b, g = explicit_parameters(sc)
+        return b, g, am, 0.0
     return float(sc["beta"]), float(sc["gamma"]), 0.0, 0.0
 
 
@@ -1086,7 +1093,57 @@ def is_explicit(sc: dict | None) -> bool:
     """Whether a scheme is explicit: Newmark with beta = 0 (u_n+1 known
     before the step, from u_n, v_n, a_n; the unknown of the step: the
     acceleration, M a_n+1 = -G(u_n+1, ...))."""
-    return bool(sc) and sc.get("type") == "newmark" and float(sc.get("beta", 0.25)) == 0.0
+    return bool(sc) and (sc.get("type") == "explicit_generalized_alpha"
+                         or sc.get("type") == "newmark" and float(sc.get("beta", 0.25)) == 0.0)
+
+
+def explicit_parameters(sc: dict) -> tuple[float, float, float]:
+    """(alpha_m, beta, gamma) of an explicit scheme: Newmark beta = 0
+    (alpha_m = 0); the explicit generalized-alpha of Hulbert and Chung
+    (1996) from rho_b, the spectral radius at the bifurcation of the
+    eigenvalues of its amplification matrix (1: no numerical damping; down
+    to 0.3247, more damping of the high frequencies): alpha_m =
+    (2 rho_b - 1)/(1 + rho_b), beta = (5 - 3 rho_b)/((1 + rho_b)^2 (2 -
+    rho_b)), gamma = 3/2 - alpha_m; its step M ((1 - alpha_m) a_n+1 +
+    alpha_m a_n) = -G(u_n, v_n, t_n), u_n+1 = u_n + dt v_n + dt^2 ((1/2 -
+    beta) a_n + beta a_n+1), v_n+1 = v_n + dt ((1 - gamma) a_n + gamma
+    a_n+1)."""
+    sc = scheme_with_defaults(sc)
+    if sc["type"] == "explicit_generalized_alpha":
+        r = float(sc["rho_b"])
+        am = (2 * r - 1) / (1 + r)
+        return am, (5 - 3 * r) / ((1 + r) ** 2 * (2 - r)), 1.5 - am
+    return 0.0, 0.0, float(sc["gamma"])
+
+
+def explicit_radius(sc: dict, om: float) -> float:
+    """The spectral radius of the amplification matrix of an explicit
+    scheme, for a free oscillation of pulsation omega, om = dt omega."""
+    import numpy as np
+    am, b, g = explicit_parameters(sc)
+    a = np.zeros((3, 3))
+    for j, (d, v, acc) in enumerate(np.eye(3)):
+        if sc.get("type") == "newmark":                # (a_n+1 from u_n+1)
+            d1 = d + v + 0.5 * acc
+            a1 = -om * om * d1
+        else:
+            a1 = (-om * om * d - am * acc) / (1 - am)
+            d1 = d + v + (0.5 - b) * acc + b * a1
+        a[:, j] = (d1, v + (1 - g) * acc + g * a1, a1)
+    return float(max(abs(np.linalg.eigvals(a))))
+
+
+def explicit_limit(sc: dict) -> float:
+    """The stability limit of an explicit scheme, Omega = dt omega_max: the
+    largest one where the spectral radius of its amplification matrix is
+    at most 1 (by bisection); 1/sqrt(gamma/2) for Newmark beta = 0."""
+    if sc.get("type") == "newmark":
+        return 1.0 / (explicit_parameters(sc)[2] / 2) ** 0.5
+    lo, hi = 0.1, 4.0
+    for _ in range(60):                                 # (the radius grows past the limit)
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if explicit_radius(sc, mid) <= 1 + 1e-9 else (lo, mid)
+    return lo
 
 
 def scheme_needs_rate(sc: dict) -> bool:
@@ -1107,6 +1164,9 @@ def scheme_label(sc: dict | None) -> str:
             return f"HHT-α α = {float(sc['alpha']):g}"
         if sc["type"] == "generalized_alpha":
             return f"generalized-α ρ∞ = {float(sc['rho_inf']):g}"
+        if sc["type"] == "explicit_generalized_alpha":
+            return f"explicit generalized-α ρb = {float(sc['rho_b']):g}" + \
+                (", lumped mass" if sc.get("mass") == "lumped" else "")
         if (float(sc["beta"]), float(sc["gamma"])) == (0.25, 0.5):
             return "Newmark (average acceleration)"
         if float(sc["beta"]) == 0.0:

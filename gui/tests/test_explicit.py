@@ -38,6 +38,7 @@ import test_pde as P  # noqa: E402
 
 CENTRAL = {"type": "newmark", "beta": 0.0, "gamma": 0.5}
 AVERAGE = {"type": "newmark", "beta": 0.25, "gamma": 0.5}
+EGA = {"type": "explicit_generalized_alpha", "rho_b": 0.8}
 
 
 def _getfem():
@@ -136,6 +137,32 @@ def test_moving_boundary_second_order():
     assert e1[0] < 2 * implicit[0]
 
 
+def test_explicit_generalized_alpha():
+    """The explicit generalized-alpha of Hulbert and Chung: its parameters,
+    its stability limit (2 for rho_b = 1, smaller below), its numerical
+    damping of the high frequencies; u, Dot_u, Dot2_u (its memory, the
+    acceleration at t) at the second order with a moving boundary; the beam
+    (stable time step, energy)."""
+    assert M.explicit_parameters({"type": "explicit_generalized_alpha", "rho_b": 1.0}) == (0.5, 0.5, 1.0)
+    limits = [M.explicit_limit({"type": "explicit_generalized_alpha", "rho_b": r}) for r in (1.0, 0.8, 0.3247)]
+    assert abs(limits[0] - 2) < 1e-6 and limits[0] > limits[1] > limits[2] > 1.7
+    assert abs(M.explicit_limit(CENTRAL) - 2) < 1e-12
+    damped = M.explicit_radius(dict(EGA, rho_b=0.5), 0.95 * M.explicit_limit(dict(EGA, rho_b=0.5)))
+    assert damped < 0.8 and abs(M.explicit_radius(dict(EGA, rho_b=1.0), 1.9) - 1) < 1e-9
+    assert M.validate(B.beam(dict(EGA))) == [] and M.is_explicit(EGA)
+    if not _getfem():
+        return
+    for rb in (1.0, 0.5):
+        e1, R = moving_boundary(0.01, dict(EGA, rho_b=rb))
+        e2, _ = moving_boundary(0.005, dict(EGA, rho_b=rb))
+        for a, b in zip(e1, e2):
+            assert 3.5 < a / b < 4.5, (rb, e1, e2)
+    r, R = run(B.beam(dict(EGA), end=1.0, step=0.002), "beam")
+    assert r.ok, r.error
+    e = np.array(R["series"]["kinetic"]) + np.array(R["series"]["potential"])
+    assert np.abs(e / e[0] - 1).max() < 5e-3 and 0.002 < R["stable_time_step"]["u"] < 0.01
+
+
 def test_lumped_mass():
     """Lumped (P1): the stable time step larger, the same accuracy; with P2
     on simplices, an error."""
@@ -216,11 +243,12 @@ def test_thermoelastic_shock():
         r, R = run(m, "thermal" if one else "mechanical")
         assert r.ok, r.error
         return np.array(R["series"]["tip_deflection"])
-    two, one = strip(CENTRAL, False), strip(CENTRAL, True)
     implicit = strip({"type": "generalized_alpha", "rho_inf": 0.9}, False)
     assert np.abs(implicit).max() > 0
-    assert np.abs(one - two).max() < 1e-9 * np.abs(two).max()
-    assert np.abs(two - implicit).max() < 1e-4 * np.abs(implicit).max()
+    for sc in (CENTRAL, EGA):
+        two, one = strip(sc, False), strip(sc, True)
+        assert np.abs(one - two).max() < 1e-9 * np.abs(two).max(), sc
+        assert np.abs(two - implicit).max() < 1e-4 * np.abs(implicit).max(), sc
 
 
 if __name__ == "__main__":

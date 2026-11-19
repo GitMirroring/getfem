@@ -263,6 +263,10 @@ _SCHEME_HELP = {
     "generalized_alpha": {"rho_inf": "The spectral radius at infinity: 1, no numerical damping (Newmark's "
                                      "average acceleration); 0, the high frequencies damped at once (second "
                                      "order, unconditionally stable, optimal dissipation)"},
+    "explicit_generalized_alpha": {"rho_b": "Explicit (Hulbert and Chung): the spectral radius at the "
+                                            "bifurcation, 1: no numerical damping (stable up to dt omega_max = "
+                                            "2); smaller, the high frequencies damped (a slightly smaller "
+                                            "limit, 1.77 at 0.3247); second order"},
 }
 
 
