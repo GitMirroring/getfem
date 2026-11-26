@@ -235,7 +235,8 @@ def _source_fields(mod: dict, spec: dict, mpath: Path, domains, dim: int) -> lis
     kind = spec.get("source")
     if kind is None:
         return []
-    label = "f (volume source)" if mod.get("type") == "pde" else SOURCE_LABELS.get(kind, "f")
+    label = ("f (volume source)" if mod.get("type") == "pde"
+             else spec.get("source_label") or SOURCE_LABELS.get(kind, "f"))
     srcs = mod.get("sources", [])
     if not srcs:
         return [_value_field(mpath + ("sources",), label, kind, dim, op="first_source")]
@@ -1203,7 +1204,7 @@ def _value_field(key, label, kind, dim, op=None) -> Field:
 
 
 _LABELS = {"value": "Value", "h": "Exchange coefficient h", "q": "Coefficient q", "T_ext": "External temperature",
-           "T_ref": "Reference temperature"}
+           "T_ref": "Reference temperature", "charge": "Total charge Q (C)"}
 
 
 def _model_fields(model, path) -> list[Field]:
@@ -3172,8 +3173,8 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     elif rest[:1] == ("modules",) and len(rest) == 2:
         spec = M.spec_of(get_at(model, path))
         out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(model, get_at(model, path))]
-        if spec.get("source") is not None:
-            out.append(("add_source", "Add a domain for f"))
+        if spec.get("source") is not None:       # (f, or the symbol of its source: rho_v)
+            out.append(("add_source", f"Add a domain for {(spec.get('source_label') or 'f').split(' ')[0]}"))
         if spec.get("conditions"):
             out.append(("add_bc", "Add a condition"))
         out += [("unfold", "Unfold into terms and conditions")] if _can_unfold(get_at(model, path)) else []
@@ -3535,7 +3536,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
     if action.startswith("add_model:"):
         mtype = action.split(":", 1)[1] or None
         models = model.setdefault("models", [])
-        base = {"heat_conduction": "heat", "linear_elasticity": "mechanics"}.get(mtype, "model")
+        base = {"heat_conduction": "heat", "linear_elasticity": "mechanics",
+                "electrostatics": "electrostatics"}.get(mtype, "model")
         mname = unique_name(name or base, [m.get("name") for m in models])
         if not model.get("meshes"):
             raise ValueError("a model is on a mesh: add a geometry and a mesh first")

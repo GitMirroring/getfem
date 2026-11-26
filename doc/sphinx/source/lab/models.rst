@@ -42,6 +42,10 @@ A module is a predefined physics acting on variables
    coupling of a temperature (a variable of the model, or imported from
    another model) with a linear elasticity module: it adds
    :math:`-\beta\alpha(T - T_{ref})I` to the stress.
+``electrostatics``
+   the electric potential ``V``, :math:`-\mathrm{div}(\varepsilon_0
+   \varepsilon_r \nabla V) = \rho_v`, of relative permittivity ``eps_r``
+   (see below).
 ``pde``
    a partial differential equation of a scalar or vector unknown, in
    coefficient or general form, of order 0, 1 or 2 in time (see below).
@@ -96,6 +100,51 @@ composite is built from the direction ``d`` of the fibres:
 The heat conduction module can be *unfolded* (tree action) into the
 equivalent terms and generic conditions, a starting point to write a
 variant.
+
+.. _lab-models-electrostatics:
+
+Electrostatics module
+---------------------
+
+The ``electrostatics`` module computes the electric potential :math:`V` of
+a static distribution of charges,
+
+.. math::
+
+   -\mathrm{div}(\varepsilon_0 \varepsilon_r \nabla V) = \rho_v, \qquad
+   E = -\nabla V, \qquad D = \varepsilon_0 \varepsilon_r E,
+
+in SI units: :math:`\varepsilon_0 = 8.8541878128\,10^{-12}` F/m (the data
+``eps0`` of the model), the relative permittivity ``eps_r`` (a property: a
+number, or a matrix with ``"permittivity": "anisotropic"``; the materials of
+the library give it for the insulators), the volume charge density
+:math:`\rho_v` (its source, C/m³). The macros ``E_field`` and ``D_field``
+are the fields, exported as ``electric_field`` and
+``electric_displacement``. Its conditions:
+
+- ``potential``: the potential of a conductor, :math:`V = V_0`;
+- ``ground``: :math:`V = 0`;
+- ``surface_charge``: a charge density on the boundary,
+  :math:`-D\cdot n = \sigma_s` (C/m²); a boundary without condition has
+  no charge, :math:`D\cdot n = 0` (a plane of symmetry, an insulator);
+- ``floating``: a conductor of unknown potential, constant on its boundary,
+  and of given total charge ``charge`` (C, 0 for an isolated conductor).
+  The script adds a scalar unknown, its potential, and a multiplier on its
+  boundary (:math:`D\cdot n`); its potential is in the results
+  (``potentials``).
+
+At least one ``potential`` or ``ground`` condition fixes the potential (a
+floating conductor alone leaves it defined up to a constant). The results
+give the energy :math:`W = \frac12\int D\cdot E` (``electric_energy``)
+and the charge of each conductor (``charges``, by its selection),
+:math:`Q = -\int_\Gamma D\cdot n`, computed from the equation tested by
+the function equal to 1 on the nodes of the conductor and 0 elsewhere: as
+accurate as the energy (the flux :math:`D\cdot n` integrated on the
+boundary is less). A capacitance follows: :math:`C = Q/\Delta V = 2W/\Delta
+V^2`. The equation is written divided by :math:`\varepsilon_0` in the
+script (its matrix of order 1), so are the sources. In 2D, the quantities
+are per unit length along :math:`z`. ``examples/coax_cable.json`` computes
+the capacitance of a coaxial cable.
 
 .. _lab-models-pde:
 

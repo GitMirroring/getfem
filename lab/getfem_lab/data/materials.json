@@ -1,5 +1,5 @@
 {
- "description": "Built-in material library of getfem_lab: typical values near 20 °C, in SI units, for prototyping (isotropic, linear); check them against a datasheet for a design.",
+ "description": "Built-in material library of getfem_lab: typical values near 20 °C, in SI units, for prototyping (isotropic, linear; eps_r: the relative permittivity at low frequency, of the insulators); check them against a datasheet for a design.",
  "materials": [
   {
    "name": "Aluminium (pure)",
@@ -166,7 +166,8 @@
     "nu": 0.22,
     "alpha": 8.1e-06,
     "rho": 3950,
-    "cp": 880
+    "cp": 880,
+    "eps_r": 9.8
    }
   },
   {
@@ -178,7 +179,8 @@
     "nu": 0.27,
     "alpha": 2.6e-06,
     "rho": 2329,
-    "cp": 700
+    "cp": 700,
+    "eps_r": 11.7
    }
   },
   {
@@ -190,7 +192,8 @@
     "nu": 0.22,
     "alpha": 9e-06,
     "rho": 2500,
-    "cp": 840
+    "cp": 840,
+    "eps_r": 7.0
    }
   },
   {
@@ -202,7 +205,8 @@
     "nu": 0.17,
     "alpha": 5.5e-07,
     "rho": 2200,
-    "cp": 740
+    "cp": 740,
+    "eps_r": 3.8
    }
   },
   {
@@ -214,7 +218,8 @@
     "nu": 0.35,
     "alpha": 5.5e-05,
     "rho": 1200,
-    "cp": 1100
+    "cp": 1100,
+    "eps_r": 3.6
    }
   },
   {
@@ -226,7 +231,8 @@
     "nu": 0.42,
     "alpha": 0.00012,
     "rho": 950,
-    "cp": 1900
+    "cp": 1900,
+    "eps_r": 2.3
    }
   },
   {
@@ -238,7 +244,8 @@
     "nu": 0.37,
     "alpha": 7e-05,
     "rho": 1180,
-    "cp": 1460
+    "cp": 1460,
+    "eps_r": 3.2
    }
   },
   {
@@ -250,7 +257,8 @@
     "nu": 0.39,
     "alpha": 8e-05,
     "rho": 1140,
-    "cp": 1670
+    "cp": 1670,
+    "eps_r": 4.0
    }
   },
   {
@@ -262,7 +270,8 @@
     "nu": 0.49,
     "alpha": 0.00022,
     "rho": 920,
-    "cp": 1900
+    "cp": 1900,
+    "eps_r": 3.0
    }
   },
   {
@@ -274,7 +283,8 @@
     "nu": 0.2,
     "alpha": 1e-05,
     "rho": 2400,
-    "cp": 880
+    "cp": 880,
+    "eps_r": 4.5
    }
   },
   {
@@ -286,7 +296,8 @@
     "nu": 0.25,
     "alpha": 8e-06,
     "rho": 2700,
-    "cp": 790
+    "cp": 790,
+    "eps_r": 8.0
    }
   },
   {
@@ -307,7 +318,8 @@
    "properties": {
     "k": 0.6,
     "rho": 998,
-    "cp": 4182
+    "cp": 4182,
+    "eps_r": 80.0
    }
   },
   {
@@ -316,7 +328,8 @@
    "properties": {
     "k": 0.0257,
     "rho": 1.204,
-    "cp": 1005
+    "cp": 1005,
+    "eps_r": 1.0005
    }
   }
  ]

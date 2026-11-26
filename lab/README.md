@@ -312,6 +312,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `getfem_lab/app/jobs.py` | meshing and solving through QProcess (output, interruption) |
 | `tests/test_heat.py` | 16 heat transfer cases (one of them requires Gmsh) |
 | `tests/test_elasticity.py` | 11 linear elasticity cases |
+| `tests/test_electrostatics.py` | the electrostatics: plates, charges, floating conductor, coaxial cable |
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
 | `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
@@ -335,7 +336,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
 | `tests/test_splines.py` | curved sides of polygons: geometry, format, meshers, 3D profiles, export, editing, table |
-| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution), convection-diffusion (PDE module, SUPG), membrane waves (PDE module of order 2 in time) |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution), convection-diffusion (PDE module, SUPG), membrane waves (PDE module of order 2 in time), coaxial cable (electrostatics) |
 
 ## Geometry, selections, meshes
 
@@ -428,6 +429,7 @@ predefined physics acting on them:
 | `heat_conduction` | `k` | `temperature`, `heat_flux`, `convection` | `q` (heat flux) |
 | `linear_elasticity` | `E`, `nu` (option `plane`: `strain` / `stress` in 2D) | `fixed`, `displacement`, `roller`, `traction`, `pressure` | `eps`, `sigma`, `von_mises`, `mu_L`, `lambda_L` |
 | `thermal_expansion` | `alpha` (value `T_ref`) | | adds `- beta alpha (T - T_ref) I` to `sigma` |
+| `electrostatics` | `eps_r` (option `permittivity`: anisotropic); source: the charge density | `potential`, `ground`, `surface_charge`, `floating` | `E_field`, `D_field`, `eps0`; the charges of the conductors, the energy |
 | `pde` | coefficient form `K`, `b`, `j`, `v`, `r`, or general form `F`; `d`, `m` in time (options `form`, `unknown`, `time_order`, `diffusion`, `stabilization`: SUPG) | `imposed_value`, `flux`, `robin` | `F_u` (the flux); the coefficients named `K_u`... after the unknown |
 
 Properties are given per domain selection, by a value (number or GWFL

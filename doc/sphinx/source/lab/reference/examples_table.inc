@@ -24,6 +24,11 @@
      - csg 3D
      - getfem
      - heat_conduction
+   * - :ref:`coax_cable.json <lab-example-coax_cable>`
+     - Coaxial cable: the capacitance per unit length, 2 pi eps0 eps\_r / ln(b/a) (electrostatics)
+     - csg 2D
+     - getfem
+     - electrostatics
    * - :ref:`convection_diffusion.json <lab-example-convection_diffusion>`
      - Convection-diffusion: a dominant convection, boundary layers at the outflow (PDE module, SUPG)
      - box

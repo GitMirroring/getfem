@@ -1,0 +1,153 @@
+{
+  "format_version": 3,
+  "name": "Coaxial cable: the capacitance per unit length, 2 pi eps0 eps_r / ln(b/a) (electrostatics)",
+  "parameters": [
+    {
+      "name": "a",
+      "value": 0.001,
+      "description": "radius of the inner conductor (m)"
+    },
+    {
+      "name": "b",
+      "value": 0.0035,
+      "description": "inner radius of the outer conductor (m)"
+    },
+    {
+      "name": "V0",
+      "value": 1.0,
+      "description": "potential of the inner conductor (V)"
+    },
+    {
+      "name": "h",
+      "value": 0.0003,
+      "description": "element size (m)"
+    }
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "section",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "difference",
+          "of": [
+            {
+              "type": "ball",
+              "center": [
+                0,
+                0
+              ],
+              "radius": "b"
+            },
+            {
+              "type": "ball",
+              "center": [
+                0,
+                0
+              ],
+              "radius": "a"
+            }
+          ]
+        }
+      },
+      "selections": {
+        "inner": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "edges",
+            "edges": [
+              {
+                "shape": [
+                  1
+                ],
+                "side": "circle"
+              }
+            ]
+          }
+        },
+        "outer": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "edges",
+            "edges": [
+              {
+                "shape": [
+                  0
+                ],
+                "side": "circle"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "mesh",
+      "geometry": "section",
+      "mesher": "getfem",
+      "h": "h",
+      "order": 2
+    }
+  ],
+  "fields": [],
+  "models": [
+    {
+      "name": "cable",
+      "variables": [
+        {
+          "name": "V",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 2
+        }
+      ],
+      "modules": [
+        {
+          "type": "electrostatics",
+          "variable": "V",
+          "permittivity": "isotropic",
+          "properties": {
+            "eps_r": [
+              {
+                "selection": "all",
+                "value": 2.3
+              }
+            ]
+          },
+          "sources": [],
+          "conditions": [
+            {
+              "type": "potential",
+              "selection": "inner",
+              "value": "V0"
+            },
+            {
+              "type": "ground",
+              "selection": "outer"
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "capacitance",
+          "expr": "D_field.E_field/sqr(V0)",
+          "selection": "all"
+        }
+      ],
+      "vtu": "cable.vtu"
+    }
+  ],
+  "solvers": [],
+  "outputs": [],
+  "graphics": []
+}

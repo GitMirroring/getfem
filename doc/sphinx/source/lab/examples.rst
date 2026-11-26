@@ -276,3 +276,16 @@ output ``energy`` stays at :math:`\pi/2` (that of the initial bump, the
 integral of :math:`c_0^2 |\nabla w|^2/2`) to six digits, while the waves
 reflect on the edges (``w`` changes sign). ``displaced_volume`` starts at
 :math:`\pi r_0^2`.
+
+.. _lab-example-coax_cable:
+
+Coaxial cable (``coax_cable.json``)
+-----------------------------------
+
+The ``electrostatics`` module on the section of a coaxial cable: an inner
+conductor of radius ``a`` = 1 mm at the potential ``V0`` = 1 V, the outer
+conductor of radius ``b`` = 3.5 mm grounded, polyethylene between them
+(:math:`\varepsilon_r` = 2.3). Its capacitance per unit length, the output
+``capacitance`` (:math:`2W/V_0^2`), and the charges of the conductors
+(``charges``, :math:`\pm C V_0`) agree within :math:`10^{-4}` with
+:math:`2\pi\varepsilon_0\varepsilon_r/\ln(b/a)` = 102.1 pF/m.

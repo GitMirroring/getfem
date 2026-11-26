@@ -41,7 +41,7 @@ def _v(value) -> str:
 
 def equation(model: dict, md: dict, mod: dict) -> str:
     """The equation solved by a module and its data, as HTML."""
-    fn = {"heat_conduction": _heat, "linear_elasticity": _elasticity,
+    fn = {"heat_conduction": _heat, "linear_elasticity": _elasticity, "electrostatics": _electrostatics,
           "thermal_expansion": _expansion, "pde": _pde}.get(mod.get("type"))
     return fn(model, md, mod) if fn else ""
 
@@ -71,6 +71,14 @@ def _heat(model: dict, md: dict, mod: dict) -> str:
     lhs = f"ρ c<sub>p</sub> ∂{T}/∂t − " if timed else "−"
     k = "k" if mod.get("conductivity", "isotropic") == "isotropic" else "K"
     return _time(model, md, mod) + _block([f"{lhs}{DIV}({k} {NABLA}{T}) = f &nbsp; in Ω"])
+
+
+def _electrostatics(model: dict, md: dict, mod: dict) -> str:
+    V = html.escape(mod.get("variable", "V"))
+    eps = "ε<sub>r</sub>" if mod.get("permittivity", "isotropic") == "isotropic" else "<b>ε</b><sub>r</sub>"
+    return _block([f"−{DIV}(ε<sub>0</sub> {eps} {NABLA}{V}) = ρ<sub>v</sub> &nbsp; in Ω",
+                   f"<b>E</b> = −{NABLA}{V} (E_field), &nbsp; <b>D</b> = ε<sub>0</sub> {eps} <b>E</b> (D_field), "
+                   "&nbsp; ε<sub>0</sub> = 8.854 10<sup>−12</sup> F/m (eps0)"])
 
 
 def _elasticity(model: dict, md: dict, mod: dict) -> str:

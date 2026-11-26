@@ -382,6 +382,7 @@ PROPERTIES = {
     "alpha": ("thermal expansion coefficient", "1/K"),
     "rho": ("density", "kg/m³"),
     "cp": ("specific heat capacity", "J/(kg·K)"),
+    "eps_r": ("relative permittivity", "1"),
 }
 
 # Saved views of a result field (models[k].graphics): their display settings;
@@ -428,6 +429,31 @@ MODULE_SPECS = {
                              "the temperature is only defined up to a constant",
         "macros": ("q",),
         "exports": {"heat_flux": ("q", VECTOR)},
+    },
+    # The electrostatics: -div(eps0 eps_r grad V) = rho_v (the free charge density), E = -grad V,
+    # D = eps0 eps_r E; conductors at a given potential (or the ground), surface charges, floating
+    # conductors (an unknown constant potential, a given total charge).
+    "electrostatics": {
+        "label": "Electrostatics",
+        "variables": {"variable": {"name": "V", "kind": SCALAR, "degree": 2, "label": "electric potential"}},
+        "properties": {"eps_r": "relative permittivity"},
+        "property_defaults": {"eps_r": 1.0},
+        "options": {"permittivity": ("isotropic", "anisotropic")},
+        "tensor_properties": {"eps_r": ("permittivity", "anisotropic")},
+        "values": {},
+        "source": SCALAR,
+        "source_label": "rho_v (volume charge density, C/m³)",
+        "conditions": {
+            "potential": {"value": SCALAR},
+            "ground": {},
+            "surface_charge": {"value": SCALAR},
+            "floating": {"charge": SCALAR},
+        },
+        "anchoring": ("potential", "ground"),
+        "anchoring_message": "without an imposed potential or a ground, the potential is only defined up "
+                             "to a constant",
+        "macros": ("E_field", "D_field", "eps0"),        # (eps0: the permittivity of vacuum, data)
+        "exports": {"electric_field": ("E_field", VECTOR), "electric_displacement": ("D_field", VECTOR)},
     },
     "linear_elasticity": {
         "label": "Linear elasticity",

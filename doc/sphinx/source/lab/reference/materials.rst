@@ -6,7 +6,7 @@
 Built-in material library
 =========================
 
-Built-in material library of getfem\_lab: typical values near 20 °C, in SI units, for prototyping (isotropic, linear); check them against a datasheet for a design.
+Built-in material library of getfem\_lab: typical values near 20 °C, in SI units, for prototyping (isotropic, linear; eps\_r: the relative permittivity at low frequency, of the insulators); check them against a datasheet for a design.
 
 .. list-table::
    :header-rows: 1
@@ -19,6 +19,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - alpha (1/K)
      - rho (kg/m³)
      - cp (J/(kg·K))
+     - eps_r (1)
    * - Aluminium (pure)
      - metals
      - 237
@@ -27,6 +28,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 2.31e-05
      - 2700
      - 897
+     -
    * - Aluminium alloy 6061-T6
      - metals
      - 167
@@ -35,6 +37,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 2.36e-05
      - 2700
      - 896
+     -
    * - Copper
      - metals
      - 401
@@ -43,6 +46,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.65e-05
      - 8960
      - 385
+     -
    * - Brass
      - metals
      - 109
@@ -51,6 +55,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.9e-05
      - 8500
      - 380
+     -
    * - Structural steel
      - metals
      - 50
@@ -59,6 +64,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.2e-05
      - 7850
      - 460
+     -
    * - Stainless steel 304
      - metals
      - 16.2
@@ -67,6 +73,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.73e-05
      - 8000
      - 500
+     -
    * - Grey cast iron
      - metals
      - 50
@@ -75,6 +82,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.1e-05
      - 7200
      - 460
+     -
    * - Titanium alloy Ti-6Al-4V
      - metals
      - 6.7
@@ -83,6 +91,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 8.6e-06
      - 4430
      - 526
+     -
    * - Nickel
      - metals
      - 90.9
@@ -91,6 +100,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.34e-05
      - 8908
      - 445
+     -
    * - Lead
      - metals
      - 35
@@ -99,6 +109,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 2.89e-05
      - 1.134e+04
      - 129
+     -
    * - Gold
      - metals
      - 318
@@ -107,6 +118,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.42e-05
      - 1.93e+04
      - 129
+     -
    * - Silver
      - metals
      - 429
@@ -115,6 +127,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1.89e-05
      - 1.049e+04
      - 235
+     -
    * - Tungsten
      - metals
      - 173
@@ -123,6 +136,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 4.5e-06
      - 1.925e+04
      - 134
+     -
    * - Alumina (Al2O3)
      - ceramics and glasses
      - 30
@@ -131,6 +145,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 8.1e-06
      - 3950
      - 880
+     - 9.8
    * - Silicon
      - ceramics and glasses
      - 148
@@ -139,6 +154,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 2.6e-06
      - 2329
      - 700
+     - 11.7
    * - Soda-lime glass
      - ceramics and glasses
      - 1
@@ -147,6 +163,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 9e-06
      - 2500
      - 840
+     - 7
    * - Fused silica
      - ceramics and glasses
      - 1.38
@@ -155,6 +172,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 5.5e-07
      - 2200
      - 740
+     - 3.8
    * - Epoxy
      - polymers
      - 0.2
@@ -163,6 +181,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 5.5e-05
      - 1200
      - 1100
+     - 3.6
    * - Polyethylene (HDPE)
      - polymers
      - 0.48
@@ -171,6 +190,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 0.00012
      - 950
      - 1900
+     - 2.3
    * - PMMA
      - polymers
      - 0.19
@@ -179,6 +199,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 7e-05
      - 1180
      - 1460
+     - 3.2
    * - Nylon 6,6
      - polymers
      - 0.25
@@ -187,6 +208,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 8e-05
      - 1140
      - 1670
+     - 4
    * - Natural rubber
      - polymers
      - 0.13
@@ -195,6 +217,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 0.00022
      - 920
      - 1900
+     - 3
    * - Concrete
      - construction
      - 1.7
@@ -203,6 +226,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 1e-05
      - 2400
      - 880
+     - 4.5
    * - Granite
      - construction
      - 2.8
@@ -211,6 +235,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 8e-06
      - 2700
      - 790
+     - 8
    * - Pine wood (along the grain)
      - construction
      - 0.12
@@ -219,6 +244,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      - 5e-06
      - 500
      - 1600
+     -
    * - Water (20 °C)
      - fluids
      - 0.6
@@ -227,6 +253,7 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      -
      - 998
      - 4182
+     - 80
    * - Air (20 °C, 1 atm)
      - fluids
      - 0.0257
@@ -235,5 +262,6 @@ Built-in material library of getfem\_lab: typical values near 20 °C, in SI unit
      -
      - 1.204
      - 1005
+     - 1
 
-Properties: ``k``: thermal conductivity; ``E``: Young's modulus; ``nu``: Poisson's ratio; ``alpha``: thermal expansion coefficient; ``rho``: density; ``cp``: specific heat capacity.
+Properties: ``k``: thermal conductivity; ``E``: Young's modulus; ``nu``: Poisson's ratio; ``alpha``: thermal expansion coefficient; ``rho``: density; ``cp``: specific heat capacity; ``eps_r``: relative permittivity.

@@ -77,6 +77,70 @@ Macros: ``q``.
 
 Exported fields: ``heat_flux`` (vector).
 
+.. _lab-ref-module-electrostatics:
+
+electrostatics: Electrostatics
+------------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Key
+     - Variable
+     - Kind
+     - Default name
+     - May be imported
+   * - ``variable``
+     - electric potential
+     - scalar
+     - ``V``
+     -
+
+Properties:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Property
+     - Meaning
+     - Unit (SI)
+     - Default
+   * - ``eps_r``
+     - relative permittivity
+     - 1
+     - ``1.0``
+
+Option ``permittivity``: ``isotropic``, ``anisotropic``.
+
+With ``permittivity`` set to ``anisotropic``, ``eps_r`` is a matrix of the dimension of the space (a number stands for its multiple of the identity).
+
+Sources: scalar values per domain selection.
+
+Conditions:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Condition
+     - Values
+     - Fixes the solution
+   * - ``potential``
+     - ``value`` (scalar)
+     - yes
+   * - ``ground``
+     - none
+     - yes
+   * - ``surface_charge``
+     - ``value`` (scalar)
+     -
+   * - ``floating``
+     - ``charge`` (scalar)
+     -
+
+Macros: ``E_field``, ``D_field``, ``eps0``.
+
+Exported fields: ``electric_field`` (vector), ``electric_displacement`` (vector).
+
 .. _lab-ref-module-linear_elasticity:
 
 linear_elasticity: Linear elasticity

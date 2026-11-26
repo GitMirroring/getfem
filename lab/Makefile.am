@@ -33,6 +33,7 @@ LAB_TESTS =                                     \
     tests/test_doc.py                           \
     tests/test_editing.py                       \
     tests/test_elasticity.py                    \
+    tests/test_electrostatics.py                \
     tests/test_ellipse.py                       \
     tests/test_ellipsoid.py                     \
     tests/test_export.py                        \

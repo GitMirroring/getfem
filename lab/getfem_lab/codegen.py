@@ -340,6 +340,87 @@ def _heat_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
     return ["mf_flux", "flux", "'heat_flux'"]
 
 
+EPS0 = 8.8541878128e-12     # the permittivity of vacuum (F/m, CODATA 2018)
+
+
+def _electrostatics_declare(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
+    u, md = mod["variable"], c.py
+    w(f"{md}.add_initialized_data('eps0', [{EPS0!r}])  # the permittivity of vacuum (F/m)")
+    w(f"{md}.add_macro('E_field', '-Grad_{u}')  # the electric field")
+    w(f"{md}.add_macro('D_field', 'eps0*eps_r*E_field')  # the electric displacement")
+
+
+def _electrostatics_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
+    u, md = mod["variable"], c.py
+    w(f"# -div(eps_r grad {u}) = rho_v/eps0 (the equation divided by eps0: a matrix of order 1)")
+    _term(c, w, f"(eps_r*Grad_{u}).Grad_Test_{u}")
+    for src in mod["sources"]:
+        _source(c, w, "(" + gwfl(src["value"]) + ")/eps0*Test_" + u, c.rg(src["selection"]))
+    for j, bc in enumerate(mod["conditions"], start=1):
+        rg = c.rg(bc["selection"])
+        w("")
+        if bc["type"] == "potential":
+            data = f"{u}_D{i}_{j}"
+            w(f"# Imposed potential on {bc['selection']}")
+            c.fem_data(w, data, c.mfs[u], gwfl(bc["value"]))
+            w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+            c.dirichlet.setdefault(u, []).append((rg, data))
+        elif bc["type"] == "ground":
+            w(f"# Ground on {bc['selection']}: {u} = 0")
+            w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg})")
+            c.dirichlet.setdefault(u, []).append((rg, None))
+        elif bc["type"] == "surface_charge":
+            w(f"# Surface charge on {bc['selection']}: -D.n = sigma_s")
+            _source(c, w, "(" + gwfl(bc["value"]) + ")/eps0*Test_" + u, rg)
+        elif bc["type"] == "floating":
+            vf, lam = f"{u}_float{i}_{j}", f"{u}_lambda{i}_{j}"
+            w(f"# Floating conductor on {bc['selection']}: {u} = {vf} (one unknown constant, by a multiplier "
+              f"{lam} = D.n/eps0), its total charge -int D.n = Q")
+            w(f"{md}.add_variable({vf!r}, 1)")
+            w(f"{md}.add_filtered_fem_variable({lam!r}, {c.mfs[u]}, {rg})")
+            w(f"area = gf.asm_generic({c.mim}, 0, '1', {rg}, {md})")
+            _term(c, w, f"{lam}*Test_{u} + ({u} - {vf})*Test_{lam} - {lam}*Test_{vf}", rg)
+            q = gwfl(bc["charge"])
+            w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, '-(({q})/eps0/' + repr(area) + '*Test_{vf})', "
+              f"{rg})   # (the charge Q spread on the boundary)")
+
+
+def _electrostatics_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
+    u, md = mod["variable"], c.py
+    w(f"R['min_{u}'] = float({md}.variable({u!r}).min())")
+    w(f"R['max_{u}'] = float({md}.variable({u!r}).max())")
+    w(f"R['electric_energy'] = float(gf.asm_generic({c.mim}, 0, '0.5*D_field.E_field', -1, {md}))")
+    conductors = [(j, bc) for j, bc in enumerate(mod["conditions"], start=1)
+                  if bc["type"] in ("potential", "ground", "floating")]
+    if conductors:
+        mf = c.mfs[u]
+        w("# The charge of each conductor, Q = -int_Gamma D.n (n: the outward normal of the domain), from the")
+        w("# equation tested by phi (1 on the dofs of the conductor, 0 elsewhere): Q = int eps0 eps_r grad V.")
+        w("# grad phi - int rho_v phi - int sigma_s phi (as accurate as the energy; the flux on the boundary less)")
+        w("R['charges'], R['potentials'] = {}, {}")
+        w(f"{md}.add_initialized_fem_data('{u}__phi', {mf}, np.zeros({mf}.nbdof()))")
+        sources = [(gwfl(src["value"]), c.rg(src["selection"])) for src in mod["sources"]]
+        sources += [(gwfl(bc["value"]), c.rg(bc["selection"])) for bc in mod["conditions"]
+                    if bc["type"] == "surface_charge"]
+        for j, bc in conductors:
+            sel = bc["selection"]
+            w("phi = np.zeros(" + f"{mf}.nbdof())")
+            w(f"phi[{mf}.basic_dof_on_region({c.rg(sel)})] = 1.0")
+            w(f"{md}.set_variable('{u}__phi', phi)")
+            w(f"Q = gf.asm_generic({c.mim}, 0, 'eps0*(eps_r*Grad_{u}).Grad_{u}__phi', -1, {md})")
+            for expr, rg in sources:
+                w(f"Q -= gf.asm_generic({c.mim}, 0, '({expr})*{u}__phi', {rg}, {md})")
+            w(f"R['charges'][{sel!r}] = float(Q)")
+            if bc["type"] == "floating":
+                w(f"R['potentials'][{sel!r}] = float({md}.variable('{u}_float{i}_{j}')[0])")
+    deg = max(int(c.var(u).get("degree", 1)) - 1, 0)
+    w(f"mf_E = gf.MeshFem({c.m}, {c.m}.dim())")
+    w(f"mf_E.set_classical_discontinuous_fem({deg})")
+    w(f"E_field = {md}.interpolation('E_field', mf_E)")
+    w(f"D_field = {md}.interpolation('D_field', mf_E)")
+    return ["mf_E", "E_field", "'electric_field'", "mf_E", "D_field", "'electric_displacement'"]
+
+
 def _expansion_of(c: Ctx, u: str) -> dict | None:
     return next((m for m in c.md["modules"] if m["type"] == "thermal_expansion"
                  and m["displacement"] == u), None)
@@ -559,6 +640,7 @@ def _nothing(c: Ctx, mod: dict, i: int, w: ScriptWriter):
 
 MODULES = {
     "heat_conduction": (_heat_declare, _heat_setup, _heat_post),
+    "electrostatics": (_electrostatics_declare, _electrostatics_setup, _electrostatics_post),
     "linear_elasticity": (_elasticity_declare, _elasticity_setup, _elasticity_post),
     "thermal_expansion": (_nothing, _nothing, _nothing),   # written by the elasticity module
     "pde": (_pde_declare, _pde_setup, _pde_post),
