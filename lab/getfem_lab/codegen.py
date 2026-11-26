@@ -1484,7 +1484,7 @@ def generate(model: dict, meshes: dict[str, tuple[str | Path | None, dict]] | No
     and the script runs them in order, or one (--solver name) after those it
     starts from; each one writes its files in its folder.
     Raises ValueError if the model is invalid."""
-    errors = M.validate(model)
+    errors = M.solve_errors(model)
     if errors:
         raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
     model = P.resolved(M.with_defaults(model))

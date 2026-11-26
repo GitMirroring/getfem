@@ -808,8 +808,52 @@ def test_save_as_and_new():
         assert win.save()
         assert M.load(win.path)["name"] == win.model["name"]
         win.new_model()
-        assert win.path is None and win.model["models"][0]["modules"][0]["type"] == "heat_conduction"
+        assert win.path is None and win.model == M.empty_model() | {"_source_dir": win.model["_source_dir"]}
         close(win)
+
+
+def _has_getfem():
+    try:
+        import getfem  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def test_empty_project():
+    """Without a file: an empty project (no geometry, no mesh, no model),
+    valid; the next step hinted; meshing and computing say what is missing;
+    a mesh offered once there is a geometry, a model of a module once there
+    is a mesh; then computed."""
+    from getfem_lab.app.window import MainWindow
+    app()
+    win = MainWindow(None)
+    win.show()
+    assert win.model["geometries"] == win.model["meshes"] == win.model["models"] == []
+    assert M.validate(win.model) == [] and win.errors == []
+    assert win.state.text().startswith("Empty project: add a geometry")
+    assert [a for a, _ in win._node_actions(("meshes",))] == []
+    assert not any(a.startswith("add_model:") for a, _ in win._node_actions(()))
+    win.build_mesh()
+    assert win.state.text() == "No mesh to build: add a geometry, then a mesh"
+    win.compute()
+    assert win.state.text() == "Nothing to compute: add a geometry, a mesh, then a model" and not win.jobs.running
+    win._run_action(("geometries",), "add_geometry")
+    assert win.state.text().startswith("Add a mesh") and ("add_mesh", "Add a mesh") in win._node_actions(("meshes",))
+    win._run_action(("meshes",), "add_mesh")
+    assert win.state.text().startswith("Add a model")
+    win._run_action(("models",), "add_model:heat_conduction")
+    win.model["models"][0]["modules"][0]["conditions"] = [{"type": "temperature", "selection": "boundary",
+                                                           "value": 0.0}]
+    win.model["models"][0]["modules"][0]["sources"] = [{"selection": "all", "value": 1.0}]
+    win._changed(select=("models", 0))
+    assert M.solve_errors(win.model) == [] and win.state.text() == "Model valid"
+    if _has_getfem():
+        win.compute()
+        assert wait(lambda: win.results is not None and not win.jobs.running), win.log.toPlainText()
+    for k in ("models", "meshes", "geometries"):        # (the last ones may be removed)
+        assert ("remove", "Remove") in win._node_actions((k, 0))
+    close(win)
 
 
 if __name__ == "__main__":

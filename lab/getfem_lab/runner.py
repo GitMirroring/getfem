@@ -106,7 +106,7 @@ def run(model: dict, workdir: str | Path, python: str | None = None,
     """
     workdir = Path(workdir).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
-    errors = M.validate(model)
+    errors = M.solve_errors(model)
     if not errors and check_gwfl:
         errors = gwfl.check(model, python=python)
     if errors:
@@ -133,7 +133,7 @@ def export_script(model: dict) -> str:
     """A single standalone script, meshing then solving: it does not depend on
     getfem_lab nor on a working folder, and writes results.json and the VTU
     files in the folder where it runs."""
-    errors = M.validate(model)
+    errors = M.solve_errors(model)
     if errors:
         raise ValueError("invalid model:\n  - " + "\n  - ".join(errors))
     resolved = P.resolved(M.with_defaults(model))

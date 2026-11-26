@@ -277,8 +277,10 @@ class MainWindow(QMainWindow):
         self._update_undo()
 
     def new_model(self):
+        """An empty project (no geometry, no mesh, no model): the window
+        without a file, File > New."""
         if self._confirm_discard():
-            model = M.default_model()
+            model = M.empty_model()
             model["_source_dir"] = str(Path.cwd())
             self._set_model(model, None)
 
@@ -512,7 +514,18 @@ class MainWindow(QMainWindow):
         n = len(self.errors)
         self.bottom.setTabText(1, f"Problems ({n})" if n else "Problems")
         if not self.jobs.running:
-            self.state.setText("Model valid" if not n else f"{n} problem(s): see the Problems tab")
+            self.state.setText(f"{n} problem(s): see the Problems tab" if n else self._progress_hint())
+
+    def _progress_hint(self) -> str:
+        """The next step of a project being built (empty: a geometry first)."""
+        m = self.model
+        if not m.get("geometries"):
+            return "Empty project: add a geometry (Geometries, right click)"
+        if not m.get("meshes"):
+            return "Add a mesh of the geometry (Meshes, right click)"
+        if not m.get("models"):
+            return "Add a model (Models, right click)"
+        return "Model valid"
 
     def _problem_activated(self, item):
         self.select(item.data(PATH_ROLE))
@@ -1388,7 +1401,11 @@ class MainWindow(QMainWindow):
         mesh_name = E.mesh_to_show(self.model, path)
         mesh_name2, sel = E.highlighted_selection(self.model, path)
         if mesh_name is None:
-            self.viewer.show_message("This geometry has no mesh: add one to display it.")
+            self.viewer.show_message("Empty project: add a geometry (Geometries, right click)."
+                                     if not self.model.get("geometries") else
+                                     "No mesh: add one to display it (Meshes, right click)."
+                                     if not self.model.get("meshes") else
+                                     "This geometry has no mesh: add one to display it.")
             return
         try:
             mres = mesher.cached_mesh(self.model, mesh_name, self.workdir, up_to_date=False)
@@ -1654,10 +1671,14 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _check(self, prefixes=None) -> bool:
-        errors = M.validate(self.model)
+    def _check(self, prefixes=None, solve=False) -> bool:
+        errors = M.solve_errors(self.model) if solve else M.validate(self.model)
         if prefixes:
             errors = [e for e in errors if e.startswith(prefixes)]
+        if errors and all(e.startswith("models: nothing to compute") for e in errors):
+            self.state.setText("Nothing to compute: add a geometry, a mesh, then a model")
+            self._log(errors[0], error=True)
+            return False
         if errors:
             self.bottom.setCurrentWidget(self.problems)
             self.state.setText("The model has problems: see the Problems tab")
@@ -1670,7 +1691,11 @@ class MainWindow(QMainWindow):
             return
         if name is None:
             name = E.mesh_to_show(self.model, self.current_path())
-        if name is None or not self._check(("geometries", "meshes")):
+        if name is None:
+            self.state.setText("No mesh to build: add a geometry, then a mesh")
+            self._log("No mesh to build: add a geometry, then a mesh", error=True)
+            return
+        if not self._check(("geometries", "meshes")):
             return
         self.bottom.setCurrentWidget(self.log)
         self.jobs.build_mesh(self.model, name, self.workdir, force=False)
@@ -1679,7 +1704,7 @@ class MainWindow(QMainWindow):
         """Solve: all the global solvers in order, or one (after those it
         starts from)."""
         self._compute_solver = solver
-        if self.jobs.running or not self._check():
+        if self.jobs.running or not self._check(solve=True):
             return
         if self._gwfl_key != self._model_key():   # expressions not checked yet
             self._compute_after_check = True

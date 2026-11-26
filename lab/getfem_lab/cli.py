@@ -121,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    errors = M.validate(model)
+    errors = M.solve_errors(model) if args.cmd in ("run", "export") else M.validate(model)
     if not errors and args.cmd in ("validate", "run"):
         try:
             errors = gwfl.check(model, python=getattr(args, "python", None))

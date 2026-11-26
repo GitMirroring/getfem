@@ -664,6 +664,24 @@ def new_model(name: str, mesh: str, mtype: str | None = None, dim: int = 2) -> d
     return md
 
 
+def empty_model() -> dict:
+    """An empty project: no geometry, no mesh, no model (the window without
+    a file, File > New); valid, but nothing to compute (solve_errors)."""
+    return {"format_version": FORMAT_VERSION, "name": "New project", "parameters": [], "materials": [],
+            "geometries": [], "meshes": [], "fields": [], "models": [], "solvers": [], "outputs": [],
+            "graphics": []}
+
+
+def solve_errors(model: dict) -> list[str]:
+    """The errors which prevent a solve: those of validate, and a project
+    without model (valid while it is built: nothing to compute)."""
+    errors = validate(model)
+    if not model.get("models"):
+        errors.append("models: nothing to compute, the project has no model (add a geometry, a mesh, "
+                      "then a model)")
+    return errors
+
+
 def default_model() -> dict:
     """Starting model: unit square, heat conduction, left and right edges fixed."""
     md = new_model("heat", "mesh", "heat_conduction")
@@ -2315,8 +2333,6 @@ def _validate(model: dict) -> list[str]:
 
     # --- Geometries and meshes (names unique in the whole file)
     for key, items in (("geometries", all_geometries(model)), ("meshes", all_meshes(model))):
-        if key == "geometries" and not items:
-            errors.append("geometries: at least one geometry is required")
         names = [it.get("name") for it, _ in items]
         for (it, owner), name in zip(items, names):
             where = _where(model, key, it, owner)
@@ -2348,8 +2364,6 @@ def _validate(model: dict) -> list[str]:
 
     # --- Models
     models = model.get("models", [])
-    if not models:
-        errors.append("models: at least one model is required")
     mnames = [md.get("name") for md in models]
     for k, md in enumerate(models):
         name = md.get("name")

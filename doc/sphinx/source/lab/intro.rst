@@ -60,12 +60,20 @@ Starting
 
   # the getfem module must be importable, e.g. after a build:
   export PYTHONPATH=<prefix>/lib/python3.X/site-packages
-  getfem_lab                                       # the window
+  getfem_lab                                       # the window, an empty project
   getfem_lab lab/examples/plate_hole_tension.json  # with a model
   getfem_lab run lab/examples/plate.json -w /tmp/plate   # without window
 
 Without installing it, ``python -m getfem_lab`` from the ``lab`` directory
 does the same (``python -m getfem_lab examples/plate.json``).
+
+Without a file (and with *File ▸ New*), the window opens an empty project:
+no geometry, no mesh, no model. The status bar gives the next step (a
+geometry, then a mesh of it, then a model on the mesh); *Add a mesh* is
+offered once there is a geometry, *Add a model* once there is a mesh. An
+empty project is valid, but there is nothing to compute: *Build mesh* and
+*Compute* say what is missing. ``getfem_lab new model.json`` writes a
+starting model instead (heat conduction on the unit square).
 
 ``--python /path/to/python`` selects the interpreter that runs the
 computations (the one that provides |gf|, |gmsh| and Netgen), when it is not

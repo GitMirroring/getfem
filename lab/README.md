@@ -66,7 +66,7 @@ needs is missing (pytest, PySide6, PyVista, Gmsh...).
 ## Usage
 
 ```bash
-python -m getfem_lab new model.json                         # starting model
+python -m getfem_lab new model.json                         # starting model (heat, unit square)
 python -m getfem_lab validate examples/plate_with_hole.json
 python -m getfem_lab mesh examples/plate_with_hole.json     # all meshes, with selection summary
 python -m getfem_lab run examples/plate_with_hole.json -w results/
@@ -81,6 +81,10 @@ python -m getfem_lab export model.json -o model_getfem.py   # standalone script:
 ```bash
 python -m getfem_lab gui [model.json]       # --no-splash: no start-up window
 ```
+
+Without a model file (and with File ▸ New), an empty project: no geometry,
+no mesh, no model (`model.empty_model`); valid, nothing to compute
+(`model.solve_errors`), the next step in the status bar.
 
 A start-up window shows the versions ("GetFEM Lab 0.1 on GetFEM 5.5") for
 about three seconds while the interface loads. The version of GetFEM is asked

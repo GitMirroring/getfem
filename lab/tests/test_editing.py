@@ -461,6 +461,42 @@ def test_a_new_model_of_a_kind_on_its_module():
     assert E.selected_after("add_model:", path) == path
 
 
+
+def test_empty_project():
+    """An empty project: valid, nothing to compute (solve, export, the
+    command line say so); a mesh: not before a geometry, a model: not
+    before a mesh."""
+    import contextlib
+    import io
+    import tempfile
+    from getfem_lab import cli, runner
+    m = M.empty_model()
+    assert M.validate(m) == [] and len(M.solve_errors(m)) == 1
+    assert "nothing to compute" in M.solve_errors(m)[0]
+    for call in (lambda: runner.export_script(m), lambda: runner.run(m, tempfile.mkdtemp())):
+        try:
+            call()
+            raise AssertionError("no error")
+        except ValueError as exc:
+            assert "nothing to compute" in str(exc)
+    for action in ("add_mesh", "add_model:heat_conduction", "add_model:"):
+        try:
+            E.do_action(m, (), action)
+            raise AssertionError(action)
+        except ValueError:
+            pass
+    assert [a for a, _ in E.actions(m, ())] == ["add_parameter", "add_material", "add_geometry", "add_field",
+                                                "add_solver"]
+    with tempfile.TemporaryDirectory() as tmp:
+        f = f"{tmp}/empty.json"
+        M.save(M.empty_model(), f)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            assert cli.main(["validate", f]) == 0
+            assert cli.main(["export", f]) == 1
+        assert "model is valid" in out.getvalue() and "nothing to compute" in err.getvalue()
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

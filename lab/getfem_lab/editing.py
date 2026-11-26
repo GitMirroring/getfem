@@ -3030,9 +3030,11 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
     if path == ():
         out += [("add_parameter", "Add a parameter"), ("add_material", "Add a material"),
                 ("add_geometry", "Add a geometry"), ("add_field", "Add a field")]
-        out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
-                if "requires" not in s]
-        out += [("add_model:", "Add an empty model"), ("add_solver", "Add a global solver")]
+        if model.get("meshes"):          # (a model: on a mesh; a mesh: of a geometry)
+            out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                    if "requires" not in s]
+            out.append(("add_model:", "Add an empty model"))
+        out.append(("add_solver", "Add a global solver"))
     elif path == ("parameters",):
         out.append(("add_parameter", "Add a parameter"))
     elif path == ("materials",):
@@ -3063,7 +3065,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
                 out.append(("curve:points", "Give the curve by points and arcs (a table)"))
             if not isinstance(src.get("parametric"), dict):
                 out.append(("curve:parametric", "Give the curve by parametric equations"))
-        if len(model.get("geometries", [])) > 1:
+        if model.get("geometries"):
             out.append(("remove", "Remove"))
     elif path[:1] == ("geometries",) and n > 3 and path[2] == "source" and constraint_owner(path) is not None:
         out.append(("remove", "Remove"))
@@ -3119,20 +3121,22 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         if path[3] in geom.get("selections", {}):
             out.append(("remove", "Remove"))
     elif path == ("meshes",):
-        out.append(("add_mesh", "Add a mesh"))
+        if model.get("geometries"):
+            out.append(("add_mesh", "Add a mesh"))
     elif path[:1] == ("meshes",) and n == 2:
         if can_size(model, get_at(model, path, {})):
             out.append(("add_size", "Add a local size"))
         if can_refine(model, get_at(model, path, {})):
             out.append(("add_refinement", "Add a refinement"))
-        if len(model.get("meshes", [])) > 1:
+        if model.get("meshes"):
             out.append(("remove", "Remove"))
     elif path[:1] == ("meshes",) and n == 4 and path[2] in ("sizes", "refine"):
         out.append(("remove", "Remove"))
     elif path == ("models",):
-        out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
-                if "requires" not in s]
-        out.append(("add_model:", "Add an empty model"))
+        if model.get("meshes"):
+            out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                    if "requires" not in s]
+            out.append(("add_model:", "Add an empty model"))
     elif path == ("solvers",):
         out.append(("add_solver", "Add a global solver"))
     elif path[:1] == ("solvers",) and n == 2:
@@ -3143,7 +3147,7 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
                 ("add_quantity", "Add an integrated quantity"),
                 ("add_local_parameter", "Add a parameter"), ("add_local_field", "Add a field"),
                 ("add_import", "Import a variable of another model")]
-        if len(model.get("models", [])) > 1:
+        if model.get("models"):
             out.append(("remove", "Remove"))
     elif rest == ("parameters",):
         out.append(("add_local_parameter", "Add a parameter"))
@@ -3514,6 +3518,8 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         _remap_shape_refs(model["geometries"][path[1]], lambda p: None, swept)
         return path
     if action == "add_mesh":
+        if not model.get("geometries"):
+            raise ValueError("no geometry to mesh: add a geometry first")
         meshes = model.setdefault("meshes", [])
         geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else model["geometries"][0]
         stype = M.meshed_geometry(model, geom).get("source", {}).get("type")
@@ -3531,7 +3537,9 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         models = model.setdefault("models", [])
         base = {"heat_conduction": "heat", "linear_elasticity": "mechanics"}.get(mtype, "model")
         mname = unique_name(name or base, [m.get("name") for m in models])
-        mesh = (model.get("meshes") or [{}])[0].get("name", "mesh")
+        if not model.get("meshes"):
+            raise ValueError("a model is on a mesh: add a geometry and a mesh first")
+        mesh = model["meshes"][0].get("name", "mesh")
         new = M.new_model(mname, mesh, mtype, dim)
         if mtype is None:                       # one variable to start with
             new["variables"].append(M.new_variable(unique_name("u", _names_in(model, None)), mesh))
