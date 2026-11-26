@@ -7,7 +7,7 @@
 
 
    userdoc/index.rst
-   gui/index.rst
+   lab/index.rst
    tutorial/index.rst
    project/index.rst
    gmm/index.rst

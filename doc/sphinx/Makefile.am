@@ -176,7 +176,7 @@ upload:
 	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete python_interface.pdf)
 	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete matlab_octave_interface.pdf)
 	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete getfem_userdoc.pdf)
-	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete getfem_gui.pdf)
+	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete getfem_lab.pdf)
 	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete getfem_project.pdf)
 	(export srcdir=$(srcdir) && $(top_srcdir)/bin/upload_documentation --delete gmm_userdoc.pdf)
 	rm -fr *.pdf
