@@ -1316,10 +1316,12 @@ class Viewer(QWidget):
         self._play_timer.setInterval(400)
         self._play_timer.timeout.connect(self._next_time)
 
-    def set_times(self, times, index: int) -> None:
+    def set_times(self, times, index: int, labels=None) -> None:
         """The saved times of the result shown (none: the bar hidden), the
-        one shown."""
+        one shown; labels: what is shown for each one (the modes of a modal
+        analysis), "t = ..." by default."""
         self.times = list(times or [])
+        self.time_labels = list(labels) if labels and len(labels) == len(self.times) else None
         if len(self.times) < 2:
             self.play_button.setChecked(False)
             self.time_bar.hide()
@@ -1333,7 +1335,10 @@ class Viewer(QWidget):
 
     def _time_label(self) -> None:
         k = self.time_slider.value()
-        self.time_label.setText(f"t = {self.times[k]:g}  ({k + 1}/{len(self.times)})")
+        if getattr(self, "time_labels", None):
+            self.time_label.setText(f"{self.time_labels[k]}  ({k + 1}/{len(self.times)})")
+        else:
+            self.time_label.setText(f"t = {self.times[k]:g}  ({k + 1}/{len(self.times)})")
 
     def _time_moved(self, k: int) -> None:
         if self.times:

@@ -60,6 +60,14 @@ def _time(model: dict, md: dict, mod: dict) -> str:
                 f"to {_v(t.get('end'))}, step {_v(t.get('step'))}, {html.escape(M.scheme_label(sc))}; "
                 f"from the initial value{' and velocity' if M.SCHEME_ORDER.get(sc['type']) == 2 else ''} "
                 f"of the variable{where}.</p>")
+    if M.is_modal(model, md) and M.inertia_variable(mod) not in M.modal_variables(md):
+        return (f"<p><b>Stationary</b> for the eigenmodes of the solver {html.escape(s['name'])} "
+                "(quasi-static: without mass, its time derivative of a lower order).</p>")
+    if M.is_modal(model, md):
+        order = M.variable_order(md, M.inertia_variable(mod))
+        what = ("ω² = (2π f)², f the frequency" if order == 2 else "λ the decay rate, 1/λ the time constant")
+        return (f"<p><b>Eigenmodes</b>, by the solver {html.escape(s['name'])}: K φ = λ M φ, M from its time "
+                f"derivative, {what} (the damping ignored).</p>")
     if M.is_transient(model, md):
         return (f"<p><b>Stationary</b> at each time step of the solver {html.escape(s['name'])} "
                 f"(quasi-static: no time derivative){where}.</p>")

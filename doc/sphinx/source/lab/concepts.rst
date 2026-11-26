@@ -27,7 +27,8 @@ A model file contains, in this order:
   properties, sources and conditions), its weak form terms in GWFL, its
   generic conditions, its solver and its outputs (integrated quantities);
 * **solvers**: global solvers that chain the models (in sequence, or by
-  staggered iterations).
+  staggered iterations), solve them in time, or compute the eigenmodes of
+  one of them.
 
 ::
 

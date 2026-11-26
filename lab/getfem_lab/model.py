@@ -219,6 +219,18 @@ variable starts from its "initial" value (0 by default) and, second order,
 its "initial_velocity" (0 by default). The time is t in the expressions (0
 for a stationary model).
 
+Modal solver: {"name", "type": "modal", "steps": [one model name], "modes":
+n, "shift": s}. The eigenmodes of the model, K phi = lambda M phi: K its
+tangent matrix (at the initial values, or at the state left by the solver
+before it: a prestressed structure), M the matrix of its time derivatives
+(MODULE_SPECS[...]["inertia"], the transient properties required), on the
+dofs of no Dirichlet condition; the n eigenvalues nearest to the shift
+(ARPACK through SciPy, shift-invert). Second order (the elastodynamics,
+lambda = omega^2), the shift a frequency (Hz); first order (the heat, a
+decay rate lambda), the shift a rate (1/s); the variables of a lower order
+(a temperature with a displacement) quasi-static, without mass. The
+damping is ignored.
+
 Numerical values may be numbers or GWFL expressions, in which the space
 coordinates are x, y, z (up to the dimension; X(1), X(2), X(3) also work).
 Vector values are a list of such values (one per space dimension) or a GWFL
@@ -304,7 +316,8 @@ LINEAR_SOLVERS = {
     "gmres/ilut": "GMRES, ILUT preconditioner (iterative)",
     "gmres/ilutp": "GMRES, ILUTP preconditioner (iterative)",
 }
-GLOBAL_SOLVERS = ("sequence", "staggered", "transient")
+GLOBAL_SOLVERS = ("sequence", "staggered", "transient", "modal")
+MODAL_MAX_MODES = 500
 COUPLINGS = ("sequence", "staggered")         # of the models at each time step
 # The time schemes of a variable with a time derivative: first order (Dot_u,
 # the heat), second order (Dot2_u, the elastodynamics); or stationary.
@@ -1021,6 +1034,42 @@ def is_transient(model: dict, md: dict) -> bool:
     """Whether a model is solved in time (by a transient main solver)."""
     s = main_solver(model)
     return s.get("type") == "transient" and md.get("name") in step_models(s)
+
+
+def is_modal(model: dict, md: dict) -> bool:
+    """Whether the eigenmodes of a model are computed (by a modal main solver)."""
+    s = main_solver(model)
+    return s.get("type") == "modal" and md.get("name") in step_models(s)
+
+
+def uses_mass(model: dict, md: dict, mod: dict) -> bool:
+    """Whether the time derivative of a module is needed: in time, or for
+    the eigenmodes (its transient properties then required)."""
+    u = inertia_variable(mod)
+    return in_time(model, md, mod) or (is_modal(model, md) and u is not None
+                                       and variable_order(md, u) == modal_order(md))
+
+
+def mass_needed(model: dict, md: dict, mod: dict) -> bool:
+    """Whether the time derivative of a module is needed by one of the
+    global solvers (uses_mass for each of them)."""
+    views = [solver_first(model, s["name"]) for s in model.get("solvers", [])
+             if isinstance(s, dict) and isinstance(s.get("name"), str)]
+    return any(uses_mass(v, md, mod) for v in views or [model])
+
+
+def modal_order(md: dict) -> int:
+    """The order in time of the eigenproblem of a model: the highest of its
+    variables with a time derivative (0: none); those of a lower order are
+    quasi-static for the eigenmodes (no mass)."""
+    return max((variable_order(md, u) for u in timeable_variables(md)), default=0)
+
+
+def modal_variables(md: dict) -> list[str]:
+    """The variables of a model with a mass in its eigenproblem (those of
+    the order of modal_order)."""
+    order = modal_order(md)
+    return [u for u in timeable_variables(md) if variable_order(md, u) == order] if order else []
 
 
 def parse_step(step) -> tuple[str, list[str] | None]:
@@ -2470,6 +2519,8 @@ def _validate(model: dict) -> list[str]:
         steps = step_models(s)
         if s.get("type") == "transient":
             _validate_transient(model, s, where, steps, errors)
+        if s.get("type") == "modal":
+            _validate_modal(model, s, where, steps, errors)
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
             _check_int(s.get("max_iter", 20), 1, 10000, f"{where}.max_iter", errors)
             tol = s.get("tolerance", 1e-6)
@@ -2493,6 +2544,25 @@ def time_values(model: dict, s: dict) -> tuple[float, float, float]:
     vals, _ = P.values(model)
     t = s.get("time") or {}
     return tuple(P.scalar(t.get(k, d), vals) for k, d in (("start", 0.0), ("end", None), ("step", None)))
+
+
+def _validate_modal(model, s, where, steps, errors) -> None:
+    if len(steps) != 1 or partial_models(s):
+        errors.append(f"{where}.steps: one model expected (all its variables), its eigenmodes computed")
+    _check_int(s.get("modes", 6), 1, MODAL_MAX_MODES, f"{where}.modes", errors)
+    try:
+        shift = P.scalar(s.get("shift", 0.0), P.values(model)[0])
+    except (ValueError, TypeError, P.ParameterError) as exc:
+        errors.append(f"{where}.shift: {exc}")
+    else:
+        if not shift >= 0:
+            errors.append(f"{where}.shift: positive or zero expected (a frequency, or a decay rate)")
+    for name in steps[:1]:
+        md = model_by_name(model, name)
+        order = modal_order(md) if md else 0
+        if md and order == 0:
+            errors.append(f"{where}.steps: the model {name!r} has no time derivative (no module with an "
+                          "inertia: heat conduction, elasticity, PDE in time): no eigenmodes")
 
 
 def _validate_transient(model, s, where, steps, errors) -> None:
@@ -2817,7 +2887,7 @@ def used_properties(model: dict, md: dict, mod: dict) -> list[str]:
     """The properties a module uses (given): its transient properties only in
     time."""
     spec = spec_of(mod)
-    timed = in_time(model, md, mod)
+    timed = uses_mass(model, md, mod)
     return [p for p in spec.get("properties", {}) if mod.get("properties", {}).get(p)
             and (p not in spec.get("transient_properties", ()) or timed)]
 
@@ -2869,7 +2939,7 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
             errors.append(f"{w}.{opt}: unknown option for {mtype!r}")
     # properties, per domain selection
     props = mod.get("properties", {})
-    transient = in_time(model, md, mod)
+    transient = uses_mass(model, md, mod)
     for prop, label in spec["properties"].items():
         pieces = props.get(prop)
         where = f"{w}.properties.{prop}"
@@ -2990,6 +3060,9 @@ def with_defaults(model: dict) -> dict:
                     sc = schemes.setdefault(scheme_key(name, u), default_scheme(variable_order(md, u)))
                     if sc.get("type") in SCHEME_PARAMETERS or SCHEME_ORDER.get(sc.get("type")) == 2:
                         sc.update(scheme_with_defaults(sc))
+        if s.get("type") == "modal":
+            s.setdefault("modes", 6)
+            s.setdefault("shift", 0.0)
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s["coupling"] == "staggered"):
             s.setdefault("max_iter", 20)
             s.setdefault("tolerance", 1e-6)

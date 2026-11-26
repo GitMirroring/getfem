@@ -310,3 +310,20 @@ current); the resistance per unit depth, ``V0`` over the current
 (``currents``), is some 15 % above that of the bar without hole, cold,
 :math:`L/(\sigma_0 H)`; nearly all the heat leaves through the ends (the
 output ``heat_to_air``, about 20 W/m of 9.1 kW/m).
+
+.. _lab-example-tuning_fork:
+
+Tuning fork (``tuning_fork.json``)
+----------------------------------
+
+The eigenmodes of a steel tuning fork (2D, plane stress, P2 elements on a
+mesh of the GetFEM mesher), held by the end of its stem: prongs of length
+``Lp`` = 94.4 mm and width ``w`` = 5 mm, 10 mm apart. The ``modal`` solver
+computes its six lowest modes. The first one (261 Hz) sways the whole fork
+sideways (59 % of the mass along :math:`x`); the second one, at 440 Hz,
+is the **fork mode**: the prongs vibrate in opposition, the stem hardly
+moves (its effective mass is zero): little energy leaves through the hand,
+the fork rings long. The
+prongs were sized for it: a prong alone, a clamped beam, would give
+:math:`1.875^2/(2\pi L_p^2)\, w \sqrt{E/12\rho}` = 470 Hz, the bridge is
+not rigid. The frequencies change by 0.2 % with elements twice smaller.

@@ -733,6 +733,74 @@ A new scheme is thus new coefficients (or a new expression of ``Dot_u``,
 ``model.py``, ``time_declarations`` and the time loop in ``codegen.py``);
 the modules do not change.
 
+.. _lab-modal:
+
+Modal analysis
+--------------
+
+A ``modal`` global solver computes the **eigenmodes** of one model::
+
+  {"name": "modes", "type": "modal", "steps": ["fork"], "modes": 6, "shift": 0}
+
+They are the solutions of
+
+.. math::
+
+   K \varphi = \lambda M \varphi,
+
+where :math:`K` is the tangent matrix of the model (at the initial values
+of its variables, or at the state left by the solver before it,
+``"start": "previous"``: a prestressed structure, a nonlinear model at its
+equilibrium) and :math:`M` the matrix of its time derivatives (the inertia
+term of its modules, :math:`\partial u/\partial t` replaced by :math:`u`:
+:math:`\int \rho\, u\cdot v` for the elasticity, :math:`\int \rho c_p T
+v` for the heat, :math:`m` and :math:`d` for a PDE of order 2 and 1). The
+transient properties of the modules (``rho``, ``cp``, ``m``) are then
+required, the damping (``alpha_M``, ``beta_K``, ``d`` at order 2) is
+ignored. The eigenproblem is of the highest order of the time derivatives
+of the variables of the model; the variables of a lower order (a
+temperature with a displacement) are quasi-static, without mass:
+
+- second order (the elastodynamics, a PDE of order 2):
+  :math:`\lambda = \omega^2`, the results give the frequencies
+  :math:`f = \omega/2\pi` (``frequencies``, Hz) and, for a displacement,
+  the **effective mass** of each mode along each axis,
+  :math:`(\varphi^T M r)^2` with :math:`\varphi` normalized by
+  :math:`\varphi^T M \varphi = 1` and :math:`r` the unit translation
+  (``effective_mass``; ``mass`` is :math:`r^T M r`, the mass that moves: their
+  ratio is the share of the mass excited by a motion of the supports along
+  that axis, its sum over the modes tends to 1);
+- first order (the heat, a PDE of order 1): :math:`\lambda` is a decay
+  rate (1/s), a mode decreasing as :math:`e^{-\lambda t}`; the results give
+  the ``time_constants`` :math:`1/\lambda`.
+
+The ``modes`` eigenvalues nearest to the **shift** are computed (a
+frequency in Hz at second order, a rate at first order; 0, the default: the
+lowest ones). The dofs of the Dirichlet conditions by simplification are
+removed (the modes are zero there); the multipliers have no mass (their
+eigenvalues are infinite, never found). The eigenvalues are computed by
+ARPACK through SciPy (``scipy.sparse.linalg.eigsh``, or ``eigs`` for a
+nonsymmetric matrix) in shift-invert mode: the matrix :math:`K - \sigma M`
+is factorized once (SuperLU) and the largest eigenvalues of :math:`(K -
+\sigma M)^{-1} M` are those nearest to :math:`\sigma`. With a shift 0,
+:math:`\sigma` is taken slightly negative, so that a free body, whose rigid
+modes are at 0, can be factorized. A small system is solved dense (LAPACK).
+
+Each mode is written to a VTU file (``fork_mode001.vtu``...), post-processed
+as a solution (its von Mises stress...), scaled to a largest value 1 of its
+variables with a time derivative (the sign: its largest component
+positive). In the window, the results are a series of the modes: the slider
+of the view goes from one to the other, the *Results* node shows the table
+of the modes (frequency, effective masses in % of the mass) and the curves
+by mode. The values of the variables are restored after the computation
+(the solver after it starts from the same state).
+
+When the ``getfem`` module has an eigensolver, ``gf.eigsh(K, M, nev,
+sigma)`` (that of getfem-rs: ARPACK-ng, the shifted matrix factorized by
+MUMPS; the same arguments as SciPy's), it is used for a symmetric problem;
+the results name the eigensolver used (``eigensolver``). See
+``examples/tuning_fork.json``.
+
 Outputs
 -------
 

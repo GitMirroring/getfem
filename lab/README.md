@@ -14,7 +14,8 @@ This directory is a pure Python package, independent of the GetFEM build: it
 is neither compiled nor installed by `make` / CMake; `pip install -e lab`
 (from the sources of GetFEM; `pyproject.toml`) installs it with the command
 `getfem_lab` (`getfem_lab [model.json]` opens the window). It requires Python 3
-(tested with 3.13), NumPy and the `getfem` module; Gmsh (`pip install gmsh`)
+(tested with 3.13), NumPy, SciPy (the modal analysis: ARPACK; the explicit
+schemes) and the `getfem` module (whose Python interface needs them too); Gmsh (`pip install gmsh`)
 is optional. The graphical interface needs PySide6, and PyVista (with VTK)
 for the 3D view (`pip install pyside6 pyvista`; on Debian, the packages
 python3-pyside6.* and python3-pyvista); the core and the command line do
@@ -57,8 +58,8 @@ needs is missing (pytest, PySide6, PyVista, Gmsh...).
    (heat conduction)  ──►  (elasticity,          modules, terms, conditions; an import
                             expansion, imports T) passes a result from one to the other
           │                      │
-          └────── solver: sequence, staggered iterations, or in time
-                  (transient: theta-method, at each step the models in turn)
+          └────── solver: sequence, staggered iterations, in time
+                  (transient: at each step the models in turn), or modal (eigenmodes)
                      ▼
    run_getfem.py ──► results.json + one .vtu per model
 ```
@@ -314,6 +315,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_elasticity.py` | 11 linear elasticity cases |
 | `tests/test_electrostatics.py` | the electrostatics: plates, charges, floating conductor, coaxial cable |
 | `tests/test_electric_currents.py` | the electric currents: strip, terminal, Joule heating (exact parabola, conductivity depending on the temperature), busbar |
+| `tests/test_modal.py` | the modal solver: decay rates of the heat, membrane, cantilever (Euler-Bernoulli, effective masses), free beam, after a static solver, tuning fork |
 | `tests/test_gwfl.py` | GWFL check: errors located on the right field, explained |
 | `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
@@ -337,7 +339,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_polygon.py` | polygons: geometry, format, table, handles, drawing, mesh, solve |
 | `tests/test_geometry3d.py` | extrusion and revolution: format, editing, preview, mesh |
 | `tests/test_splines.py` | curved sides of polygons: geometry, format, meshers, 3D profiles, export, editing, table |
-| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution), convection-diffusion (PDE module, SUPG), membrane waves (PDE module of order 2 in time), coaxial cable (electrostatics), copper busbar (electric currents heating a heat conduction module) |
+| `examples/` | heated plate (box), plate with a heated hole (CSG, two meshes), plate with a hole in tension (elasticity, symmetry), plate with a conductive inclusion (two materials on regions), heated plate that expands (two models in sequence), L-shaped bracket (polygon), 3D block with a hole, extruded heat sink, pulley (revolution), convection-diffusion (PDE module, SUPG), membrane waves (PDE module of order 2 in time), coaxial cable (electrostatics), copper busbar (electric currents heating a heat conduction module), tuning fork (modal analysis) |
 
 ## Geometry, selections, meshes
 
@@ -451,6 +453,10 @@ an import, `{"name": "T", "model": "thermal", "variable": "T"}`, on the same
 mesh for now. Without global solver, the models are solved in the order of
 their imports. `test_staggered_two_way_coupling` checks that staggered
 iterations between two models converge to the monolithic Newton solution.
+A `modal` solver computes the eigenmodes of one model, `K phi = lambda M phi`
+(ARPACK in shift-invert mode: `gf.eigsh` if the `getfem` module has it, as
+getfem-rs, SciPy's otherwise): the frequencies and effective masses of an
+elastic structure, the decay rates of the heat; each mode a VTU file.
 
 `roller` imposes `u.n = 0` with Nitsche's method (GetFEM's
 `add_normal_Dirichlet_condition_with_Nitsche_method`), without additional

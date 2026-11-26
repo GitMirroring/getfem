@@ -31,6 +31,7 @@ model.MODULE_SPECS (properties, options, conditions) used for validation.
 from __future__ import annotations
 
 import datetime as _dt
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1196,6 +1197,62 @@ def power_iteration(op, n, iterations=100):
     return float(lam)
 
 
+def scipy_csc(A):
+    """A GetFEM sparse matrix as a SciPy one (CSC)."""
+    import scipy.sparse
+    jc, ir = A.csc_ind()
+    return scipy.sparse.csc_matrix((A.csc_val(), ir, jc), shape=A.size())
+
+
+def eigen_modes(K, Mm, free, k, sigma, native=None):
+    """The k eigenvalues of K x = lambda M x nearest to sigma, on the free
+    dofs (K, M: SciPy matrices), sorted, their vectors (M-normalized when M
+    is positive on them), the eigensolver used: ARPACK in shift-invert mode,
+    a factorization of K - sigma M; GetFEM's gf.eigsh if it has one (that of
+    getfem-rs: ARPACK-ng and MUMPS; native: K and M as GetFEM matrices) for
+    a symmetric problem, SciPy's otherwise (eigsh; eigs if nonsymmetric,
+    the real parts); a small system: dense (SciPy's LAPACK)."""
+    import scipy.linalg
+    import scipy.sparse.linalg as sla
+    K, Mm = K[free][:, free].tocsc(), Mm[free][:, free].tocsc()
+    n = len(free)
+    symmetric = abs(K - K.T).max() <= 1e-10 * max(abs(K).max(), 1e-300)
+    if symmetric and native is not None and hasattr(gf, 'eigsh') and n > max(4 * k, 200):
+        f = [int(i) for i in free]
+        vals, modes = gf.eigsh(gf.Spmat('copy', native[0], f, f), gf.Spmat('copy', native[1], f, f),
+                               nev=k, sigma=sigma)
+        used = 'GetFEM eigsh (ARPACK)'
+        vals, vecs = np.asarray(vals), np.asarray(modes).T
+    elif n <= max(4 * k, 200):
+        used = 'dense (LAPACK)'
+        A, B = K.toarray(), Mm.toarray()
+        vals, vecs = scipy.linalg.eig(A, B)
+        ok = np.isfinite(vals) & (np.abs(vals) < 1e15 * max(np.abs(np.diag(A)).max(), 1e-300)
+                                  / max(np.abs(np.diag(B)).max(), 1e-300))
+        vals, vecs = vals[ok], vecs[:, ok]
+        keep = np.argsort(np.abs(vals - sigma))[:k]
+        vals, vecs = vals[keep], vecs[:, keep]
+    else:
+        used = 'SciPy ' + ('eigsh' if symmetric else 'eigs') + ' (ARPACK)'
+        lu = sla.splu((K - sigma * Mm).tocsc())
+        op = sla.LinearOperator((n, n), matvec=lu.solve, dtype=float)
+        if symmetric:
+            vals, vecs = sla.eigsh(K, k, Mm, sigma=sigma, OPinv=op, which='LM')
+        else:
+            vals, vecs = sla.eigs(K, k, Mm, sigma=sigma, OPinv=op, which='LM')
+    if np.abs(np.imag(vals)).max(initial=0.0) > 1e-8 * max(np.abs(vals).max(initial=0.0), 1e-300):
+        raise RuntimeError('complex eigenvalues (a nonsymmetric problem, a convection?): its modes are '
+                           'not computed here')
+    vals, vecs = np.real(vals), np.real(vecs)
+    order = np.argsort(vals)
+    vals, vecs = vals[order], vecs[:, order]
+    for j in range(vecs.shape[1]):
+        m = float(vecs[:, j] @ (Mm @ vecs[:, j]))
+        if m > 0:
+            vecs[:, j] /= np.sqrt(m)
+    return vals, vecs, used
+
+
 def time_derivatives(md, expr, mf, t, dt):
     """An expression of the time t interpolated on mf, its first and second
     derivatives in time (central differences, h = dt/10)."""
@@ -1339,7 +1396,130 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
     if solver["type"] == "transient":
         _transient_code(model, solver, ctxs, w, previous)
         return
+    if solver["type"] == "modal":
+        _modal_code(model, solver, by[M.step_models(solver)[0]], w)
+        return
     _coupled_code(solver, solver["type"], by, w)
+
+
+def _modal_code(model: dict, solver: dict, c: Ctx, w: ScriptWriter) -> None:
+    """The eigenmodes of a model: K its tangent matrix at the current
+    values, M the assembly of the time derivatives of its modules (their
+    inertia term, with u for its derivative); the dofs of the Dirichlet
+    conditions by simplification removed (those recorded, and the rows of
+    K reduced to their diagonal); the modes nearest to the shift
+    (eigen_modes). Each mode written to a VTU file (post-processed as a
+    solution: its fields), scaled to a largest value 1 of the variables with
+    a time derivative; the results as a series of the mode numbers; the
+    values of the variables restored."""
+    md, name = c.py, c.md["name"]
+    order = M.modal_order(c.md)
+    vals, _ = P.values(model)
+    shift = P.scalar(solver.get("shift", 0.0), vals)
+    sigma = (2 * math.pi * shift) ** 2 if order == 2 else shift
+    k = int(solver.get("modes", 6))
+    masses = []
+    timed = M.modal_variables(c.md)          # (those of a lower order: quasi-static, no mass)
+    for mod in c.md["modules"]:
+        inertia = M.spec_of(mod).get("inertia")
+        u = M.inertia_variable(mod)
+        if inertia and u in timed:
+            e = inertia["expr"].replace("{u}", u).replace(f"{u}__inertia", u)
+            masses.append(re.sub(rf"\bDot_{re.escape(u)}\b", u, e))
+    stem = Path(c.md["vtu"]).stem if c.md.get("vtu") else None
+    what = "omega^2 (rad/s)^2" if order == 2 else "decay rate (1/s)"
+    w(f"# The eigenmodes of {name!r}: K phi = lambda M phi, lambda = {what}, the {k} nearest to "
+      f"{sigma:g}")
+    w("t_modal = time.perf_counter()")
+    w(f"R = results['models'][{name!r}]")
+    w(f"kept = {md}.from_variables()          # (the values, restored after)")
+    w(f"{md}.assembly('build_matrix')")
+    w(f"Kg = {md}.tangent_matrix()")
+    w(f"Mg = gf.asm_generic({c.mim}, 2, {' + '.join(masses)!r}, -1, {md})")
+    w("K, Mm = scipy_csc(Kg), scipy_csc(Mg)")
+    w("N = K.shape[0]")
+    w("D = [np.zeros(0, dtype=int)]       # the dofs of the Dirichlet conditions by simplification")
+    for u, bcs in c.dirichlet.items():
+        mf = c.mfs[u]
+        for rg, _d in bcs:
+            w(f"D.append({md}.interval_of_variable({u!r})[0] + np.asarray({mf}.basic_dof_on_region({rg}), "
+              "dtype=int))")
+    w("Kr = K.tocsr()                     # (and the rows of K reduced to their diagonal)")
+    w("nnz = np.diff(Kr.indptr)")
+    w("single = np.where(nnz == 1)[0]")
+    w("D.append(single[Kr.indices[Kr.indptr[single]] == single])")
+    w("free = np.setdiff1d(np.arange(N), np.concatenate(D))")
+    w(f"sigma = {sigma!r}")
+    w("if sigma == 0.0:                    # (a little below 0: a free body, its rigid modes at 0)")
+    w("    dK, dM = np.abs(K.diagonal()[free]), np.abs(Mm.diagonal()[free])")
+    w("    sigma = -1e-8 * dK.max(initial=1.0) / max(dM.max(initial=1.0), 1e-300)")
+    w(f"k = min({k}, len(free) - 2)")
+    w("if k < 1:")
+    w(f"    raise RuntimeError('modal analysis of {name}: too few free degrees of freedom')")
+    w("lam, phi, R['eigensolver'] = eigen_modes(K, Mm, free, k, sigma, (Kg, Mg))")
+    w("R['nb_dofs'] = int(N)")
+    w("R['eigenvalues'] = [float(x) for x in lam]")
+    if order == 2:
+        w("R['frequencies'] = [float(np.sqrt(max(x, 0.0)) / (2 * np.pi)) for x in lam]   # (Hz)")
+        series = "frequency"
+        label = "f'mode {j + 1}: f = {np.sqrt(max(lam[j], 0.0)) / (2 * np.pi):.6g} Hz'"
+    else:
+        w("R['time_constants'] = [float(1 / x) if x > 0 else None for x in lam]   # (s)")
+        series = "rate"
+        label = "f'mode {j + 1}: rate {lam[j]:.6g} 1/s'"
+    # the effective masses: the vector variables of the dimension of the mesh (displacements)
+    rigid = [v["name"] for v in c.md["variables"] if v["name"] in timed and M.variable_kind(v) == M.VECTOR]
+    if order == 2 and rigid:
+        w("# The effective mass of each mode along each axis, (phi^T M r)^2 (phi M-normalized, r the unit")
+        w("# translation of the displacements, on the free dofs); the mass moved, r^T M r")
+        w("R['effective_mass'], R['mass'] = {}, {}")
+        for d, ax in enumerate("xyz"[:c.dim]):
+            vec = "[" + ", ".join("1" if j == d else "0" for j in range(c.dim)) + "]"
+            w("r = np.zeros(N)")
+            for u in rigid:
+                w(f"i0, n = {md}.interval_of_variable({u!r})")
+                w(f"r[i0:i0 + n] = {md}.interpolation({vec!r}, {c.mfs[u]})")
+            w("r = r[free]")
+            w("Mr = Mm[free][:, free] @ r")
+            w(f"R['effective_mass'][{ax!r}] = [float((phi[:, j] @ Mr) ** 2) for j in range(len(lam))]")
+            w(f"R['mass'][{ax!r}] = float(r @ Mr)")
+    w(f"S = {{'t': [], 'vtu': [], 'labels': [], {series!r}: []}}")
+    w("for j in range(len(lam)):")
+    w.indent = "    "
+    w("x = np.zeros(N)")
+    w("x[free] = phi[:, j]")
+    w(f"{md}.to_variables(x)")
+    w(f"big = max(np.abs({md}.variable(u)).max(initial=0.0) for u in {timed!r})")
+    w("i = max(range(N), key=lambda i: abs(x[i]))")
+    w("x *= (1.0 if x[i] >= 0 else -1.0) / (big if big > 0 else 1.0)   # (largest value 1, positive)")
+    w(f"{md}.to_variables(x)")
+    w(f"results['models'][{name!r}] = {{}}")
+    vtu = f"f'{stem}_mode{{j + 1:03d}}.vtu'" if stem else "None"
+    w(f"post_{ident(name)}({vtu})")
+    w(f"Rj = results['models'][{name!r}]")
+    w("S['t'].append(j + 1)")
+    if stem:
+        w("S['vtu'].append(Rj['vtu'])")
+    w(f"S['labels'].append({label})")
+    if order == 2:
+        w(f"S[{series!r}].append(R['frequencies'][j])")
+    else:
+        w(f"S[{series!r}].append(float(lam[j]))")
+    w("for key, value in list(Rj.items()) + [(q, v) for q, v in Rj.get('quantities', {}).items()]:")
+    w("    if isinstance(value, float) and key not in ('time_s', 'relative_residual'):")
+    w("        S.setdefault(key, []).append(value)")
+    w.indent = ""
+    w(f"results['models'][{name!r}] = R")
+    w("R['series'] = S")
+    w("if len(lam):")
+    w("    R.update({key: v for key, v in Rj.items() if isinstance(v, str) and key != 'vtu'})   # (warp)")
+    w(f"R['mesh'] = {{'name': {c.mesh!r}, 'nb_elements': int({c.m}.nbcvs())}}")
+    if stem:
+        w("R['vtu'] = S['vtu'][0] if S['vtu'] else None")
+    w(f"{md}.to_variables(kept)")
+    w("R['time_s'] = time.perf_counter() - t_modal")
+    w(f"results['solver'] = {{'name': {solver['name']!r}, 'type': 'modal', 'modes': len(lam), "
+      "'shift': float(sigma)}")
 
 
 def _coupled_code(solver: dict, coupling: str, by: dict, w: ScriptWriter) -> None:
@@ -1820,7 +2000,7 @@ def _body(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool = False)
     _solver_code(model, ctxs, w, previous)
     w("")
     for c in ctxs:
-        if not c.transient:
+        if not c.transient and not M.is_modal(model, c.md):
             w(f"post_{ident(c.md['name'])}({c.md.get('vtu')!r})")
     w("results['status'] = 'ok'")
     w("results['time_s'] = time.perf_counter() - t0")

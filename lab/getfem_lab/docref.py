@@ -375,7 +375,8 @@ def _sample_model() -> dict:
                      "tolerance": 1e-6, "relaxation": 1},
                     {"name": "in_time", "type": "transient", "steps": ["heat", "other"],
                      "time": {"start": 0, "end": 1, "step": 0.1}, "save": {"every": 1}, "coupling": "sequence",
-                     "schemes": {"heat/T": {"type": "theta", "theta": 1}, "other/S": {"type": "stationary"}}}]
+                     "schemes": {"heat/T": {"type": "theta", "theta": 1}, "other/S": {"type": "stationary"}}},
+                    {"name": "modes", "type": "modal", "steps": ["heat"], "modes": 6, "shift": 0}]
     return m
 
 
@@ -400,6 +401,7 @@ def model_nodes() -> str:
         ("Field", ("fields", 0)),
         ("Global solver", ("solvers", 0)),
         ("Transient global solver", ("solvers", 1)),
+        ("Modal global solver", ("solvers", 2)),
     ]
     for title, path in cases:
         out += _title(title, "-") + _fields_doc(m, path)

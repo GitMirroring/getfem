@@ -99,6 +99,12 @@ Module
    * -
      - ``properties.k.0.value``
      - number or GWFL expression. thermal conductivity
+   * - rho (density)
+     - ``properties.rho.0.value``
+     - number or GWFL expression. density
+   * - cp (specific heat capacity)
+     - ``properties.cp.0.value``
+     - number or GWFL expression. specific heat capacity
    * - f (volume source)
      - ``sources.0.value``
      - number or GWFL expression
@@ -319,7 +325,7 @@ Global solver
      - name
    * - Type
      - ``type``
-     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))
+     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time)), ``modal`` (modal analysis (eigenmodes))
    * - Steps, in order
      - ``steps``
      - list of names. Each step solves a model, or some of its variables (model/u: u solved, the other variables of the model given; each variable solved by one step at least)
@@ -351,7 +357,7 @@ Transient global solver
      - one of ``initial`` (the initial values), ``previous`` (the state left by the previous solver). The initial values of the variables (the solver can run alone), or the state left by the solver before it (the values of the variables, the velocities of those in time: a preload, then a dynamics)
    * - Type
      - ``type``
-     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time))
+     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time)), ``modal`` (modal analysis (eigenmodes))
    * - Steps, in order
      - ``steps``
      - list of names. Each step solves a model, or some of its variables (model/u: u solved, the other variables of the model given; each variable solved by one step at least)
@@ -381,3 +387,34 @@ Transient global solver
      - one of ``stationary`` (stationary (no time derivative: quasi-static)), ``theta`` (theta-method (1: implicit Euler, 0.5: Crank-Nicolson)), ``bdf2`` (BDF2 (second order; its first step: implicit Euler, or Crank-Nicolson)). The time scheme of the variable: stationary (no time derivative, the equation solved at each time), or a scheme of the order of its time derivative (theta-method, BDF2)
 
 At each time step, the models are solved in turn (or by staggered iterations), every equation written at the new time; the scheme of each variable in time gives its time derivative (Dot\_T for T) from its value and the previous ones; the time t may appear in the expressions. The variables start from their initial value; the results are saved every few steps (a VTU file each, a .pvd collection).
+
+Modal global solver
+-------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Name
+     - ``name``
+     - name
+   * - Start from
+     - ``start``
+     - one of ``initial`` (the initial values), ``previous`` (the state left by the previous solver). The initial values of the variables (the solver can run alone), or the state left by the solver before it (the values of the variables, the velocities of those in time: a preload, then a dynamics)
+   * - Type
+     - ``type``
+     - one of ``sequence``, ``staggered`` (staggered iterations), ``transient`` (transient (in time)), ``modal`` (modal analysis (eigenmodes))
+   * - Model
+     - ``steps``
+     - list of names. The model whose eigenmodes are computed (one, all its variables)
+   * - Number of modes
+     - ``modes``
+     - integer. The eigenmodes computed: those whose eigenvalues are the nearest to the shift
+   * - Shift: decay rate (1/s)
+     - ``shift``
+     - number or GWFL expression. The modes sought near this frequency (second order in time: the elastodynamics, omega = 2 pi f), or this decay rate (first order: the heat); 0: the lowest ones (a free body: its rigid modes at 0)
+
+The eigenmodes of one model, K phi = lambda M phi: K the matrix of its equations (at the initial values, or at the state left by the solver before it: a prestressed structure), M that of its time derivatives (the mass: rho, rho cp, m), on the dofs free of Dirichlet conditions; the damping ignored. ARPACK (by SciPy), shift-invert. The results: the frequencies (Hz) and the effective masses (a displacement), or the decay rates and the time constants (the heat); each mode a VTU file, scaled to a largest value 1 (the slider of the view: the modes).

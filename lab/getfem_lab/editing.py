@@ -184,7 +184,7 @@ def shown_properties(model: dict, mod: dict) -> list[str]:
     spec = M.spec_of(mod)
     return [p for p in spec.get("properties", {})
             if p not in spec.get("transient_properties", ()) or mod.get("type") == "pde"
-            or M.in_time(model, _model_of(model, mod), mod)]
+            or M.mass_needed(model, _model_of(model, mod), mod)]
 
 
 def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, dim: int = 2) -> list[Field]:
@@ -312,11 +312,12 @@ def _fill_schemes(model: dict, s: dict) -> None:
 
 
 def _time_properties(model: dict) -> None:
-    """The transient properties (rho, cp) of the modules in time: a default
-    value where missing."""
+    """The transient properties (rho, cp) of the modules in time, or whose
+    eigenmodes are computed, for one of the global solvers: a default value
+    where missing."""
     for md in model.get("models", []):
         for mod in md.get("modules", []):
-            if M.in_time(model, md, mod):
+            if M.mass_needed(model, md, mod):
                 spec = M.spec_of(mod)
                 props = mod.setdefault("properties", {})
                 for p in spec.get("transient_properties", ()):
@@ -1674,10 +1675,14 @@ def fields(model: dict, path: Path) -> list[Field]:
         out = [Field(path + ("name",), "Name", "ident")] + start + [
                Field(path + ("type",), "Type", "choice",
                      (("sequence", "sequence"), ("staggered", "staggered iterations"),
-                      ("transient", "transient (in time)")), op="solver_type"),
-               Field(path + ("steps",), "Steps, in order", "names", _step_choices(model, s), op="solver_steps",
-                     help="Each step solves a model, or some of its variables (model/u: u solved, the "
-                          "other variables of the model given; each variable solved by one step at least)")]
+                      ("transient", "transient (in time)"), ("modal", "modal analysis (eigenmodes)")),
+                     op="solver_type"),
+               Field(path + ("steps",), "Model" if s.get("type") == "modal" else "Steps, in order", "names",
+                     _step_choices(model, s), op="solver_steps",
+                     help="The model whose eigenmodes are computed (one, all its variables)"
+                     if s.get("type") == "modal" else
+                     "Each step solves a model, or some of its variables (model/u: u solved, the "
+                     "other variables of the model given; each variable solved by one step at least)")]
         if s.get("type") == "transient":
             out += [Field(path + ("time", "start"), "Start time", "value"),
                     Field(path + ("time", "end"), "End time", "value"),
@@ -1728,6 +1733,23 @@ def fields(model: dict, path: Path) -> list[Field]:
                              "value and the previous ones; the time t may appear in the expressions. The "
                              "variables start from their initial value; the results are saved every few "
                              "steps (a VTU file each, a .pvd collection)."))
+        if s.get("type") == "modal":
+            md = M.model_by_name(model, (M.step_models(s) or [None])[0])
+            order = M.modal_order(md) if md else 0
+            out += [Field(path + ("modes",), "Number of modes", "int",
+                          help="The eigenmodes computed: those whose eigenvalues are the nearest to the shift"),
+                    Field(path + ("shift",), "Shift: frequency (Hz)" if order != 1 else "Shift: decay rate (1/s)",
+                          "value", help="The modes sought near this frequency (second order in time: the "
+                          "elastodynamics, omega = 2 pi f), or this decay rate (first order: the heat); 0: "
+                          "the lowest ones (a free body: its rigid modes at 0)"),
+                    Field(path, "", "info", help="The eigenmodes of one model, K phi = lambda M phi: K the "
+                          "matrix of its equations (at the initial values, or at the state left by the solver "
+                          "before it: a prestressed structure), M that of its time derivatives (the mass: rho, "
+                          "rho cp, m), on the dofs free of Dirichlet conditions; the damping ignored. ARPACK "
+                          "(by SciPy), shift-invert. The results: the frequencies (Hz) and the effective "
+                          "masses (a displacement), or the decay rates and the time constants (the heat); "
+                          "each mode a VTU file, scaled to a largest value 1 (the slider of the view: the "
+                          "modes).")]
         if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
             out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
                     Field(path + ("tolerance",), "Tolerance (relative change)", "number"),
@@ -2642,6 +2664,16 @@ def _apply(model: dict, f: Field, value) -> Path | None:
             _fill_schemes(model, s)
         else:
             for k in ("time", "save", "coupling", "schemes"):
+                s.pop(k, None)
+        if s["type"] == "modal":             # one model (with a time derivative), all its variables
+            names = M.step_models(s)
+            timed = [n for n in names if M.modal_order(M.model_by_name(model, n) or {}) > 0]
+            s["steps"] = (timed or names)[:1]
+            s.setdefault("modes", 6)
+            s.setdefault("shift", 0.0)
+            _time_properties(model)
+        else:
+            for k in ("modes", "shift"):
                 s.pop(k, None)
         if s["type"] == "staggered" or s.get("coupling") == "staggered":
             s.setdefault("max_iter", 20)

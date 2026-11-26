@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.versions = versions        # splash.GetfemVersion, or None
         self.result_series: dict = {}   # model in time -> [(t, VTU file)] of its saved times
+        self.result_labels: dict = {}   # model -> the labels of its series (the modes of a modal analysis)
         self.time_index = None          # the saved time shown (None: the last one)
         self.jobs = JobRunner(python, self)
         self.jobs.output.connect(self._job_output)
@@ -646,8 +647,30 @@ class MainWindow(QMainWindow):
         times = [mr["time"] for mr in models.values() if "time" in mr]
         if times:
             out["time"] = times[0]
+        for mr in models.values():                       # (a modal analysis: its table)
+            if "eigenvalues" in mr:
+                if "mode" in mr:
+                    out["mode"] = mr["mode"]
+                out["modes"] = self._modes_table(mr)
         out["curves"] = self._curves(models)
         return out
+
+    @staticmethod
+    def _modes_table(mr: dict) -> tuple[list, list]:
+        """The modes of a modal analysis: (columns, rows), the frequency and
+        the effective masses (in % of the mass moved), or the decay rate and
+        the time constant."""
+        lam = mr.get("eigenvalues", [])
+        if "frequencies" in mr:
+            axes = list(mr.get("effective_mass", {}))
+            cols = ["mode", "f (Hz)"] + [f"m_eff {a} (%)" for a in axes]
+            pct = (lambda a, j: None if not mr["mass"].get(a) else
+                   round(100 * mr["effective_mass"][a][j] / mr["mass"][a], 4))   # (the round-off: 0)
+            rows = [[j + 1, f] + [pct(a, j) for a in axes] for j, f in enumerate(mr["frequencies"])]
+        else:
+            cols = ["mode", "rate (1/s)", "time constant (s)"]
+            rows = [[j + 1, x, tc] for j, (x, tc) in enumerate(zip(lam, mr.get("time_constants", [])))]
+        return cols, rows
 
     @staticmethod
     def _curves(models: dict) -> dict:
@@ -659,7 +682,7 @@ class MainWindow(QMainWindow):
             if len(t) < 2:
                 continue
             for key, values in series.items():
-                if key not in ("t", "vtu") and isinstance(values, list) and len(values) == len(t):
+                if key not in ("t", "vtu", "labels") and isinstance(values, list) and len(values) == len(t):
                     out[key if len(models) == 1 else f"{m}.{key}"] = (t, values)
         return out
 
@@ -671,7 +694,10 @@ class MainWindow(QMainWindow):
             return mr
         k = min(self.time_index, len(series["t"]) - 1)
         out = dict(mr)
-        out["time"] = series["t"][k]
+        if series.get("labels"):                         # (a mode)
+            out["mode"] = series["labels"][k]
+        else:
+            out["time"] = series["t"][k]
         out["quantities"] = {q: series[q][k] for q in mr.get("quantities", {}) if q in series}
         for key in mr:
             if key.startswith(("max_", "min_")) and key in series:
@@ -806,15 +832,16 @@ class MainWindow(QMainWindow):
                     "cmap": s.get("cmap"), "clim": s.get("range"), "arrows": s.get("arrows"),
                     "cut": s.get("cut"), "edges": bool(s.get("edges", False))}
             times = self.result_times(mname)
+            labels = self.result_labels.get(mname)
             if times:
                 k = len(times) - 1 if self.time_index is None else min(self.time_index, len(times) - 1)
-                status += f" — t = {times[k]:g}"
-                if view["clim"] is None:                 # the same colors at every time
+                status += f" — {labels[k]}" if labels else f" — t = {times[k]:g}"
+                if view["clim"] is None and not labels:  # the same colors at every time (not each mode)
                     view["clim"] = self._time_range(mname, name, s.get("component"))
             self.viewer.show_field(file, name, s.get("component"), warp,
                                    s.get("scale") or 1.0, status=status, view=view)
             if times:
-                self.viewer.set_times(times, k)
+                self.viewer.set_times(times, k, labels)
         except Exception as exc:  # noqa: BLE001 (unreadable or unexpected file)
             self.viewer.show_message(f"Cannot display {name}: {exc}")
 
@@ -1759,7 +1786,14 @@ class MainWindow(QMainWindow):
             res_ = mr.get("relative_residual")
             self._log(f"Model {mname}: {mr.get('nb_dofs')} unknowns"
                       + (f", relative residual {res_:.1e}" if res_ is not None else "")
-                      + (f", {mr.get('iterations')} Newton iterations" if res_ is None else ""))
+                      + (f", {mr.get('iterations')} Newton iterations" if res_ is None and mr.get('iterations')
+                         else ""))
+            if mr.get("eigensolver"):
+                self._log(f"  eigensolver: {mr['eigensolver']}")
+            if "frequencies" in mr:
+                self._log("  frequencies (Hz): " + ", ".join(f"{f:.6g}" for f in mr["frequencies"]))
+            elif "time_constants" in mr:
+                self._log("  decay rates (1/s): " + ", ".join(f"{x:.6g}" for x in mr["eigenvalues"]))
             for w in mr.get("warnings", []):
                 self._log(f"Warning ({mname}): {w}", error=True)
             for k, v in mr.get("quantities", {}).items():
@@ -1772,7 +1806,7 @@ class MainWindow(QMainWindow):
         """The VTU file of each model and its fields; in time, the files of
         the saved times (the last one shown first)."""
         self.result_files, self.result_fields = {}, {}
-        self.result_series, self.time_index = {}, None
+        self.result_series, self.time_index, self.result_labels = {}, None, {}
         for mname, mr in (self.results or {}).get("models", {}).items():
             if not mr.get("vtu"):
                 continue
@@ -1782,6 +1816,10 @@ class MainWindow(QMainWindow):
             series = mr.get("series", {})
             if len(series.get("vtu", [])) > 1:
                 self.result_series[mname] = [(t, workdir / f) for t, f in zip(series["t"], series["vtu"])]
+                if series.get("labels"):                 # (the modes: the first one shown first)
+                    self.result_labels[mname] = list(series["labels"])
+                    self.time_index = 0
+                    self.result_files[mname] = self.result_series[mname][0][1]
 
     def result_times(self, mname=None) -> list[float]:
         """The saved times of the results (of a model; of the first one in
@@ -1837,7 +1875,7 @@ class MainWindow(QMainWindow):
     def _load_previous_results(self):
         """Results of an earlier session (marked out of date if the model changed since)."""
         self.results, self.result_files, self.result_fields = None, {}, {}
-        self.result_series, self.time_index = {}, None
+        self.result_series, self.time_index, self.result_labels = {}, None, {}
         self.results_model, self.results_stale = None, False
         f = self.workdir / "results.json"
         used = self.workdir / "model_used.json"

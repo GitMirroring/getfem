@@ -124,3 +124,8 @@
      - box
      - structured
      - heat_conduction, linear_elasticity, thermal_expansion
+   * - :ref:`tuning_fork.json <lab-example-tuning_fork>`
+     - Tuning fork: its eigenmodes (modal analysis of a steel fork held by its stem; the fork mode, the prongs in opposition, near 440 Hz)
+     - csg 2D
+     - getfem
+     - linear_elasticity

@@ -844,7 +844,7 @@ class PropertiesPanel(QScrollArea):
     def show_results(self, results: dict, stale: bool, actions):
         self._build_empty()
         self._title("Results" + (" (out of date)" if stale else ""))
-        rows = [(k, results[k]) for k in ("status", "time", "nb_dofs", "time_s", "relative_residual")
+        rows = [(k, results[k]) for k in ("status", "time", "mode", "nb_dofs", "time_s", "relative_residual")
                 if k in results]
         rows += [(k, v) for k, v in results.items()
                  if (k.startswith("max_") or k.startswith("min_")) and isinstance(v, (int, float))]
@@ -862,16 +862,35 @@ class PropertiesPanel(QScrollArea):
         table.resizeColumnsToContents()
         table.horizontalHeader().setStretchLastSection(True)
         self.layout_.addWidget(table)
+        if results.get("modes"):
+            self._modes(*results["modes"])
         if results.get("curves"):
-            self._curves(results["curves"])
+            self._curves(results["curves"], "By mode:" if results.get("modes") else "In time:",
+                         "mode" if results.get("modes") else "t")
         self._messages(results.get("warnings", []))
         self._buttons(actions)
 
-    def _curves(self, curves: dict) -> None:
-        """The scalar results in time: one chosen, its curve."""
+    def _modes(self, columns: list, rows: list) -> None:
+        """The modes of a modal analysis, a row each."""
+        self.layout_.addWidget(QLabel("Modes:"))
+        table = QTableWidget(len(rows), len(columns))
+        table.setObjectName("modes_table")
+        table.setHorizontalHeaderLabels(columns)
+        table.verticalHeader().hide()
+        for i, row in enumerate(rows):
+            for j, v in enumerate(row):
+                item = QTableWidgetItem("" if v is None else f"{v:.6g}" if isinstance(v, float) else str(v))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                table.setItem(i, j, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        self.layout_.addWidget(table)
+
+    def _curves(self, curves: dict, title: str = "In time:", xlabel: str = "t") -> None:
+        """The scalar results in time (or by mode): one chosen, its curve."""
         from .plot import LinePlot
         row = QHBoxLayout()
-        row.addWidget(QLabel("In time:"))
+        row.addWidget(QLabel(title))
         combo = QComboBox()
         combo.setObjectName("curve")
         for name in curves:
@@ -885,7 +904,7 @@ class PropertiesPanel(QScrollArea):
         def show(name):
             if name in curves:
                 t, v = curves[name]
-                plot.set_data(t, v, "t", name)
+                plot.set_data(t, v, xlabel, name)
         combo.currentTextChanged.connect(show)
         quantities = [n for n in curves if not n.split(".")[-1].startswith(("min_", "max_"))]
         if quantities:
