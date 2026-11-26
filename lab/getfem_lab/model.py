@@ -383,6 +383,7 @@ PROPERTIES = {
     "rho": ("density", "kg/m³"),
     "cp": ("specific heat capacity", "J/(kg·K)"),
     "eps_r": ("relative permittivity", "1"),
+    "sigma_e": ("electrical conductivity", "S/m"),
 }
 
 # Saved views of a result field (models[k].graphics): their display settings;
@@ -454,6 +455,34 @@ MODULE_SPECS = {
                              "to a constant",
         "macros": ("E_field", "D_field", "eps0"),        # (eps0: the permittivity of vacuum, data)
         "exports": {"electric_field": ("E_field", VECTOR), "electric_displacement": ("D_field", VECTOR)},
+    },
+    # The electric currents (steady, in a conductor): -div(sigma_e grad V) = Q_j (a current source),
+    # E = -grad V, J = sigma_e E; electrodes at a given potential (or the ground), a normal current
+    # density, a terminal (an unknown constant potential, a given total current); the Joule heat
+    # J.E, optionally a source of the heat conduction of the model (sigma_e may depend on T).
+    "electric_currents": {
+        "label": "Electric currents",
+        "variables": {"variable": {"name": "V", "kind": SCALAR, "degree": 2, "label": "electric potential"}},
+        "properties": {"sigma_e": "electrical conductivity"},
+        "property_defaults": {"sigma_e": 1.0},
+        "options": {"conductivity": ("isotropic", "anisotropic"), "joule_heating": ("none", "heat_conduction")},
+        "option_labels": {"joule_heating": {"none": "none",
+                                            "heat_conduction": "a source of the heat conduction of the model"}},
+        "tensor_properties": {"sigma_e": ("conductivity", "anisotropic")},
+        "values": {},
+        "source": SCALAR,
+        "source_label": "Q_j (current source, A/m³)",
+        "conditions": {
+            "potential": {"value": SCALAR},
+            "ground": {},
+            "current_density": {"value": SCALAR},
+            "terminal": {"current": SCALAR},
+        },
+        "anchoring": ("potential", "ground"),
+        "anchoring_message": "without an imposed potential or a ground, the potential is only defined up "
+                             "to a constant",
+        "macros": ("E_field", "J_field", "Q_joule"),
+        "exports": {"electric_field": ("E_field", VECTOR), "current_density": ("J_field", VECTOR)},
     },
     "linear_elasticity": {
         "label": "Linear elasticity",
@@ -2643,8 +2672,10 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
                 errors.append(f"{w}.modules[{i}]: its property {d!r} is already a {taken[d]}")
         for m in spec["macros"]:
             if m in macro_owner:
+                same = md["modules"][macro_owner[m]].get("type") == mod.get("type")
                 errors.append(f"{w}.modules[{i}]: macro {m!r} is already defined by module "
-                              f"{macro_owner[m] + 1} (one module of this type per model)")
+                              f"{macro_owner[m] + 1} " + ("(one module of this type per model)" if same
+                                                          else "(these modules exclude each other)"))
             elif m in taken:
                 errors.append(f"{w}.modules[{i}]: its macro {m!r} is already a {taken[m]}")
             else:
@@ -2812,6 +2843,10 @@ def _validate_module(model, md, mod, w, table, dim, var_kinds, known_kinds, erro
         if c not in (1, "dim") and c != dim:
             errors.append(f"{w}.variable: a vector unknown of a PDE has the dimension of the space as "
                           f"number of components (\"dim\"), {c!r} given")
+    if mod.get("joule_heating") == "heat_conduction" and not any(m.get("type") == "heat_conduction"
+                                                                for m in md.get("modules", [])):
+        errors.append(f"{w}.joule_heating: the Joule heat is a source of a heat conduction module of the model: "
+                      "add one (or no Joule heating)")
     if "requires" in spec:
         other, role = spec["requires"]
         name = mod.get(role, spec["variables"][role]["name"])

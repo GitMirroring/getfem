@@ -1109,6 +1109,8 @@ def _rows(value) -> list[list[str]] | None:
     return None
 
 
+_OPTION_HELP = {"joule_heating": "the Joule heat J.E = sigma_e |grad V|^2, a source of the heat conduction module of "
+                                  "the model (sigma_e may depend on its temperature: a coupling both ways)"}
 _PDE_OPTIONS = {"form": "Form", "unknown": "Scalar or vector", "time_order": "Order in time", "diffusion": "Diffusion",
                 "stabilization": "Stabilization"}
 _PDE_OPTION_HELP = {
@@ -1204,7 +1206,8 @@ def _value_field(key, label, kind, dim, op=None) -> Field:
 
 
 _LABELS = {"value": "Value", "h": "Exchange coefficient h", "q": "Coefficient q", "T_ext": "External temperature",
-           "T_ref": "Reference temperature", "charge": "Total charge Q (C)"}
+           "T_ref": "Reference temperature", "charge": "Total charge Q (C)",
+           "current": "Total current I (A, entering)"}
 
 
 def _model_fields(model, path) -> list[Field]:
@@ -1284,12 +1287,14 @@ def _model_fields(model, path) -> list[Field]:
                                      tuple((x, labels.get(opt, {}).get(x, x)) for x in values),
                                      op="pde_option", help=_PDE_OPTION_HELP.get(opt, "")))
                     continue
-                tensor = any(o == opt for o, _ in spec.get("tensor_properties", {}).values())
-                out.append(Field(mpath + (opt,), "2D model" if opt == "plane" else opt.capitalize(), "choice",
-                                 tuple((x, f"plane {x}" if opt == "plane" else x) for x in values),
+                tensor = [p for p, (o, _) in spec.get("tensor_properties", {}).items() if o == opt]
+                label = {"plane": "2D model", "joule_heating": "Joule heating"}.get(opt, opt.capitalize())
+                out.append(Field(mpath + (opt,), label, "choice",
+                                 tuple((x, f"plane {x}" if opt == "plane" else labels.get(opt, {}).get(x, x))
+                                       for x in values),
                                  op="tensor_option" if tensor else None,
-                                 help="anisotropic: the conductivity is a dim x dim matrix (its values "
-                                      "turned into matrices)" if tensor else ""))
+                                 help=f"anisotropic: {tensor[0]} is a dim x dim matrix (its values turned into "
+                                      "matrices)" if tensor else _OPTION_HELP.get(opt, "")))
             roles = spec.get("variables", {})
             out.append(Field(mpath, "Variables" if len(roles) > 1 else "Variable", "section"))
             kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
@@ -3160,8 +3165,11 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out.append(("add_variable", "Add a variable"))
     elif rest == ("modules",):
         present = {m.get("type") for m in md.get("modules", [])}
+        macros = {x for m in md.get("modules", []) for x in M.spec_of(m).get("macros", ())}
         out += [(f"add_module:{t}", f"Add {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
-                if t not in present or s.get("several")]      # one module of each type per model (PDE: several)
+                if (t not in present or s.get("several")) and not macros & set(s["macros"])]
+        # (one module of each type per model, PDE: several; nor two of the same macros: electrostatics
+        # and electric currents, E_field)
     elif rest == ("terms",):
         out.append(("add_term", "Add a term"))
     elif rest == ("conditions",):
@@ -3537,7 +3545,7 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         mtype = action.split(":", 1)[1] or None
         models = model.setdefault("models", [])
         base = {"heat_conduction": "heat", "linear_elasticity": "mechanics",
-                "electrostatics": "electrostatics"}.get(mtype, "model")
+                "electrostatics": "electrostatics", "electric_currents": "currents"}.get(mtype, "model")
         mname = unique_name(name or base, [m.get("name") for m in models])
         if not model.get("meshes"):
             raise ValueError("a model is on a mesh: add a geometry and a mesh first")

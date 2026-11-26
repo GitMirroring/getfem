@@ -46,6 +46,11 @@ A module is a predefined physics acting on variables
    the electric potential ``V``, :math:`-\mathrm{div}(\varepsilon_0
    \varepsilon_r \nabla V) = \rho_v`, of relative permittivity ``eps_r``
    (see below).
+``electric_currents``
+   the electric potential ``V`` of a steady current,
+   :math:`-\mathrm{div}(\sigma \nabla V) = Q_j`, of electrical
+   conductivity ``sigma_e``; its option ``joule_heating`` heats a heat
+   conduction module of the model (see below).
 ``pde``
    a partial differential equation of a scalar or vector unknown, in
    coefficient or general form, of order 0, 1 or 2 in time (see below).
@@ -145,6 +150,56 @@ V^2`. The equation is written divided by :math:`\varepsilon_0` in the
 script (its matrix of order 1), so are the sources. In 2D, the quantities
 are per unit length along :math:`z`. ``examples/coax_cable.json`` computes
 the capacitance of a coaxial cable.
+
+.. _lab-models-electric_currents:
+
+Electric currents module
+------------------------
+
+The ``electric_currents`` module computes the electric potential :math:`V`
+of a steady (direct) current in a conductor,
+
+.. math::
+
+   -\mathrm{div}(\sigma \nabla V) = Q_j, \qquad E = -\nabla V, \qquad
+   J = \sigma E,
+
+of electrical conductivity :math:`\sigma`, the property ``sigma_e``
+(``sigma`` is the stress of the elasticity module; S/m: a number, or a matrix with
+``"conductivity": "anisotropic"``; the metals of the library give it), and
+of current source :math:`Q_j` (A/m³, its source, usually zero). The macros
+``E_field``, ``J_field`` and ``Q_joule`` (:math:`J\cdot E`, the heat
+produced, W/m³) are exported as ``electric_field``, ``current_density``
+and ``joule_heat``.
+Its conditions:
+
+- ``potential``: an electrode at the potential :math:`V_0`;
+- ``ground``: :math:`V = 0`;
+- ``current_density``: a current density entering through the boundary,
+  :math:`-J\cdot n = j` (A/m²); a boundary without condition is insulated,
+  :math:`J\cdot n = 0`;
+- ``terminal``: an electrode of unknown potential, constant on its boundary,
+  through which a given total current ``current`` (A) enters. As for a
+  floating conductor of the electrostatics module, the script adds a scalar
+  unknown, its potential (in the results, ``potentials``), and a multiplier
+  on the boundary.
+
+At least one ``potential`` or ``ground`` condition fixes the potential. The
+results give the Joule power :math:`P = \int J\cdot E` (``joule_power``)
+and the current through each electrode (``currents``, by its selection,
+positive when entering), computed as the charges of the electrostatics
+module. A resistance follows, :math:`R = \Delta V/I = \Delta V^2/P`. The
+equation is divided in the script by the mean conductivity of the domain,
+so is the source (the conductivity of a metal, :math:`10^7` S/m, would
+otherwise make the residual of Newton's method that of the round-off). In
+2D, the currents and the power are per unit length along :math:`z`.
+
+With ``"joule_heating": "heat_conduction"``, the Joule heat ``Q_joule`` is
+a source of the heat conduction module of the same model, whose
+temperature is then a variable of the model: the conductivity may depend on
+it, ``sigma0/(1 + alpha_R*(T - T0))`` for instance (the resistivity of a
+metal increasing linearly), the problem being then solved by Newton's
+method. ``examples/busbar_joule.json`` heats a copper bar.
 
 .. _lab-models-pde:
 

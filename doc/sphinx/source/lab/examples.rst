@@ -289,3 +289,24 @@ conductor of radius ``b`` = 3.5 mm grounded, polyethylene between them
 ``capacitance`` (:math:`2W/V_0^2`), and the charges of the conductors
 (``charges``, :math:`\pm C V_0`) agree within :math:`10^{-4}` with
 :math:`2\pi\varepsilon_0\varepsilon_r/\ln(b/a)` = 102.1 pF/m.
+
+.. _lab-example-busbar_joule:
+
+Copper busbar heated by its current (``busbar_joule.json``)
+-----------------------------------------------------------
+
+A copper bar of length ``L`` = 10 cm and width ``H`` = 2 cm, with a bolt
+hole of radius 5 mm, under a voltage ``V0`` = 30 mV between its ends. The
+``electric_currents`` module computes the current and its Joule heat, a
+source of the ``heat_conduction`` module of the same model (option
+``joule_heating``); the ends are held at ``T0`` = 20 °C, the long sides
+lose heat to the air by convection (``h_conv`` = 10 W/(m²·K)). The
+conductivity of copper decreases with the temperature,
+:math:`\sigma_0/(1 + \alpha_R(T - T_0))` (:math:`\sigma_0` = 5.8e7 S/m,
+:math:`\alpha_R` = 0.00393 /K), so the two problems are coupled both ways
+and solved together by Newton's method (6 iterations). The maximum
+temperature is about 35.7 °C (36.2 °C with :math:`\alpha_R` = 0, a larger
+current); the resistance per unit depth, ``V0`` over the current
+(``currents``), is some 15 % above that of the bar without hole, cold,
+:math:`L/(\sigma_0 H)`; nearly all the heat leaves through the ends (the
+output ``heat_to_air``, about 20 W/m of 9.1 kW/m).

@@ -1,5 +1,5 @@
 {
- "description": "Built-in material library of getfem_lab: typical values near 20 °C, in SI units, for prototyping (isotropic, linear; eps_r: the relative permittivity at low frequency, of the insulators); check them against a datasheet for a design.",
+ "description": "Built-in material library of getfem_lab: typical values near 20 °C, in SI units, for prototyping (isotropic, linear; eps_r: the relative permittivity at low frequency, of the insulators; sigma: the electrical conductivity, of the metals); check them against a datasheet for a design.",
  "materials": [
   {
    "name": "Aluminium (pure)",
@@ -10,7 +10,8 @@
     "nu": 0.35,
     "alpha": 2.31e-05,
     "rho": 2700,
-    "cp": 897
+    "cp": 897,
+    "sigma_e": 37740000.0
    }
   },
   {
@@ -34,7 +35,8 @@
     "nu": 0.34,
     "alpha": 1.65e-05,
     "rho": 8960,
-    "cp": 385
+    "cp": 385,
+    "sigma_e": 58000000.0
    }
   },
   {
@@ -46,7 +48,8 @@
     "nu": 0.34,
     "alpha": 1.9e-05,
     "rho": 8500,
-    "cp": 380
+    "cp": 380,
+    "sigma_e": 14080000.0
    }
   },
   {
@@ -58,7 +61,8 @@
     "nu": 0.3,
     "alpha": 1.2e-05,
     "rho": 7850,
-    "cp": 460
+    "cp": 460,
+    "sigma_e": 6667000.0
    }
   },
   {
@@ -70,7 +74,8 @@
     "nu": 0.29,
     "alpha": 1.73e-05,
     "rho": 8000,
-    "cp": 500
+    "cp": 500,
+    "sigma_e": 1000000.0
    }
   },
   {
@@ -82,7 +87,8 @@
     "nu": 0.26,
     "alpha": 1.1e-05,
     "rho": 7200,
-    "cp": 460
+    "cp": 460,
+    "sigma_e": 1000000.0
    }
   },
   {
@@ -106,7 +112,8 @@
     "nu": 0.31,
     "alpha": 1.34e-05,
     "rho": 8908,
-    "cp": 445
+    "cp": 445,
+    "sigma_e": 14600000.0
    }
   },
   {
@@ -118,7 +125,8 @@
     "nu": 0.44,
     "alpha": 2.89e-05,
     "rho": 11340,
-    "cp": 129
+    "cp": 129,
+    "sigma_e": 4854000.0
    }
   },
   {
@@ -130,7 +138,8 @@
     "nu": 0.42,
     "alpha": 1.42e-05,
     "rho": 19300,
-    "cp": 129
+    "cp": 129,
+    "sigma_e": 44640000.0
    }
   },
   {
@@ -142,7 +151,8 @@
     "nu": 0.37,
     "alpha": 1.89e-05,
     "rho": 10490,
-    "cp": 235
+    "cp": 235,
+    "sigma_e": 62890000.0
    }
   },
   {
@@ -154,7 +164,8 @@
     "nu": 0.28,
     "alpha": 4.5e-06,
     "rho": 19250,
-    "cp": 134
+    "cp": 134,
+    "sigma_e": 17700000.0
    }
   },
   {

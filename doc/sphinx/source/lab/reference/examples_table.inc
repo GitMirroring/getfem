@@ -24,6 +24,11 @@
      - csg 3D
      - getfem
      - heat_conduction
+   * - :ref:`busbar_joule.json <lab-example-busbar_joule>`
+     - Copper busbar with a bolt hole: the current, its Joule heat, the temperature (electric currents and heat conduction in one model, the conductivity depending on the temperature)
+     - csg 2D
+     - getfem
+     - electric_currents, heat_conduction
    * - :ref:`coax_cable.json <lab-example-coax_cable>`
      - Coaxial cable: the capacitance per unit length, 2 pi eps0 eps\_r / ln(b/a) (electrostatics)
      - csg 2D

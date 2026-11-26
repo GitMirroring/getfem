@@ -141,6 +141,72 @@ Macros: ``E_field``, ``D_field``, ``eps0``.
 
 Exported fields: ``electric_field`` (vector), ``electric_displacement`` (vector).
 
+.. _lab-ref-module-electric_currents:
+
+electric_currents: Electric currents
+------------------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Key
+     - Variable
+     - Kind
+     - Default name
+     - May be imported
+   * - ``variable``
+     - electric potential
+     - scalar
+     - ``V``
+     -
+
+Properties:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Property
+     - Meaning
+     - Unit (SI)
+     - Default
+   * - ``sigma_e``
+     - electrical conductivity
+     - S/m
+     - ``1.0``
+
+Option ``conductivity``: ``isotropic``, ``anisotropic``.
+
+Option ``joule_heating``: ``none``, ``heat_conduction``.
+
+With ``conductivity`` set to ``anisotropic``, ``sigma_e`` is a matrix of the dimension of the space (a number stands for its multiple of the identity).
+
+Sources: scalar values per domain selection.
+
+Conditions:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Condition
+     - Values
+     - Fixes the solution
+   * - ``potential``
+     - ``value`` (scalar)
+     - yes
+   * - ``ground``
+     - none
+     - yes
+   * - ``current_density``
+     - ``value`` (scalar)
+     -
+   * - ``terminal``
+     - ``current`` (scalar)
+     -
+
+Macros: ``E_field``, ``J_field``, ``Q_joule``.
+
+Exported fields: ``electric_field`` (vector), ``current_density`` (vector).
+
 .. _lab-ref-module-linear_elasticity:
 
 linear_elasticity: Linear elasticity

@@ -42,6 +42,7 @@ def _v(value) -> str:
 def equation(model: dict, md: dict, mod: dict) -> str:
     """The equation solved by a module and its data, as HTML."""
     fn = {"heat_conduction": _heat, "linear_elasticity": _elasticity, "electrostatics": _electrostatics,
+          "electric_currents": _currents,
           "thermal_expansion": _expansion, "pde": _pde}.get(mod.get("type"))
     return fn(model, md, mod) if fn else ""
 
@@ -79,6 +80,19 @@ def _electrostatics(model: dict, md: dict, mod: dict) -> str:
     return _block([f"−{DIV}(ε<sub>0</sub> {eps} {NABLA}{V}) = ρ<sub>v</sub> &nbsp; in Ω",
                    f"<b>E</b> = −{NABLA}{V} (E_field), &nbsp; <b>D</b> = ε<sub>0</sub> {eps} <b>E</b> (D_field), "
                    "&nbsp; ε<sub>0</sub> = 8.854 10<sup>−12</sup> F/m (eps0)"])
+
+
+def _currents(model: dict, md: dict, mod: dict) -> str:
+    V = html.escape(mod.get("variable", "V"))
+    sig = "σ" if mod.get("conductivity", "isotropic") == "isotropic" else "<b>σ</b>"
+    lines = [f"−{DIV}({sig} {NABLA}{V}) = Q<sub>j</sub> &nbsp; in Ω",
+             f"<b>E</b> = −{NABLA}{V} (E_field), &nbsp; <b>J</b> = {sig} <b>E</b> (J_field), &nbsp; "
+             "Joule heat <b>J</b>·<b>E</b> (Q_joule)"]
+    if mod.get("joule_heating") == "heat_conduction":
+        heat = next((m for m in md.get("modules", []) if m.get("type") == "heat_conduction"), None)
+        T = html.escape(heat.get("variable", "T")) if heat else "T"
+        lines.append(f"the Joule heat, a source of the heat conduction ({T})")
+    return _block(lines)
 
 
 def _elasticity(model: dict, md: dict, mod: dict) -> str:

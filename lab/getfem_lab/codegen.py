@@ -393,32 +393,119 @@ def _electrostatics_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str
     conductors = [(j, bc) for j, bc in enumerate(mod["conditions"], start=1)
                   if bc["type"] in ("potential", "ground", "floating")]
     if conductors:
-        mf = c.mfs[u]
-        w("# The charge of each conductor, Q = -int_Gamma D.n (n: the outward normal of the domain), from the")
-        w("# equation tested by phi (1 on the dofs of the conductor, 0 elsewhere): Q = int eps0 eps_r grad V.")
-        w("# grad phi - int rho_v phi - int sigma_s phi (as accurate as the energy; the flux on the boundary less)")
-        w("R['charges'], R['potentials'] = {}, {}")
-        w(f"{md}.add_initialized_fem_data('{u}__phi', {mf}, np.zeros({mf}.nbdof()))")
+        w("# The charge of each conductor, Q = -int_Gamma D.n (n: the outward normal of the domain)")
         sources = [(gwfl(src["value"]), c.rg(src["selection"])) for src in mod["sources"]]
         sources += [(gwfl(bc["value"]), c.rg(bc["selection"])) for bc in mod["conditions"]
                     if bc["type"] == "surface_charge"]
-        for j, bc in conductors:
-            sel = bc["selection"]
-            w("phi = np.zeros(" + f"{mf}.nbdof())")
-            w(f"phi[{mf}.basic_dof_on_region({c.rg(sel)})] = 1.0")
-            w(f"{md}.set_variable('{u}__phi', phi)")
-            w(f"Q = gf.asm_generic({c.mim}, 0, 'eps0*(eps_r*Grad_{u}).Grad_{u}__phi', -1, {md})")
-            for expr, rg in sources:
-                w(f"Q -= gf.asm_generic({c.mim}, 0, '({expr})*{u}__phi', {rg}, {md})")
-            w(f"R['charges'][{sel!r}] = float(Q)")
-            if bc["type"] == "floating":
-                w(f"R['potentials'][{sel!r}] = float({md}.variable('{u}_float{i}_{j}')[0])")
+        _conductor_charges(c, mod, i, w, conductors, f"eps0*eps_r*Grad_{u}", sources, "charges", "floating")
     deg = max(int(c.var(u).get("degree", 1)) - 1, 0)
     w(f"mf_E = gf.MeshFem({c.m}, {c.m}.dim())")
     w(f"mf_E.set_classical_discontinuous_fem({deg})")
     w(f"E_field = {md}.interpolation('E_field', mf_E)")
     w(f"D_field = {md}.interpolation('D_field', mf_E)")
     return ["mf_E", "E_field", "'electric_field'", "mf_E", "D_field", "'electric_displacement'"]
+
+
+def _conductor_charges(c: Ctx, mod: dict, i: int, w: ScriptWriter, conductors, flux: str, sources,
+                       key: str, unknown: str) -> None:
+    """The charge (current) of each conductor, from the equation tested by
+    phi, 1 on its nodes and 0 elsewhere: int flux.grad phi - int sources phi
+    (as accurate as the energy; the flux on the boundary less)."""
+    u, md, mf = mod["variable"], c.py, c.mfs[mod["variable"]]
+    w(f"R[{key!r}], R['potentials'] = {{}}, {{}}")
+    w(f"{md}.add_initialized_fem_data('{u}__phi', {mf}, np.zeros({mf}.nbdof()))")
+    for j, bc in conductors:
+        sel = bc["selection"]
+        w(f"phi = np.zeros({mf}.nbdof())")
+        w(f"phi[{mf}.basic_dof_on_region({c.rg(sel)})] = 1.0")
+        w(f"{md}.set_variable('{u}__phi', phi)")
+        w(f"Q = gf.asm_generic({c.mim}, 0, '({flux}).Grad_{u}__phi', -1, {md})")
+        for expr, rg in sources:
+            w(f"Q -= gf.asm_generic({c.mim}, 0, '({expr})*{u}__phi', {rg}, {md})")
+        w(f"R[{key!r}][{sel!r}] = float(Q)")
+        if bc["type"] == unknown:
+            w(f"R['potentials'][{sel!r}] = float({md}.variable('{u}_float{i}_{j}')[0])")
+
+
+def _currents_declare(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
+    u, md = mod["variable"], c.py
+    w(f"{md}.add_macro('E_field', '-Grad_{u}')  # the electric field")
+    w(f"{md}.add_macro('J_field', 'sigma_e*E_field')  # the current density")
+    w(f"{md}.add_macro('Q_joule', 'J_field.E_field')  # the Joule heat (W/m3)")
+
+
+def _heat_of(c: Ctx) -> dict | None:
+    return next((m for m in c.md["modules"] if m["type"] == "heat_conduction"), None)
+
+
+def _currents_setup(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> None:
+    u, md = mod["variable"], c.py
+    w(f"# -div(sigma_e grad {u}) = Q_j, divided by a mean conductivity sigma_ref (a matrix of order 1: the")
+    w("# conductivities of metals, 1e7 S/m, would bring the residual to the round-off)")
+    w(f"sigma_ref = gf.asm_generic({c.mim}, 0, 'Trace(sigma_e*Id(meshdim))/meshdim', -1, {md}) / "
+      f"gf.asm_generic({c.mim}, 0, '1', -1, {md})")
+    w("sigma_ref = sigma_ref if np.isfinite(sigma_ref) and sigma_ref > 0 else 1.0")
+    w(f"{md}.add_initialized_data('sigma_ref', [sigma_ref])")
+    _term(c, w, f"(sigma_e/sigma_ref*Grad_{u}).Grad_Test_{u}")
+    for src in mod["sources"]:
+        _source(c, w, "(" + gwfl(src["value"]) + ")/sigma_ref*Test_" + u, c.rg(src["selection"]))
+    if mod.get("joule_heating") == "heat_conduction" and _heat_of(c) is not None:
+        T = _heat_of(c)["variable"]
+        w(f"# the Joule heat, a source of the heat conduction: J.E")
+        _source(c, w, f"Q_joule*Test_{T}")
+    for j, bc in enumerate(mod["conditions"], start=1):
+        rg = c.rg(bc["selection"])
+        w("")
+        if bc["type"] == "potential":
+            data = f"{u}_D{i}_{j}"
+            w(f"# Imposed potential on {bc['selection']}")
+            c.fem_data(w, data, c.mfs[u], gwfl(bc["value"]))
+            w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg}, {data!r})")
+            c.dirichlet.setdefault(u, []).append((rg, data))
+        elif bc["type"] == "ground":
+            w(f"# Ground on {bc['selection']}: {u} = 0")
+            w(f"{md}.add_Dirichlet_condition_with_simplification({u!r}, {rg})")
+            c.dirichlet.setdefault(u, []).append((rg, None))
+        elif bc["type"] == "current_density":
+            w(f"# Normal current density entering on {bc['selection']}: -J.n = j_n")
+            _source(c, w, "(" + gwfl(bc["value"]) + ")/sigma_ref*Test_" + u, rg)
+        elif bc["type"] == "terminal":
+            vt, lam = f"{u}_float{i}_{j}", f"{u}_lambda{i}_{j}"
+            w(f"# Terminal on {bc['selection']}: {u} = {vt} (one unknown constant, by a multiplier "
+              f"{lam}), its total current entering -int J.n = I")
+            w(f"{md}.add_variable({vt!r}, 1)")
+            w(f"{md}.add_filtered_fem_variable({lam!r}, {c.mfs[u]}, {rg})")
+            w(f"area = gf.asm_generic({c.mim}, 0, '1', {rg}, {md})")
+            _term(c, w, f"{lam}*Test_{u} + ({u} - {vt})*Test_{lam} - {lam}*Test_{vt}", rg)
+            q = gwfl(bc["current"])
+            w(f"LINEAR[{c.md['name']!r}] &= add_term({md}, {c.mim}, '-(({q})/sigma_ref/' + repr(area) + "
+              f"'*Test_{vt})', "
+              f"{rg})   # (the current I spread on the boundary)")
+
+
+def _currents_post(c: Ctx, mod: dict, i: int, w: ScriptWriter) -> list[str]:
+    u, md = mod["variable"], c.py
+    w(f"R['min_{u}'] = float({md}.variable({u!r}).min())")
+    w(f"R['max_{u}'] = float({md}.variable({u!r}).max())")
+    w(f"R['joule_power'] = float(gf.asm_generic({c.mim}, 0, 'Q_joule', -1, {md}))")
+    conductors = [(j, bc) for j, bc in enumerate(mod["conditions"], start=1)
+                  if bc["type"] in ("potential", "ground", "terminal")]
+    if conductors:
+        w("# The current entering by each electrode, I = -int_Gamma J.n (n: the outward normal of the domain)")
+        sources = [(gwfl(src["value"]), c.rg(src["selection"])) for src in mod["sources"]]
+        sources += [(gwfl(bc["value"]), c.rg(bc["selection"])) for bc in mod["conditions"]
+                    if bc["type"] == "current_density"]
+        _conductor_charges(c, mod, i, w, conductors, f"sigma_e*Grad_{u}", sources, "currents", "terminal")
+    deg = max(int(c.var(u).get("degree", 1)) - 1, 0)
+    w(f"mf_E = gf.MeshFem({c.m}, {c.m}.dim())")
+    w(f"mf_E.set_classical_discontinuous_fem({deg})")
+    w(f"mf_Q = gf.MeshFem({c.m}, 1)")
+    w(f"mf_Q.set_classical_discontinuous_fem({deg})")
+    w(f"E_field = {md}.interpolation('E_field', mf_E)")
+    w(f"J_field = {md}.interpolation('J_field', mf_E)")
+    w(f"Q_joule = {md}.interpolation('Q_joule', mf_Q)")
+    return ["mf_E", "E_field", "'electric_field'", "mf_E", "J_field", "'current_density'",
+            "mf_Q", "Q_joule", "'joule_heat'"]
 
 
 def _expansion_of(c: Ctx, u: str) -> dict | None:
@@ -641,6 +728,7 @@ def _nothing(c: Ctx, mod: dict, i: int, w: ScriptWriter):
 MODULES = {
     "heat_conduction": (_heat_declare, _heat_setup, _heat_post),
     "electrostatics": (_electrostatics_declare, _electrostatics_setup, _electrostatics_post),
+    "electric_currents": (_currents_declare, _currents_setup, _currents_post),
     "linear_elasticity": (_elasticity_declare, _elasticity_setup, _elasticity_post),
     "thermal_expansion": (_nothing, _nothing, _nothing),   # written by the elasticity module
     "pde": (_pde_declare, _pde_setup, _pde_post),
