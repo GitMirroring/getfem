@@ -62,7 +62,8 @@ check_PROGRAMS =             \
   wave_equation              \
   cyl_slicer                 \
   test_continuation          \
-  test_gmm_matrix_functions
+  test_gmm_matrix_functions  \
+  test_gmm_arpack
 
 CLEANFILES = \
   laplacian.res laplacian.mesh laplacian.dataelt                      \
@@ -119,6 +120,7 @@ wave_equation_SOURCES = wave_equation.cc
 cyl_slicer_SOURCES = cyl_slicer.cc
 test_continuation_SOURCES = test_continuation.cc
 test_gmm_matrix_functions_SOURCES = test_gmm_matrix_functions.cc
+test_gmm_arpack_SOURCES = test_gmm_arpack.cc
 
 AM_CPPFLAGS = -I$(top_srcdir)/src -I../src
 LDADD    = ../src/libgetfem.la -lm @SUPLDFLAGS@ -lstdc++
@@ -160,6 +162,7 @@ TESTS =                         \
   heat_equation.pl              \
   wave_equation.pl              \
   test_gmm_matrix_functions.pl  \
+  test_gmm_arpack.pl            \
   cyl_slicer.pl                 \
   make_gmm_test.pl
 
@@ -214,6 +217,7 @@ EXTRA_DIST =                                         \
   nonlinear_elastostatic.param                       \
   test_interpolated_fem.param                        \
   test_gmm_matrix_functions.pl                       \
+  test_gmm_arpack.pl                                 \
   geo_trans_inv.param                                \
   heat_equation.pl                                   \
   heat_equation.param                                \

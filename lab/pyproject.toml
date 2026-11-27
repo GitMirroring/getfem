@@ -1,0 +1,39 @@
+# GetFEM Lab, the graphical interface of GetFEM, as a Python package (the getfem module
+# itself comes from the build of GetFEM):
+#
+#     pip install -e lab            (from the sources of GetFEM; editable: the
+#                                    examples and the library of materials are
+#                                    read where they are)
+#
+# installs the command getfem_lab: "getfem_lab [model.json]" opens the window,
+# "getfem_lab run model.json" and the other commands are those of
+# "python -m getfem_lab".
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "getfem-lab"
+dynamic = ["version"]
+description = "A graphical user interface for GetFEM"
+readme = "README.md"
+license = {text = "LGPL-3.0-or-later WITH GCC-exception-3.1"}
+dependencies = ["numpy", "scipy"]
+
+[project.optional-dependencies]
+window = ["PySide6", "pyvista"]
+meshers = ["gmsh"]
+
+[project.scripts]
+getfem_lab = "getfem_lab.cli:main"
+
+[tool.setuptools]
+packages = ["getfem_lab", "getfem_lab.app"]
+
+[tool.setuptools.package-data]
+getfem_lab = ["data/*.json"]
+"getfem_lab.app" = ["resources/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "getfem_lab.__version__"}

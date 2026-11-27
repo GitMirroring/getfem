@@ -24,6 +24,7 @@
 #include <gmm/gmm_iter_solvers.h>
 #include <gmm/gmm_superlu_interface.h>
 #include <gmm/gmm_MUMPS_interface.h>
+#include <gmm/gmm_arpack_interface.h>
 
 using namespace getfemint;
 
@@ -129,6 +130,44 @@ mumps_solver(gsparse &gsp,
 }
 #endif
 
+#if defined(GMM_USES_ARPACK)
+static void
+arpack_eigsh(getfemint::mexargs_in& in, getfemint::mexargs_out& out) {
+  std::shared_ptr<gsparse> pK = in.pop().to_sparse(), pM;
+  if (in.remaining() && in.front().is_sparse()) pM = in.pop().to_sparse();
+  if (pK->is_complex() || (pM && pM->is_complex()))
+    THROW_BADARG("eigsh: real matrices expected");
+  size_type n = pK->nrows();
+  if (pK->ncols() != n) THROW_BADARG("eigsh: K should be square");
+  if (pM && (pM->nrows() != n || pM->ncols() != n))
+    THROW_BADARG("eigsh: K is " << n << "x" << n << ", M must be the same size");
+  if (n < 2) THROW_BADARG("eigsh: too small a matrix");
+  size_type nev = std::min<size_type>(6, n - 1);
+  if (in.remaining()) nev = in.pop().to_integer(1, int(n) - 1);
+  double sigma = 0.;
+  if (in.remaining()) sigma = in.pop().to_scalar();
+  std::vector<double> lambda;
+  gmm::dense_matrix<double> modes;
+  pK->to_csc();
+  size_type nconv;
+  if (pM) {
+    pM->to_csc();
+    nconv = gmm::ARPACK_eigsh(pK->csc(scalar_type()), pM->csc(scalar_type()),
+                              nev, sigma, lambda, modes);
+  } else
+    nconv = gmm::ARPACK_eigsh(pK->csc(scalar_type()), nev, sigma,
+                              lambda, modes);
+  out.pop().from_dcvector(lambda);
+  if (out.remaining()) {     // the modes as rows (nconv x n)
+    darray phi = out.pop().create_array(unsigned(nconv), unsigned(n),
+                                        scalar_type());
+    for (size_type j = 0; j < nconv; ++j)
+      for (size_type i = 0; i < n; ++i)
+        phi(j, i) = modes(i, j);
+  }
+}
+#endif
+
 
 /*@GFDOC
   Various linear system solvers.
@@ -201,6 +240,21 @@ void gf_linsolve(getfemint::mexargs_in& in, getfemint::mexargs_out& out) {
                    "the sparse matrix into a complex one");
     if (gsp.is_complex()) mumps_solver(gsp, in, out, complex_type());
     else                  mumps_solver(gsp, in, out, scalar_type());
+#endif
+#if defined(GMM_USES_ARPACK)
+  } else if (check_cmd(cmd, "eigsh", in, out, 1, 4, 0, 2)) {
+    /*@FUNC @CELL{lambda, PHI} = ('eigsh', @tsp K[, @tsp M][, @int nev[, @scalar sigma]])
+      The `nev` eigenvalues (6 by default) nearest to `sigma` (0 by
+      default) of `K.phi = lambda M.phi`, and their modes, by ARPACK-ng.
+
+      `K` should be symmetric and `M` symmetric positive semi-definite
+      (`M` omitted: the identity). The eigenvalues `lambda` are
+      ascending, the modes are the rows of `PHI` (nev x n), M-orthonormal.
+      The implicitly restarted Lanczos method of ARPACK in shift-invert
+      mode, `K - sigma M` factorized by MUMPS or SuperLU (the same method
+      and defaults as scipy.sparse.linalg.eigsh). Needs `nev < n`.
+      Available when GetFEM is built with ARPACK-ng.@*/
+    arpack_eigsh(in, out);
 #endif
   } else
     bad_cmd(init_cmd);

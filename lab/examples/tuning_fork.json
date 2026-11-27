@@ -1,0 +1,215 @@
+{
+  "format_version": 3,
+  "name": "Tuning fork: its eigenmodes (modal analysis of a steel fork held by its stem; the fork mode, the prongs in opposition, near 440 Hz)",
+  "parameters": [
+    {
+      "name": "Lp",
+      "value": 0.0944,
+      "description": "length of the prongs (m)"
+    },
+    {
+      "name": "w",
+      "value": 0.005,
+      "description": "width of the prongs (m)"
+    },
+    {
+      "name": "g",
+      "value": 0.01,
+      "description": "gap between the prongs (m)"
+    },
+    {
+      "name": "b",
+      "value": 0.012,
+      "description": "height of the bridge (m)"
+    },
+    {
+      "name": "Ls",
+      "value": 0.04,
+      "description": "length of the stem (m)"
+    },
+    {
+      "name": "s",
+      "value": 0.008,
+      "description": "width of the stem (m)"
+    },
+    {
+      "name": "hs",
+      "value": 0.0015,
+      "description": "element size (m)"
+    }
+  ],
+  "materials": [
+    {
+      "name": "steel",
+      "properties": {
+        "E": 210000000000.0,
+        "nu": 0.3,
+        "rho": 7800
+      }
+    }
+  ],
+  "geometries": [
+    {
+      "name": "fork",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "union",
+          "of": [
+            {
+              "type": "rectangle",
+              "min": [
+                "-g/2 - w",
+                0
+              ],
+              "max": [
+                "-g/2",
+                "Lp"
+              ]
+            },
+            {
+              "type": "rectangle",
+              "min": [
+                "g/2",
+                0
+              ],
+              "max": [
+                "g/2 + w",
+                "Lp"
+              ]
+            },
+            {
+              "type": "rectangle",
+              "min": [
+                "-g/2 - w",
+                "-b"
+              ],
+              "max": [
+                "g/2 + w",
+                0
+              ]
+            },
+            {
+              "type": "rectangle",
+              "min": [
+                "-s/2",
+                "-b - Ls"
+              ],
+              "max": [
+                "s/2",
+                "-b"
+              ]
+            }
+          ]
+        }
+      },
+      "selections": {
+        "stem_end": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0,
+              "-b - Ls"
+            ],
+            "normal": [
+              0,
+              1
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "mesh",
+      "geometry": "fork",
+      "mesher": "getfem",
+      "h": "hs",
+      "order": 2
+    }
+  ],
+  "fields": [],
+  "models": [
+    {
+      "name": "fork",
+      "variables": [
+        {
+          "name": "u",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 2,
+          "components": "dim"
+        }
+      ],
+      "modules": [
+        {
+          "type": "linear_elasticity",
+          "variable": "u",
+          "plane": "stress",
+          "properties": {
+            "E": [
+              {
+                "selection": "all",
+                "material": "steel"
+              }
+            ],
+            "nu": [
+              {
+                "selection": "all",
+                "material": "steel"
+              }
+            ],
+            "rho": [
+              {
+                "selection": "all",
+                "material": "steel"
+              }
+            ],
+            "alpha_M": [
+              {
+                "selection": "all",
+                "value": 0.0
+              }
+            ],
+            "beta_K": [
+              {
+                "selection": "all",
+                "value": 0.0
+              }
+            ]
+          },
+          "sources": [],
+          "conditions": [
+            {
+              "type": "fixed",
+              "selection": "stem_end"
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [],
+      "vtu": "fork.vtu"
+    }
+  ],
+  "solvers": [
+    {
+      "name": "modes",
+      "type": "modal",
+      "steps": [
+        "fork"
+      ],
+      "modes": 6,
+      "shift": 0
+    }
+  ],
+  "outputs": [],
+  "graphics": []
+}

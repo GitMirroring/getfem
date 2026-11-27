@@ -16,6 +16,9 @@
 /* defined if GMM is linked to the mumps library */
 #cmakedefine GMM_USES_MUMPS
 
+/* defined if GMM is linked to the ARPACK-ng library */
+#cmakedefine GMM_USES_ARPACK
+
 /* defined if GMM is linked to the superlu library */
 #cmakedefine GMM_USES_SUPERLU
 

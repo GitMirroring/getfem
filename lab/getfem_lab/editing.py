@@ -1,0 +1,5210 @@
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
+#
+# This file is a part of GetFEM
+#
+# GetFEM  is  free software;  you  can  redistribute  it  and/or modify it
+# under  the  terms  of the  GNU  Lesser General Public License as published
+# by  the  Free Software Foundation;  either version 3 of the License,  or
+# (at your option) any later version along with the GCC Runtime Library
+# Exception either version 3.1 or (at your option) any later version.
+# This program  is  distributed  in  the  hope  that it will be useful,  but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or  FITNESS  FOR  A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+# License and GCC Runtime Library Exception for more details.
+# You  should  have received a copy of the GNU Lesser General Public License
+# along  with  this program. If not, see https://www.gnu.org/licenses/.
+
+
+"""Editing a model file from a user interface, independently of any toolkit.
+
+- `tree(model)`: the tree of the file, as shown in the model browser;
+- `fields(model, path)`: the form fields of a node;
+- `apply(model, field, value)`: change a field, keeping the file consistent
+  (renaming a selection or a variable updates its uses, changing the type of
+  a condition resets its values, ...);
+- `actions(model, path)` / `do_action(...)`: add and remove items;
+- `errors_by_node` / `errors_at`: place the messages of `model.validate`.
+
+A node or a field is designated by its path in the model dictionary, e.g.
+("models", 0, "modules", 0, "conditions", 1) or ("materials", 0, "properties", "E").
+Functions modify the model in place.
+"""
+
+from __future__ import annotations
+
+import copy
+import math
+import os
+import re
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from . import model as M, parameters as P, sketch as SK, transforms as T
+
+Path = tuple
+
+PRIMITIVES_2D = ("rectangle", "ball", "ellipse", "polygon")
+PRIMITIVES = ("rectangle", "ball", "ellipsoid", "cylinder") + M.SHAPES_SWEPT
+
+
+def primitives_of_dim(dim: int) -> tuple:
+    """The primitives of a shape of dimension dim (2: a 2D geometry or a profile)."""
+    return PRIMITIVES_2D if dim == 2 else PRIMITIVES
+RESULTS = "_results"          # first element of the path of the result nodes
+
+_TOKEN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)|\[(\d+)\]")
+
+
+@dataclass
+class Node:
+    path: Path
+    label: str
+    kind: str
+    children: list["Node"] = field(default_factory=list)
+
+    def walk(self):
+        yield self
+        for c in self.children:
+            yield from c.walk()
+
+
+@dataclass
+class Field:
+    key: Path                     # where the value lives in the model
+    label: str
+    kind: str                     # text, ident, value, vector, numbers, ints, int, number,
+                                  # choice, names, file, info, parameter_table (a whole list),
+                                  # material_table, vertex_table (the points of a polygon),
+                                  # section (a header: the fields after it, up to the next one)
+    choices: tuple = ()           # ((value, label), ...) for choice and names
+    size: int | None = None       # number of components (vector, numbers, ints)
+    op: str | None = None         # special operation instead of a plain assignment
+    help: str = ""
+    remove: Path | None = None    # what a "remove" button next to the field deletes
+    closed: bool = False          # a section (the fields up to the next one): closed by default
+
+    @property
+    def removable(self) -> bool:
+        return self.remove is not None
+
+
+# ------------------------------------------------------------------ access
+
+def get_at(model: dict, key: Path, default=None):
+    obj = model
+    for k in key:
+        try:
+            obj = obj[k]
+        except (KeyError, IndexError, TypeError):
+            return default
+    return obj
+
+
+def set_at(model: dict, key: Path, value) -> None:
+    obj = model
+    for k, nxt in zip(key[:-1], key[1:]):
+        if isinstance(obj, dict) and k not in obj:
+            obj[k] = [] if isinstance(nxt, int) else {}
+        obj = obj[k]
+    obj[key[-1]] = value
+
+
+def owner(model: dict, path: Path) -> dict | None:
+    """The model (gf.Model) a node belongs to, if any."""
+    if path[:1] == ("models",) and len(path) >= 2:
+        return get_at(model, path[:2])
+    return None
+
+
+def item_geometry(model: dict, path: Path) -> dict | None:
+    """The geometry whose selections an item uses: its model's one, a field's
+    one, or the geometry itself."""
+    md = owner(model, path)
+    if md is not None:
+        return M.model_geometry(model, md)
+    if path[:1] == ("fields",) and len(path) >= 2:
+        f = get_at(model, path[:2], {})
+        geoms = model.get("geometries", [])
+        name = f.get("geometry", geoms[0].get("name") if len(geoms) == 1 else None)
+        return M.by_name(geoms, name)
+    if path[:1] == ("geometries",) and len(path) >= 2:
+        return get_at(model, path[:2])
+    return None
+
+
+def geometry_dim(model: dict, gi: int) -> int:
+    geoms = model.get("geometries", [])
+    return (M.geometry_dim(model, geoms[gi]) if gi < len(geoms) else None) or 2
+
+
+def shape_dim(model: dict, path: Path) -> int:
+    """Dimension of the shape at path (a node under geometries/i/source/shape):
+    2 in the profile of an extrusion or a revolution."""
+    if "profile" in path[4:] or model["geometries"][path[1]].get("source", {}).get("type") == "surface":
+        return 2
+    return geometry_dim(model, path[1])
+
+
+def item_dim(model: dict, path: Path) -> int:
+    geom = item_geometry(model, path)
+    return (M.geometry_dim(model, geom) if geom else None) or 2
+
+
+def main_model(model: dict) -> dict | None:
+    """The model shown by default (the first one)."""
+    models = model.get("models", [])
+    return models[0] if models else None
+
+
+def selections_of_kind(model: dict, kind: str | None, geom: dict | None) -> list[str]:
+    if geom is None:
+        return []
+    return [n for n, s in M.selection_table(model, geom).items() if kind is None or s["kind"] == kind]
+
+
+def unique_name(base: str, used) -> str:
+    used = set(used)
+    if base not in used:
+        return base
+    i = 2
+    while f"{base}{i}" in used:
+        i += 1
+    return f"{base}{i}"
+
+
+def _model_of(model: dict, mod: dict) -> dict:
+    """The model of a module."""
+    return next((md for md in model.get("models", []) if any(m is mod for m in md.get("modules", []))), {})
+
+
+def shown_properties(model: dict, mod: dict) -> list[str]:
+    """The properties of a module in its form (those only needed in time if
+    it is in time; a PDE: all those of its order in time, as its equation)."""
+    spec = M.spec_of(mod)
+    return [p for p in spec.get("properties", {})
+            if p not in spec.get("transient_properties", ()) or mod.get("type") == "pde"
+            or M.mass_needed(model, _model_of(model, mod), mod)]
+
+
+def _property_fields(model: dict, mod: dict, spec: dict, mpath: Path, domains, dim: int = 2) -> list[Field]:
+    """The properties of a module, in its form: per domain (the whole domain
+    first), a value or a material; the domains of a property but the first one
+    removable."""
+    out = []
+    for p in shown_properties(model, mod):
+        label = tip = spec["properties"][p]
+        if M.data_name(mod, p) != p:              # (a PDE: its name in the expressions, K_u)
+            tip = f"{label}; {M.data_name(mod, p)} in the expressions"
+        pieces = mod.get("properties", {}).get(p, [])
+        mats = [m.get("name") for m in model.get("materials", []) if p in (m.get("properties") or {})]
+        tensor = M.property_kind(mod, p) == M.MATRIX
+        several = len(pieces) > 1 or any(pc.get("selection", M.ALL) != M.ALL for pc in pieces)
+        for j, pc in enumerate(pieces):
+            path = mpath + ("properties", p, j)
+            name = f"{p} ({label}, a {dim} × {dim} matrix)" if tensor else f"{p} ({label})"
+            if several:                          # a row for its domain, then its value
+                out.append(Field(path + ("selection",), f"{p} on" if j else f"{name} on", "choice",
+                                 domains, help="The domain of this value (the last one listed wins)",
+                                 remove=path if j else None))
+                name = ""
+            if mats:
+                out.append(Field(path, name, "choice",
+                                 (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
+                                 op="piece_source", help=tip))
+                name = ""
+            if "material" not in pc and M.property_kind(mod, p) == M.VECTOR:
+                out.append(Field(path + ("value",), name, "vector", size=dim, help=tip))
+            elif "material" not in pc:
+                out.append(Field(path + ("value",), name, "value",
+                                 help=MATRIX_HELP + (f" ({tip})" if tip != label else "") if tensor else tip))
+        if not pieces:
+            out.append(Field(mpath, "", "info", help=f"{p} ({label}): not given (Add a domain for {p})"))
+    if len(domains) > 1:
+        out.append(Field(mpath, "", "info", help="A property may differ per domain (Add a domain): the last "
+                                                 "one listed wins."))
+    return out
+
+
+SOURCE_LABELS = {M.SCALAR: "f (volume source)", M.VECTOR: "f (volume force)"}
+
+
+def _source_fields(mod: dict, spec: dict, mpath: Path, domains, dim: int) -> list[Field]:
+    """The source f of a module, in its form: 0 when none; per domain (each
+    one removable when there are several: they add up)."""
+    kind = spec.get("source")
+    if kind is None:
+        return []
+    label = ("f (volume source)" if mod.get("type") == "pde"
+             else spec.get("source_label") or SOURCE_LABELS.get(kind, "f"))
+    srcs = mod.get("sources", [])
+    if not srcs:
+        return [_value_field(mpath + ("sources",), label, kind, dim, op="first_source")]
+    out = []
+    several = len(srcs) > 1 or any(sc.get("selection", M.ALL) != M.ALL for sc in srcs)
+    for j, sc in enumerate(srcs):
+        path = mpath + ("sources", j)
+        if several:
+            out.append(Field(path + ("selection",), f"{label} on" if j == 0 else "f on", "choice", domains,
+                             help="The domain of this source (the sources add up)", remove=path))
+        out.append(_value_field(path + ("value",), "" if several else label, kind, dim))
+    return out
+
+
+_SCHEME_HELP = {
+    "theta": {"theta": "The theta-method: 1, implicit Euler (robust, first order); 0.5, Crank-Nicolson "
+                       "(second order, may oscillate)"},
+    "newmark": {"beta": "Newmark's beta: 1/4 with gamma = 1/2, the average acceleration (second order, "
+                        "unconditionally stable, no numerical damping); beta = 0: the explicit Newmark "
+                        "scheme, apart",
+                "gamma": "Newmark's gamma: 1/2 (second order); more damps, at first order"},
+    "hht": {"alpha": "HHT-alpha: 0 is Newmark's average acceleration; down to -1/3, more numerical damping of "
+                     "the high frequencies (second order, unconditionally stable)"},
+    "generalized_alpha": {"rho_inf": "The spectral radius at infinity: 1, no numerical damping (Newmark's "
+                                     "average acceleration); 0, the high frequencies damped at once (second "
+                                     "order, unconditionally stable, optimal dissipation)"},
+    "explicit_newmark": {"gamma": "Explicit (beta = 0): the acceleration solved with the mass matrix only, "
+                                  "no Newton, a time step below the stability limit (checked at the start, "
+                                  "dt omega_max <= 1/sqrt(gamma/2)); gamma = 1/2: the central difference "
+                                  "scheme (second order, no numerical damping), larger: damped, first order"},
+    "explicit_generalized_alpha": {"rho_b": "Explicit (Hulbert and Chung): the spectral radius at the "
+                                            "bifurcation, 1: no numerical damping (stable up to dt omega_max = "
+                                            "2); smaller, the high frequencies damped (a slightly smaller "
+                                            "limit, 1.77 at 0.3247); second order"},
+}
+
+
+def _default_of(model: dict, scheme_path: tuple) -> dict:
+    """The default scheme of the variable of a scheme (its path: (..., "schemes", "model/variable"))."""
+    name, _, u = scheme_path[-1].partition("/")
+    md = M.model_by_name(model, name)
+    return M.default_scheme(M.variable_order(md, u) if md else 1)
+
+
+def _step_choices(model: dict, s: dict) -> tuple:
+    """The steps a global solver may have: each model; each variable of a
+    model with several (a partial step); the partial steps it has (several
+    variables)."""
+    out = []
+    for md in model.get("models", []):
+        name = md.get("name")
+        out.append((name, name))
+        names = [v.get("name") for v in md.get("variables", [])]
+        if len(names) > 1:
+            out += [(M.make_step(name, [v]), f"{name}: {v} only") for v in names]
+    for st in s.get("steps", []):
+        if st not in [c for c, _ in out]:
+            n, v = M.parse_step(st)
+            out.append((st, f"{n}: {', '.join(v or [])}"))
+    return tuple(out)
+
+
+def _fill_schemes(model: dict, s: dict) -> None:
+    """A transient solver: a time scheme for each variable of its models
+    which may have a time derivative (implicit Euler if none yet); the
+    transient properties (rho, cp) given to the modules then in time."""
+    schemes = s.setdefault("schemes", {})
+    for name in M.step_models(s):
+        md = M.model_by_name(model, name)
+        for u in M.timeable_variables(md) if md else []:
+            schemes.setdefault(M.scheme_key(name, u), M.default_scheme(M.variable_order(md, u)))
+    _time_properties(model)
+
+
+def _time_properties(model: dict) -> None:
+    """The transient properties (rho, cp) of the modules in time, or whose
+    eigenmodes are computed, for one of the global solvers: a default value
+    where missing."""
+    for md in model.get("models", []):
+        for mod in md.get("modules", []):
+            if M.mass_needed(model, md, mod):
+                spec = M.spec_of(mod)
+                props = mod.setdefault("properties", {})
+                for p in spec.get("transient_properties", ()):
+                    if not props.get(p):
+                        props[p] = [{"selection": M.ALL, "value": M.default_property(mod, p, M.model_dim(model, md) or 2)}]
+
+
+def _choices(names) -> tuple:
+    return tuple((n, n) for n in names)
+
+
+# ------------------------------------------------------------------ values
+
+def format_number(x) -> str:
+    """Shortest exact text: 200000, 0.3, 1e8, 2.1e-5."""
+    if isinstance(x, bool) or not isinstance(x, float):
+        return str(x)
+    if x != 0 and (abs(x) >= 1e6 or abs(x) < 1e-4):
+        for digits in range(17):
+            mant, exp = f"{x:.{digits}e}".split("e")
+            if float(f"{mant}e{exp}") == x:
+                return f"{mant}e{int(exp)}"
+    if x.is_integer() and abs(x) < 1e15:
+        return str(int(x))
+    return repr(x)
+
+
+def format_value(v) -> str:
+    if isinstance(v, (int, float)):
+        return format_number(v)
+    if isinstance(v, list) and v and all(isinstance(r, list) for r in v):     # a matrix, by rows
+        return "[" + "; ".join(", ".join(format_value(c) for c in r) for r in v) + "]"
+    if isinstance(v, list):
+        return "[" + ", ".join(format_value(c) for c in v) + "]"
+    return "" if v is None else str(v)
+
+
+def parse_value(text: str):
+    """A number if the text is one, otherwise a GWFL expression (string)."""
+    text = text.strip()
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def parse_parameter(text: str):
+    """The value of a parameter: a number, a list when the text is a vector
+    of numbers, otherwise an expression (text, e.g. a matrix [1, 0; 0, 2])."""
+    text = text.strip()
+    v = parse_value(text)
+    if isinstance(v, str) and text.startswith("[") and ";" not in text:
+        import ast as _ast
+        try:
+            lit = _ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return v
+        ok = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)     # noqa: E731
+        if isinstance(lit, list) and lit and all(ok(x) for x in lit):
+            return lit
+    return v
+
+
+def vector_entry(model: dict, key: Path, value, size: int | None, integer: bool = False):
+    """The value of a vector field (a point, a direction, sizes): a list of
+    numbers or expressions, or a vector expression as a whole ("C"): typed
+    in the first component when its value is a vector of the right size, or
+    typed as a line "1, 2" / "[1, 2]"."""
+    md = owner(model, key)
+    vals, _ = M.parameter_values(model, md)
+
+    def whole(text):
+        try:
+            v = P.evaluate(text, vals)
+        except P.ParameterError:
+            return False
+        return len(P.shape_of(v)) == 1 and (size is None or P.shape_of(v)[0] == size)
+    if isinstance(value, list):
+        if value and isinstance(value[0], str) and whole(value[0]):
+            return value[0].strip()
+        return [parse_number(x, integer) if isinstance(x, str) else x for x in value]
+    if isinstance(value, str):
+        text = value.strip()
+        if whole(text) and not (text.startswith("[") and text.endswith("]")):
+            return text
+        inner = text[1:-1] if text.startswith("[") and text.endswith("]") else text
+        parts = split_vector(f"[{inner}]", size) if size else None
+        if parts is not None:
+            return [parse_number(str(x), integer) if isinstance(x, str) else x for x in parts]
+        return text
+    return value
+
+
+def parse_number(text: str, integer: bool = False):
+    """A number, or an expression of the parameters (kept as text, evaluated
+    when meshing; validation reports the errors)."""
+    text = text.strip()
+    try:
+        return int(text) if integer else float(text)
+    except ValueError:
+        pass
+    if not text:
+        raise ValueError(f"{'integer' if integer else 'number'} expected")
+    return text
+
+
+def split_vector(v, size: int) -> list | None:
+    """Components of a vector value for per-component editing, or None if the
+    value is a GWFL expression that is not written as [a, b, ...]."""
+    if isinstance(v, list):
+        return (list(v) + [0.0] * size)[:size] if len(v) != size else list(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if s.startswith("[") and s.endswith("]"):
+            parts, depth, cur = [], 0, ""
+            for ch in s[1:-1]:
+                if ch in "([":
+                    depth += 1
+                elif ch in ")]":
+                    depth -= 1
+                if ch == "," and depth == 0:
+                    parts.append(cur)
+                    cur = ""
+                else:
+                    cur += ch
+            parts.append(cur)
+            if len(parts) == size:
+                return [parse_value(p) for p in parts]
+        return None
+    return [0.0] * size
+
+
+# ------------------------------------------------------------------ tree
+
+def _shape_label(shape: dict, dim: int | None = None) -> str:
+    t = M.shape_word(shape.get("type", "?"), dim)
+    if t in M.SHAPES_BOOLEAN and not shape.get("of"):
+        return f"{t.capitalize()} (empty: add shapes)"
+    if t == "transform":
+        return "Transform (move, turn)"
+    if t == "array":
+        return f"Array ({shape.get('kind', 'linear')}, {format_value(shape.get('count', 1))} copies)"
+    return t.capitalize()
+
+
+EMPTY_SHAPE = {"type": "union", "of": []}       # a constructive geometry started from nothing
+
+
+def _capitalized(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _a(word: str) -> str:
+    return "an" if word[0] in "aeio" else "a"
+
+
+def _shape_node(shape: dict, path: Path, dim: int | None = None) -> Node:
+    node = Node(path, _shape_label(shape, dim), "shape")
+    if shape.get("type") in M.SHAPES_BOOLEAN or shape.get("type") in M.SHAPES_TRANSFORM:
+        for j, s in enumerate(shape.get("of", [])):
+            node.children.append(_shape_node(s, path + ("of", j), dim))
+    elif shape.get("type") in M.SHAPES_SWEPT and isinstance(shape.get("profile"), dict):
+        child = _shape_node(shape["profile"], path + ("profile",), 2)
+        child.label = f"Profile: {child.label}"
+        node.children.append(child)
+    elif shape.get("type") == "polygon":
+        for j, c in enumerate(shape.get("constraints") or []):
+            if isinstance(c, dict):
+                text = format_value(c.get("value")) if "value" in c else None
+                node.children.append(Node(path + ("constraints", j), _capitalized(SK.label(c, text)), "constraint"))
+    return node
+
+
+def _cond_label(c: dict) -> str:
+    return f"{str(c.get('type', '?')).replace('_', ' ').capitalize()} — {c.get('selection', '?')}"
+
+
+def _params_node(path: Path, params: list, vals: dict) -> Node:
+    """The parameters are edited together, in a table (no node each)."""
+    return Node(path, f"Parameters ({len(params)})" if params else "Parameters", "parameters")
+
+
+def _fields_node(path: Path, fields_: list) -> Node:
+    node = Node(path, "Fields", "fields")
+    for i, f in enumerate(fields_):
+        node.children.append(Node(path + (i,), f.get("name", "?"), "field"))
+    return node
+
+
+def _module_node(md_path: Path, i: int, mod: dict) -> Node:
+    spec = M.spec_of(mod)
+    path = md_path + ("modules", i)
+    label = f"PDE on {mod.get('variable', 'u')}" if mod.get("type") == "pde" else spec.get("label", str(mod.get("type")))
+    node = Node(path, label, "module")
+    # (its properties and its source: in its form)
+    if spec.get("conditions"):
+        bcs = Node(path + ("conditions",), "Conditions", "conditions")
+        for j, c in enumerate(mod.get("conditions", [])):
+            bcs.children.append(Node(path + ("conditions", j), _cond_label(c), "condition"))
+        node.children.append(bcs)
+    return node
+
+
+def _model_node(model: dict, k: int, md: dict) -> Node:
+    path = ("models", k)
+    kinds = ", ".join(M.MODULE_SPECS.get(m.get("type"), {}).get("label", "?").split(" (")[0]
+                      for m in md.get("modules", []))
+    node = Node(path, f"{md.get('name', '?')}" + (f" ({kinds})" if kinds else ""), "model")
+    vals, _ = M.parameter_values(model, md)
+    if md.get("parameters"):
+        node.children.append(_params_node(path + ("parameters",), md["parameters"], vals))
+    if md.get("fields"):
+        node.children.append(_fields_node(path + ("fields",), md["fields"]))
+    if md.get("imports"):
+        imps = Node(path + ("imports",), "Imports", "imports")
+        for i, im in enumerate(md["imports"]):
+            imps.children.append(Node(path + ("imports", i),
+                                      f"{im.get('name')} ← {im.get('model')}.{im.get('variable')}", "import"))
+        node.children.append(imps)
+    vars_ = Node(path + ("variables",), "Variables", "variables")
+    for i, v in enumerate(md.get("variables", [])):
+        fem = "P" if v.get("fem", "lagrange") == "lagrange" else "discontinuous P"
+        comp = "" if v.get("components", 1) == 1 else " (vector)"
+        vars_.children.append(Node(path + ("variables", i),
+                                   f"{v.get('name')}{comp}: {fem}{v.get('degree', 1)} on {v.get('mesh')}",
+                                   "variable"))
+    node.children.append(vars_)
+    mods = Node(path + ("modules",), "Modules", "modules")
+    for i, mod in enumerate(md.get("modules", [])):
+        mods.children.append(_module_node(path, i, mod))
+    node.children.append(mods)
+    terms = Node(path + ("terms",), "Terms", "terms")
+    for i, t in enumerate(md.get("terms", [])):
+        terms.children.append(Node(path + ("terms", i), f"{t.get('name')} — {t.get('selection', M.ALL)}", "term"))
+    node.children.append(terms)
+    conds = Node(path + ("conditions",), "Conditions", "conditions")
+    for i, c in enumerate(md.get("conditions", [])):
+        conds.children.append(Node(path + ("conditions", i), f"{_cond_label(c)} ({c.get('variable')})",
+                                   "condition"))
+    node.children.append(conds)
+    s = md.get("solver", {})
+    ls = s.get("linear_solver", "auto")
+    node.children.append(Node(path + ("solver",), f"Solver ({s.get('type', 'auto')}"
+                              + (f", {ls}" if ls != "auto" else "") + ")", "solver"))
+    outs = Node(path + ("outputs",), "Outputs", "outputs")
+    for i, q in enumerate(md.get("outputs", [])):
+        outs.children.append(Node(path + ("outputs", i), q.get("name", "?"), "quantity"))
+    node.children.append(outs)
+    plots = Node(path + ("plots",), "Plots", "plots")
+    for i, p in enumerate(md.get("plots", [])):
+        if not isinstance(p, dict):
+            continue
+        pn = Node(path + ("plots", i), f"{p.get('name', '?')} ({'in time' if p.get('type') == 'time' else 'along a line'})",
+                  "plot")
+        for j, cv in enumerate(p.get("curves", [])):
+            if isinstance(cv, dict):
+                pn.children.append(Node(path + ("plots", i, "curves", j), curve_label(p, cv), "plot_curve"))
+        plots.children.append(pn)
+    node.children.append(plots)
+    graphics = Node(path + ("graphics",), "Graphics", "graphics")
+    for i, g in enumerate(md.get("graphics", [])):
+        label = g.get("name", "?") + ("" if g.get("name") == g.get("field") else f" ({g.get('field')})")
+        graphics.children.append(Node(path + ("graphics", i), label, "graphic"))
+    node.children.append(graphics)
+    return node
+
+
+def curve_label(plot: dict, cv: dict) -> str:
+    """The label of a curve of a plot in the tree."""
+    label = cv.get("label") or str(cv.get("expr", "?"))
+    if plot.get("type") == "time":
+        at = cv.get("at", "point")
+        return label + (f" at {cv.get('point')}" if at == "point" else f" ({at} on {cv.get('selection', M.ALL)})")
+    return label
+
+
+def tree(model: dict, result_fields: dict | None = None, has_results: bool = False,
+         result_plots: dict | None = None) -> Node:
+    """result_fields: {model name: [field names]} of the results, if any;
+    result_plots: {model name: [plot names]}."""
+    root = Node((), model.get("name", "Model"), "file")
+    vals, _ = P.values(model)
+    root.children.append(_params_node(("parameters",), model.get("parameters", []), vals))
+
+    mats = Node(("materials",), "Materials", "materials")
+    for i, mat in enumerate(model.get("materials", [])):
+        props = ", ".join(mat.get("properties", {}))
+        mats.children.append(Node(("materials", i), f"{mat.get('name', '?')}" + (f" ({props})" if props else ""),
+                                  "material"))
+    root.children.append(mats)
+
+    geoms = Node(("geometries",), "Geometries", "geometries")
+    for i, g in enumerate(model.get("geometries", [])):
+        src = g.get("source", {})
+        what = src.get("type", "?") if src.get("type") != "boundary" else f"boundary of {src.get('geometry', '?')}" \
+            + (f": {src['selection']}" if src.get("selection") else "")
+        gn = Node(("geometries", i), f"{g.get('name', '?')} ({what})", "geometry")
+        if src.get("type") in ("csg", "surface") and isinstance(src.get("shape"), dict):
+            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"),
+                               2 if src["type"] == "surface" else geometry_dim(model, i))
+            if src["type"] == "surface":
+                node.label = f"Flat domain{' (u, v)' if 'parametric' in src else ''}: {node.label}"
+            gn.children.append(node)
+        elif src.get("type") in ("curve", "swept_surface") and isinstance(src.get("shape"), dict):
+            node = _shape_node(src["shape"], ("geometries", i, "source", "shape"), 2)    # drawn as a polygon
+            n = len(src["shape"].get("points") or [])
+            where = " in its plane" if src.get("dim") == 3 else ""
+            if src["type"] == "swept_surface":
+                where = " in the (r, z) plane" if src.get("sweep") == "revolution" else " in the (x, y) plane"
+            node.label = f"{'Curve' if src['type'] == 'curve' else 'Swept curve'}: " \
+                f"{'open' if src['shape'].get('open') else 'closed'} polygon" \
+                + (f" ({n} vertices)" if n else " (to draw)") + where
+            gn.children.append(node)
+        sels = Node(("geometries", i, "selections"), "Selections", "selections")
+        for name, s in M.selection_table(model, g).items():
+            kind = "selection" if not s["builtin"] else "builtin_selection"
+            label = name if not s["builtin"] else f"{name} (from {src.get('geometry')})" if s.get("inherited") \
+                else f"{name} (built-in)"
+            sels.children.append(Node(("geometries", i, "selections", name), label, kind))
+        gn.children.append(sels)
+        geoms.children.append(gn)
+    root.children.append(geoms)
+
+    meshes = Node(("meshes",), "Meshes", "meshes")
+    for i, m in enumerate(model.get("meshes", [])):
+        users = [md.get("name") for md in model.get("models", [])
+                 if any(v.get("mesh") == m.get("name") for v in md.get("variables", []))]
+        label = f"{m.get('name', '?')} ({m.get('mesher', '?')})" + (f" — {', '.join(users)}" if users else "")
+        node = Node(("meshes", i), label, "mesh")
+        for j, rule in enumerate(m.get("sizes") or []):
+            if isinstance(rule, dict):
+                node.children.append(Node(("meshes", i, "sizes", j), size_label(rule), "mesh_size"))
+        for j, rule in enumerate(m.get("refine") or []):
+            if isinstance(rule, dict):
+                node.children.append(Node(("meshes", i, "refine", j), refine_label(rule), "mesh_refine"))
+        meshes.children.append(node)
+    root.children.append(meshes)
+
+    root.children.append(_fields_node(("fields",), model.get("fields", [])))
+
+    models = Node(("models",), "Models", "models")
+    for k, md in enumerate(model.get("models", [])):
+        models.children.append(_model_node(model, k, md))
+    root.children.append(models)
+
+    solvers = Node(("solvers",), "Solvers", "solvers")
+    for i, s in enumerate(model.get("solvers", [])):
+        solvers.children.append(Node(("solvers", i), f"{s.get('name')} ({s.get('type')}: "
+                                     f"{', '.join(s.get('steps', []))})", "global_solver"))
+    root.children.append(solvers)
+
+    if has_results or result_fields:
+        res = Node((RESULTS,), "Results", "results")
+        for mname, names in (result_fields or {}).items():
+            mn = Node((RESULTS, mname), mname, "result_model")
+            for name in names:
+                mn.children.append(Node((RESULTS, mname, name), name, "result_field"))
+            for name in (result_plots or {}).get(mname, []):
+                mn.children.append(Node((RESULTS, mname, "plots", name), f"{name} (plot)", "result_plot"))
+            res.children.append(mn)
+        root.children.append(res)
+    return root
+
+
+def find_node(root: Node, path: Path) -> Node | None:
+    return next((n for n in root.walk() if n.path == path), None)
+
+
+# ------------------------------------------------------------------ errors
+
+def error_path(message: str) -> tuple[Path, str]:
+    """('materials', 0, 'properties', 'E'), 'missing ...' from a validation message."""
+    head, sep, text = message.partition(": ")
+    if not sep or " " in head:
+        return (), message
+    tokens = []
+    pos = 0
+    for m in _TOKEN.finditer(head):
+        if m.start() != pos and head[pos:m.start()] != ".":
+            return (), message
+        tokens.append(m.group(1) if m.group(1) is not None else int(m.group(2)))
+        pos = m.end()
+    return tuple(tokens), text
+
+
+def errors_by_node(root: Node, errors: list[str]) -> dict[Path, list[str]]:
+    """Each message goes to the deepest node whose path prefixes the error path."""
+    paths = {n.path for n in root.walk()}
+    out: dict[Path, list[str]] = {}
+    for e in errors:
+        p, _ = error_path(e)
+        while p and p not in paths:
+            p = p[:-1]
+        out.setdefault(p, []).append(e)
+    return out
+
+
+def errors_at(errors: list[str], key: Path) -> list[str]:
+    """Messages about a field (its path, or a sub-path such as a vector component)."""
+    out = []
+    for e in errors:
+        p, text = error_path(e)
+        if p[:len(key)] == key and p:
+            out.append(text)
+    return out
+
+
+# ------------------------------------------------------------------ fields
+
+VECTOR_TIP = "a vector parameter (or expression) in the first box gives all the components"
+
+
+def _vec_field(key, label, kind, dim, help=""):
+    if kind in ("numbers", "ints"):
+        help = f"{help}\n{VECTOR_TIP}" if help else VECTOR_TIP
+        return Field(key, label, kind, size=dim, help=help, op="numbers")
+    return Field(key, label, kind, size=dim, help=help)
+
+
+def _transform_fields(path, shape, dim) -> list[Field]:
+    """The fields of a transform or an array (transforms.py)."""
+    t = shape.get("type")
+    axis = [_vec_field(path + ("axis",), "Axis of rotation", "numbers", 3,
+                       help="The rotation is about the line through the center along this axis")] \
+        if dim == 3 else []
+    if t == "transform":
+        return [Field(path, "", "info", help="The shape below, turned about the center, then translated. "
+                                             "Its sides and faces keep their selections."),
+                _vec_field(path + ("translate",), "Translation", "numbers", dim),
+                Field(path + ("angle",), "Rotation (degrees)", "number",
+                      help="Counterclockwise" + (" about the axis (right-hand rule)" if dim == 3 else "")),
+                _vec_field(path + ("center",), "Center of rotation", "numbers", dim)] + axis
+    out = [Field(path, "", "info", help="The union of copies of the shape below; a selection of a side or "
+                                        "a face of the shape holds it on every copy."),
+           Field(path + ("kind",), "Kind", "choice",
+                 (("linear", "linear: translated by a step"), ("circular", "circular: turned by an angle")),
+                 op="array_kind"),
+           Field(path + ("count",), "Number of copies", "number", help="The shape itself included")]
+    if shape.get("kind", "linear") == "linear":
+        out.append(_vec_field(path + ("step",), "Step", "numbers", dim, help="From a copy to the next one"))
+    else:
+        out += [_vec_field(path + ("center",), "Center", "numbers", dim),
+                Field(path + ("angle",), "Angle between copies (degrees)", "number",
+                      help="360 / number of copies for a full turn")] + axis
+    return out
+
+
+def _plane_of(points3) -> tuple[list, list, list]:
+    """(origin, axes, local 2D points) of points of 3D that are about in a
+    plane (that of their first three points not aligned, else z = 0)."""
+    P = np.asarray(points3, float).reshape(-1, 3)
+    o, axes = [0.0, 0.0, 0.0], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    for k in range(2, len(P)):
+        nrm = np.cross(P[1] - P[0], P[k] - P[0])
+        if np.linalg.norm(nrm) > 1e-9 * max(float(np.ptp(P, axis=0).max()), 1e-300) ** 2:
+            o, axes = work_plane(P[0], nrm)
+            break
+    e1, e2 = np.asarray(axes[0], float), np.asarray(axes[1], float)
+    Q = [[float(f"{(p - o) @ e1:.10g}"), float(f"{(p - o) @ e2:.10g}")] for p in P]
+    return list(o), axes, Q
+
+
+def _sweep_fields(base: Path, src: dict) -> list:
+    out = [Field(base + ("sweep",), "Sweep", "choice",
+                 (("extrusion", "extrusion along z (curve in the (x, y) plane)"),
+                  ("revolution", "revolution about z (curve in the (r, z) plane)")))]
+    if src.get("sweep") == "revolution":
+        out.append(_vec_field(base + ("angle",), "From angle to angle (degrees)", "numbers", 2))
+    else:
+        out.append(_vec_field(base + ("z",), "From z to z", "numbers", 2))
+    return out
+
+
+SWEEP_KEYS = ("sweep", "z", "angle")
+
+
+def curve_as_polygon(model: dict, gi: int) -> dict:
+    """The source of the curve gi given by points and arcs, as a polygon:
+    its points the vertices, each arc a curved side through its point (a
+    spline); in 3D, in the plane of its first points (the height: 0). A
+    parametric curve: through points along it."""
+    src = model["geometries"][gi]["source"]
+    if src.get("type") == "swept_surface":           # its curve, in its plane; the sweep kept
+        sweep = {k: src[k] for k in SWEEP_KEYS if k in src}
+        flat = curve_as_polygon({"parameters": model.get("parameters", []),
+                                 "geometries": [{"name": "g", "source": dict(src, type="curve", dim=2)}]}, 0)
+        return dict({"type": "swept_surface", "shape": flat["shape"]}, **sweep)
+    if isinstance(src.get("parametric"), dict):
+        src = curve_as_points(model, gi)
+    dim = 3 if src.get("dim") == 3 else 2
+    pts = [list(p) for p in src.get("points", [])]
+    through = [list(t) if t is not None else None for t in src.get("through") or []]
+    out = {"type": "curve", "dim": dim}
+    if dim == 3:
+        o, axes, Q = _plane_of(pts + [t for t in through if t is not None])
+        pts, through = Q[:len(pts)], [Q[len(pts) + sum(1 for x in through[:i] if x is not None)]
+                                      if t is not None else None for i, t in enumerate(through)]
+        out.update(origin=o, axes=axes, height=0.0)
+    poly = {"type": "polygon", "points": pts, "open": not src.get("closed")}
+    sp = [{"side": i + 1, "points": [list(t)]} for i, t in enumerate(through) if t is not None]
+    if sp:
+        poly["splines"] = sp
+    out["shape"] = poly
+    return out
+
+
+def curve_as_parametric(model: dict, gi: int) -> dict:
+    """The curve gi given by parametric equations: a circle of the size of
+    the curve, about its center (to edit); an arc of three quarters of it
+    for an open curve (its ends stay)."""
+    from . import manifold
+    r = P.resolved(model)["geometries"][gi]["source"]
+    vals, _ = P.values(model)
+    closed = manifold.is_closed(r, vals)
+    dim = 3 if r.get("dim") == 3 else 2
+    try:
+        X = manifold.chain_polyline(r, values=vals)
+        c = (X.min(axis=0) + X.max(axis=0)) / 2
+        rad = float(f"{max(float(np.ptp(X, axis=0).max()) / 2, 1e-12):.3g}")
+    except (KeyError, TypeError, ValueError, IndexError, np.linalg.LinAlgError):
+        c, rad = np.zeros(dim), 1.0
+    f = lambda v: float(f"{v:.6g}")                       # noqa: E731
+    par = {"x": f"{f(c[0])} + {rad}*cos(t)", "y": f"{f(c[1])} + {rad}*sin(t)"}
+    if dim == 3:
+        par["z"] = f"{f(c[2])} + 0.1*t"
+    return {"type": "curve", "dim": dim, "parametric": par, "t": [0.0, "2*pi" if closed else "1.5*pi"]}
+
+
+def curve_as_points(model: dict, gi: int) -> dict:
+    """The source of the curve gi drawn as a polygon, given by points and
+    arcs: its sides and fillets exactly, its curved sides by points along
+    them (segments); in 3D, placed in its plane (its height left out). A
+    parametric curve: points along it."""
+    from . import manifold
+    src = P.resolved(model)["geometries"][gi]["source"]
+    vals, _ = P.values(model)
+    if src.get("type") == "swept_surface":           # its curve by points; the sweep kept
+        orig = model["geometries"][gi]["source"]
+        flat = curve_as_points({"parameters": model.get("parameters", []),
+                                "geometries": [{"name": "g", "source": dict(orig, type="curve", dim=2)}]}, 0)
+        flat.pop("dim")
+        return dict(flat, type="swept_surface", **{k: orig[k] for k in SWEEP_KEYS if k in orig})
+    if manifold.is_parametric(src):
+        closed = manifold.is_closed(src, vals)
+        X = manifold.chain_polyline(src, values=vals)[::10]
+        X = X[:-1] if closed else X
+        pts = [[float(f"{x:.10g}") for x in p] for p in X]
+        return {"type": "curve", "dim": int(src.get("dim", 3)), "points": pts,
+                "through": [None] * (len(pts) - (0 if closed else 1)), "closed": closed}
+    if manifold.is_placed(src):
+        flat = curve_as_points({"parameters": model.get("parameters", []),
+                                "geometries": [{"name": "g", "source": dict(src, dim=2)}]}, 0)
+        o, e1, e2, _ = manifold.frame(src)
+        put = lambda q: [float(f"{x:.10g}") for x in o + q[0] * e1 + q[1] * e2]      # noqa: E731
+        flat["points"] = [put(q) for q in flat["points"]]
+        flat["through"] = [put(q) if q is not None else None for q in flat["through"]]
+        flat["dim"] = 3
+        return flat
+    pts, through = [], []
+    for piece in manifold.chain_pieces(src):
+        r = lambda q: [float(f"{x:.10g}") for x in q]        # noqa: E731
+        if piece[0] == "bezier":
+            C = np.asarray(piece[1:], float)
+            for u in np.linspace(0.0, 1.0, 9)[:-1]:
+                pts.append(r((1 - u) ** 3 * C[0] + 3 * u * (1 - u) ** 2 * C[1] + 3 * u ** 2 * (1 - u) * C[2]
+                             + u ** 3 * C[3]))
+                through.append(None)
+            continue
+        pts.append(r(piece[1]))
+        through.append(r(piece[2]) if piece[0] == "arc" else None)
+    closed = manifold.is_closed(src)
+    if not closed and manifold.chain_pieces(src):
+        pts.append([float(f"{x:.10g}") for x in manifold.chain_pieces(src)[-1][-1]])
+    return {"type": "curve", "dim": 2, "points": pts, "through": through if any(through) else
+            [None] * (len(pts) - (0 if closed else 1)), "closed": closed}
+
+
+def is_curve_polygon(model: dict, path: Path) -> bool:
+    """The node is the polygon of a 2D curve (its only shape)."""
+    return path[:1] == ("geometries",) and len(path) == 4 and path[2:4] == ("source", "shape") \
+        and get_at(model, path[:3], {}).get("type") in ("curve", "swept_surface")
+
+
+def _shape_fields(model, path, dim) -> list[Field]:
+    shape = get_at(model, path, {})
+    t = shape.get("type")
+    if t in M.SHAPES_TRANSFORM:
+        return _transform_fields(path, shape, dim)
+    if is_curve_polygon(model, path):
+        out = [Field(path + ("open",), "Ends", "choice",
+                     ((True, "open: from the first vertex to the last one"),
+                      (False, "closed: the last vertex joined to the first one"))),
+               Field(path + ("points",), "Vertices", "vertex_table",
+                     help="Vertices in order; values or expressions. In the view, drag a vertex or the middle "
+                          "of a side (adds a vertex); right click on them: fillets, curved sides, an end "
+                          "extended.")]
+        if shape.get("constraints"):
+            out.append(Field(path, "", "info", help="With constraints (below in the tree): the vertices are "
+                                                    "moved as little as possible for them to hold; a "
+                                                    "coordinate given by an expression stays."))
+        return out
+    types = primitives_of_dim(dim) + M.SHAPES_BOOLEAN
+    out = [Field(path + ("type",), "Type", "choice", tuple((x, M.shape_word(x, dim)) for x in types),
+                 op="shape_type")]
+    if path[-1] == "profile":
+        out.append(Field(path, "", "info", help="2D profile: (x, y) for an extrusion, (r, z) for a "
+                                                "revolution (the part with r < 0 is ignored)."))
+    if t == "rectangle":
+        out += [_vec_field(path + ("min",), "Lower corner", "numbers", dim),
+                _vec_field(path + ("max",), "Upper corner", "numbers", dim)]
+    elif t == "ball":
+        out += [_vec_field(path + ("center",), "Center", "numbers", dim),
+                Field(path + ("radius",), "Radius", "number")]
+    elif t == "ellipse":
+        out += [_vec_field(path + ("center",), "Center", "numbers", 2),
+                _vec_field(path + ("radii",), "Semi-axes", "numbers", 2),
+                Field(path + ("angle",), "Angle (degrees)", "number",
+                      help="Angle of the first semi-axis with the x axis")]
+    elif t == "polygon":
+        out.append(Field(path + ("points",), "Vertices", "vertex_table",
+                         help="Vertices in order (either direction); values or expressions. In the "
+                              "view, drag a vertex, the middle of a side (adds a vertex) or the center."))
+        if shape.get("constraints"):
+            out.append(Field(path, "", "info", help="With constraints (below in the tree): the vertices are "
+                                                    "moved as little as possible for them to hold; a "
+                                                    "coordinate given by an expression stays."))
+    elif t == "ellipsoid":
+        out += [_vec_field(path + ("center",), "Center", "numbers", 3),
+                _vec_field(path + ("radii",), "Semi-axes", "numbers", 3,
+                           help="along x, y and z (to turn it: Transform)")]
+    elif t == "cylinder":
+        out += [_vec_field(path + ("origin",), "Origin", "numbers", dim),
+                _vec_field(path + ("axis",), "Axis", "numbers", dim),
+                Field(path + ("length",), "Length", "number"),
+                Field(path + ("radius",), "Radius", "number")]
+    elif t in M.SHAPES_SWEPT:
+        shape = get_at(model, path, {})
+        placed = "origin" in shape or "axes" in shape
+        if t == "extrusion":
+            out.append(_vec_field(path + ("z",), "From z to z", "numbers", 2,
+                                  help="along the normal of the work plane" if placed else ""))
+        out.append(Field(path + ("placement",), "Work plane", "choice",
+                         (("xy", "the (x, y) plane at the origin"), ("custom", "an origin and two axes")),
+                         op="placement",
+                         help="The plane of the profile: its x and y axes (r and z for a revolution); "
+                              "z is their cross product"))
+        if placed:
+            out += [_vec_field(path + ("origin",), "Origin", "numbers", 3),
+                    _vec_field(path + ("axes", 0), "Axis x", "numbers", 3),
+                    _vec_field(path + ("axes", 1), "Axis y", "numbers", 3,
+                               help="made orthogonal to the first axis")]
+        what = ("is extruded along the normal of its plane" if t == "extrusion"
+                else "turns about the z axis of its plane (the profile is in the (r, z) plane)")
+        out.append(Field(path, "", "info", help=f"The profile (2D shape below) {what}."))
+    else:
+        out.append(Field(path, "", "info", help="The first shape is combined with the following ones."))
+    return out
+
+
+def _criteria_fields(model, gi, name, dim) -> list[Field]:
+    base = ("geometries", gi, "selections", name)
+    sel = get_at(model, base, {})
+    kind = sel.get("kind", M.BOUNDARY)
+    crit = sel.get("criteria", {})
+    ct = crit.get("type")
+    c = base + ("criteria",)
+    from . import geometry2d as G
+    flat = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+    planar = flat is not None and not G.is_curve(flat)          # (a curve: no edges, no regions)
+    from . import geometry3d as G3
+    solid = G3.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is not None
+    possible = [t for t, kinds in M.CRITERIA.items() if kind in kinds
+                and (t not in ("edges", "regions") or planar) and (t != "faces" or solid)]
+    out = [Field(c + ("type",), "Criterion", "choice", tuple((t, t) for t in possible),
+                 op="criteria_type")]
+    if ct == "plane":
+        out += [_vec_field(c + ("point",), "Point", "numbers", dim),
+                _vec_field(c + ("normal",), "Normal", "numbers", dim)]
+    elif ct == "normal":
+        out += [_vec_field(c + ("direction",), "Direction", "numbers", dim),
+                Field(c + ("angle",), "Tolerance (degrees)", "number")]
+    elif ct == "in_box":
+        out += [_vec_field(c + ("min",), "Lower corner", "numbers", dim),
+                _vec_field(c + ("max",), "Upper corner", "numbers", dim)]
+    elif ct == "in_ball":
+        out += [_vec_field(c + ("center",), "Center", "numbers", dim),
+                Field(c + ("radius",), "Radius", "number")]
+    elif ct == "physical":
+        out.append(Field(c + ("tag",), "Physical group number", "int"))
+    elif ct == "edges":
+        shape = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+        labels = [G.side_label(shape, r) for r in crit.get("edges", [])] if shape else []
+        out.append(Field(c + ("edges",), "", "info",
+                         help=("Edges: " + ", ".join(labels) if labels else "No edge yet.")
+                         + "\nClick edges in the view to add or remove them."))
+    elif ct == "faces":
+        shape = G3.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+        labels = []
+        for r in crit.get("faces", []):
+            try:
+                labels.append(G3.face_label(shape, r))
+            except (KeyError, TypeError, ValueError, AttributeError):
+                labels.append("?")
+        out.append(Field(c + ("faces",), "", "info",
+                         help=("Faces: " + ", ".join(labels) if labels else "No face yet.")
+                         + "\nClick faces in the view to add or remove them."))
+    elif ct == "regions":
+        shape = G.shape_of(P.resolved(model)["geometries"][gi].get("source", {}))
+        labels = [G.region_label(shape, r) for r in crit.get("regions", [])] if shape else []
+        out.append(Field(c + ("regions",), "", "info",
+                         help=("Regions (in the shapes): " + "; ".join(labels) if labels else "No region yet.")
+                         + "\nClick in the view to add or remove the region under the mouse."))
+    elif ct == "union":
+        geom = model["geometries"][gi]
+        table = M.selection_table(model, geom)
+        names = [n for n, s in table.items() if s["kind"] == kind and n != name
+                 and s.get("criteria", {}).get("type") != "union"]
+        out.append(Field(c + ("of",), "Selections", "names", tuple((n, n) for n in names)))
+    return out
+
+
+def _param_fields(model, path) -> list[Field]:
+    md = owner(model, path)
+    vals, _ = M.parameter_values(model, md)
+    name = get_at(model, path + ("name",))
+    out = [Field(path + ("name",), "Name", "ident", op="rename_parameter"),
+           Field(path + ("value",), "Value", "value", op="parameter_value",
+                 help="number, vector [1, 0, 0], matrix [1, 0; 0, 2] (by rows), or expression: "
+                      "+ - * /, pi, components C(1), K(1, 2) (from 1), dot product u.v, "
+                      + ", ".join(sorted(set(P.FUNCTIONS) | set(P.TENSOR_FUNCTIONS)))),
+           Field(path + ("description",), "Description", "text")]
+    if isinstance(get_at(model, path + ("value",)), str) and name in vals:
+        out.append(Field(path, "", "info", help=f"= {P.format_value(vals[name])}"))
+    return out
+
+
+def material_rows(model: dict) -> tuple[list[str], list[dict]]:
+    """The table of materials: the properties asked by the modules (columns),
+    and per material its name, origin and a field per cell."""
+    from . import library
+    props = library.used_properties(model)
+    rows = []
+    for i, mat in enumerate(model.get("materials", [])):
+        values = mat.get("properties", {})
+        rows.append({"name": mat.get("name"), "from": mat.get("from", ""),
+                     "values": [values.get(p) for p in props],
+                     "fields": [Field(("materials", i, "properties", p), p, "value") for p in props]})
+    return props, rows
+
+
+def parameter_rows(model: dict, path: Path) -> list[dict]:
+    """The rows of a table of parameters (path: ("parameters",) or
+    ("models", k, "parameters")): name, value as written, its number (None
+    if it cannot be evaluated), description, and the keys of the cells."""
+    md = owner(model, path)
+    vals, _ = M.parameter_values(model, md)
+    rows = []
+    for i, p in enumerate(get_at(model, path, [])):
+        base = path + (i,)
+        name = p.get("name")
+        rows.append({"name": name, "value": p.get("value"), "number": vals.get(name),
+                     "description": p.get("description", ""),
+                     "fields": (Field(base + ("name",), "Name", "ident", op="rename_parameter"),
+                                Field(base + ("value",), "Value", "value", op="parameter_value"),
+                                Field(base + ("description",), "Description", "text"))})
+    return rows
+
+
+def _field_fields(model, path) -> list[Field]:
+    out = [Field(path + ("name",), "Name", "ident", op="rename_field"),
+           Field(path + ("description",), "Description", "text")]
+    if path[:1] == ("fields",):
+        out.append(Field(path + ("geometry",), "Geometry", "choice",
+                         _choices(g.get("name") for g in model.get("geometries", []))))
+    geom = item_geometry(model, path)
+    domains = _choices(selections_of_kind(model, M.DOMAIN, geom))
+    out.append(Field(path + ("kind",), "Kind", "choice",
+                     ((M.SCALAR, "scalar"), (M.VECTOR, "vector"), (M.MATRIX, "matrix (dim x dim)")),
+                     op="field_kind"))
+    kind = M.field_kind(get_at(model, path, {}))
+    dim = (M.geometry_dim(model, geom) if geom else None) or 2
+    for j, _ in enumerate(get_at(model, path + ("values",), [])):
+        out += [Field(path + ("values", j, "selection"), f"Domain {j + 1}", "choice", domains),
+                Field(path + ("values", j, "value"), f"Value {j + 1}", "vector" if kind == M.VECTOR else "value",
+                      size=dim if kind == M.VECTOR else None, remove=path + ("values", j),
+                      help=MATRIX_HELP if kind == M.MATRIX else "")]
+    return out
+
+
+MATRIX_HELP = "a matrix [a, b; c, d] (by rows, as in GWFL), a matrix parameter, or a number (times the identity)"
+
+
+def _number(x):
+    """x as a float, or None (an expression)."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rows(value) -> list[list[str]] | None:
+    """The entries of a matrix value ([a, b; c, d] or rows), or None."""
+    if isinstance(value, list) and value and all(isinstance(r, list) for r in value):
+        return [[str(x).strip() for x in r] for r in value]
+    if isinstance(value, str) and value.strip().startswith("[") and value.strip().endswith("]"):
+        inner = value.strip()[1:-1]
+        if "[" in inner:
+            return None
+        return [[x.strip() for x in r.split(",")] for r in inner.split(";")]
+    return None
+
+
+_OPTION_HELP = {"joule_heating": "the Joule heat J.E = sigma_e |grad V|^2, a source of the heat conduction module of "
+                                  "the model (sigma_e may depend on its temperature: a coupling both ways)"}
+_PDE_OPTIONS = {"form": "Form", "unknown": "Scalar or vector", "time_order": "Order in time", "diffusion": "Diffusion",
+                "stabilization": "Stabilization"}
+_PDE_OPTION_HELP = {
+    "form": "coefficients: m d2u/dt2 + d du/dt - div(K grad u + b u - j) + v.grad u + r u = f; "
+            "general: m d2u/dt2 + d du/dt - div F = f, F (the flux) any expression of u "
+            "and its gradient (Grad_u)",
+    "unknown": "scalar, or a vector of the dimension of the space (its variable changed accordingly)",
+    "time_order": "the time derivative of the equation; whether it is solved in time, and its scheme, "
+                  "are chosen in the global solver (stationary otherwise: the derivatives are zero)",
+    "diffusion": "anisotropic: K is a dim x dim matrix",
+    "stabilization": "SUPG: a streamline upwind term for a dominant convection (v large compared "
+                     "with K/h): tau (v.grad w) times the residual of the equation, w the test function",
+}
+
+
+def pde_option(model: dict, md: dict, mod: dict, opt: str, value, dim: int) -> None:
+    """An option of a PDE module changed: its properties follow (those of the
+    new spec kept, converted to their new kind: a number to a matrix and
+    back, otherwise their default; the others removed); the unknown scalar
+    or vector: its variable (if no other module uses it), its sources and
+    conditions too."""
+    old = M.spec_of(mod)
+    mod[opt] = value
+    new = M.spec_of(mod)
+    props = mod.setdefault("properties", {})
+    for p in list(props):
+        if p not in new["properties"]:
+            del props[p]
+    if opt == "time_order":                  # (d: the mass coefficient at order 1, a damping at order 2)
+        props.pop("d", None)
+    for p in new["properties"]:
+        was, kind = old.get("property_kinds", {}).get(p), new["property_kinds"][p]
+        if p not in props or not props[p]:
+            props[p] = [{"selection": M.ALL, "value": M.default_property(mod, p, dim)}]
+        elif was != kind:
+            for pc in props[p]:
+                if "value" not in pc:
+                    continue
+                if (was, kind) == (M.SCALAR, M.MATRIX):
+                    if not isinstance(pc["value"], (int, float)):       # (a number: times the identity)
+                        pc["value"] = to_matrix(pc["value"], dim)
+                elif (was, kind) == (M.MATRIX, M.SCALAR) and _rows(to_scalar(pc["value"])) is None:
+                    pc["value"] = to_scalar(pc["value"])     # (a multiple of the identity)
+                else:
+                    pc["value"] = M.default_property(mod, p, dim) if kind != M.MATRIX else 0.0
+    if opt == "unknown":
+        vector = value == "vector"
+        var = M.by_name(md.get("variables", []), mod.get("variable"))
+        users = [m for m, _, name in M.module_variables(md) if name == mod.get("variable")]
+        if var is not None and users == [mod]:
+            if vector:
+                var["components"] = "dim"
+            else:
+                var.pop("components", None)
+            var.pop("initial", None)
+            var.pop("initial_velocity", None)
+        kind = new["source"]
+        for src in mod.get("sources", []):
+            src["value"] = _zero(kind, dim)
+        for bc in mod.get("conditions", []):
+            for k2, kd in new["conditions"].get(bc.get("type"), {}).items():
+                bc[k2] = 1.0 if k2 == "q" else _zero(kd, dim)
+
+
+def to_matrix(value, dim: int):
+    """A scalar value as the matrix it stands for (times the identity):
+    [v, 0; 0, v]; a matrix or an expression unchanged."""
+    if _rows(value) is not None or (isinstance(value, str) and _number(value) is None):
+        return value
+    v = value if isinstance(value, (int, float)) else _number(value)
+    text = f"{v:g}" if isinstance(v, float) and v == int(v) and abs(v) < 1e15 else repr(v)
+    return "[" + "; ".join(", ".join(text if i == j else "0" for j in range(dim)) for i in range(dim)) + "]"
+
+
+def to_scalar(value):
+    """A matrix value that is a multiple of the identity as that number (or
+    expression); anything else unchanged."""
+    rows = _rows(value)
+    if rows is None or any(len(r) != len(rows) for r in rows):
+        return value
+    diag = {rows[i][i] for i in range(len(rows))}
+    off = [rows[i][j] for i in range(len(rows)) for j in range(len(rows)) if i != j]
+    if len(diag) != 1 or any(_number(x) != 0.0 for x in off):
+        return value
+    d = diag.pop()
+    return _number(d) if _number(d) is not None else d
+
+
+def _value_field(key, label, kind, dim, op=None) -> Field:
+    if kind == M.VECTOR:
+        return Field(key, label, "vector", size=dim, op=op)
+    return Field(key, label, "value", op=op)
+
+
+_LABELS = {"value": "Value", "h": "Exchange coefficient h", "q": "Coefficient q", "T_ext": "External temperature",
+           "T_ref": "Reference temperature", "charge": "Total charge Q (C)",
+           "current": "Total current I (A, entering)"}
+
+
+def _model_fields(model, path) -> list[Field]:
+    """Fields of the nodes inside a model (path starts with ("models", k))."""
+    k, rest = path[1], path[2:]
+    md = model["models"][k]
+    base = ("models", k)
+    n = len(rest)
+    geom = M.model_geometry(model, md)
+    dim = item_dim(model, path)
+    domains = _choices(selections_of_kind(model, M.DOMAIN, geom))
+    boundaries = _choices(selections_of_kind(model, M.BOUNDARY, geom))
+    anywhere = _choices(selections_of_kind(model, None, geom))
+    if n == 0:
+        return [Field(base + ("name",), "Name", "ident", op="rename_model"),
+                Field(base + ("description",), "Description", "text"),
+                Field(base + ("vtu",), "VTU file", "text", help="file of the exported fields")]
+    head = rest[0]
+    if head == "parameters":
+        if n == 1:
+            return [Field(path, "", "info", help="Parameters of this model only (a parameter may "
+                          "use the global ones and the ones listed before it)."),
+                    Field(path, "", "parameter_table")]
+        return _param_fields(model, path)
+    if head == "fields":
+        if n == 1:
+            return [Field(path, "", "info", help="Fields of this model only.")]
+        return _field_fields(model, path)
+    if head == "imports":
+        if n == 1:
+            return [Field(path, "", "info", help="Variables of other models, used here as data "
+                          "(the other model is solved first).")]
+        im = get_at(model, path, {})
+        src = M.model_by_name(model, im.get("model")) or {}
+        return [Field(path + ("name",), "Name here", "ident"),
+                Field(path + ("model",), "From the model", "choice",
+                      _choices(m.get("name") for m in model.get("models", []) if m is not md)),
+                Field(path + ("variable",), "Variable", "choice",
+                      _choices(v.get("name") for v in src.get("variables", [])))]
+    if head == "variables":
+        if n == 1:
+            return [Field(path, "", "info", help="The unknowns, with their finite element method.")]
+        v = get_at(model, path, {})
+        lo = 0 if v.get("fem") == "lagrange_discontinuous" else 1
+        meshes = [m.get("name") for m in model.get("meshes", [])] + [m.get("name") for m in md.get("meshes", [])]
+        return [Field(path + ("name",), "Name", "ident", op="rename_variable"),
+                Field(path + ("mesh",), "Mesh", "choice", _choices(meshes)),
+                Field(path + ("fem",), "Finite element", "choice",
+                      (("lagrange", "Lagrange (continuous)"), ("lagrange_discontinuous", "discontinuous Lagrange"))),
+                Field(path + ("degree",), "Degree", "choice", tuple((d, str(d)) for d in range(lo, 7))),
+                Field(path + ("components",), "Components", "choice", ((1, "scalar"), ("dim", "vector"))),
+                _value_field(path + ("initial",), "Initial value" + ("" if M.is_transient(model, md) else
+                                                                     " (in time)"), M.variable_kind(v),
+                             M.model_dim(model, md) or 2)] + (
+            [_value_field(path + ("initial_velocity",), "Initial velocity", M.variable_kind(v),
+                          M.model_dim(model, md) or 2)]
+            if M.variable_order(md, v.get("name")) == 2 and M.is_transient(model, md) else [])
+    if head == "modules":
+        if n == 1:
+            return [Field(path, "", "info", help="Predefined physics, with their properties per domain, "
+                          "sources and conditions.")]
+        mod = model["models"][k]["modules"][rest[1]]
+        spec = M.spec_of(mod)
+        mpath = base + ("modules", rest[1])
+        if n == 2:
+            # sections: the equation (with the options which change it), the variables, the
+            # parameters (properties per domain, values, source), the GWFL terms (closed)
+            from . import equations
+            out = [Field(mpath, "Equation", "section"),
+                   Field(mpath, "Equation", "rich", help=equations.equation(model, md, mod))]
+            labels = spec.get("option_labels", {})
+            for opt, values in spec.get("options", {}).items():
+                if opt == "plane" and dim != 2:
+                    continue
+                if mod.get("type") == "pde":            # (its properties follow its options)
+                    out.append(Field(mpath + (opt,), _PDE_OPTIONS.get(opt, opt.capitalize()), "choice",
+                                     tuple((x, labels.get(opt, {}).get(x, x)) for x in values),
+                                     op="pde_option", help=_PDE_OPTION_HELP.get(opt, "")))
+                    continue
+                tensor = [p for p, (o, _) in spec.get("tensor_properties", {}).items() if o == opt]
+                label = {"plane": "2D model", "joule_heating": "Joule heating"}.get(opt, opt.capitalize())
+                out.append(Field(mpath + (opt,), label, "choice",
+                                 tuple((x, f"plane {x}" if opt == "plane" else labels.get(opt, {}).get(x, x))
+                                       for x in values),
+                                 op="tensor_option" if tensor else None,
+                                 help=f"anisotropic: {tensor[0]} is a dim x dim matrix (its values turned into "
+                                      "matrices)" if tensor else _OPTION_HELP.get(opt, "")))
+            roles = spec.get("variables", {})
+            out.append(Field(mpath, "Variables" if len(roles) > 1 else "Variable", "section"))
+            kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
+            for role, v in roles.items():
+                names = [x for x, kd in kinds.items() if kd == v["kind"]]
+                if v.get("import"):
+                    names += [im.get("name") for im in md.get("imports", [])]
+                out.append(Field(mpath + (role,), v["label"].capitalize(), "choice", _choices(names)))
+            out.append(Field(mpath, "Parameters", "section"))
+            out += _property_fields(model, mod, spec, mpath, domains, dim)
+            for key, kind in spec.get("values", {}).items():
+                out.append(_value_field(mpath + (key,), _LABELS.get(key, key), kind, dim))
+            out += _source_fields(mod, spec, mpath, domains, dim)
+            terms = equations.gwfl_terms(model, k, rest[1])
+            if terms:
+                out += [Field(mpath, "GWFL terms", "section", closed=True),
+                        Field(mpath, "GWFL terms of the script", "code", help="\n".join(terms))]
+            return out
+        if rest[2] == "properties" and n == 5:
+            p, j = rest[3], rest[4]
+            pc = get_at(model, path, {})
+            mats = [m.get("name") for m in model.get("materials", []) if p in (m.get("properties") or {})]
+            out = [Field(path + ("selection",), "Domain", "choice", domains),
+                   Field(path, "Given by", "choice",
+                         (("value", "a value"),) + tuple((f"material:{x}", f"material {x}") for x in mats),
+                         op="piece_source")]
+            if "material" not in pc:
+                tensor = M.property_kind(get_at(model, mpath, {}), p) == M.MATRIX
+                out.append(Field(path + ("value",), f"{p} ({spec['properties'].get(p, p)})", "value",
+                                 help=MATRIX_HELP if tensor else ""))
+            return out
+        if rest[2] == "sources":
+            if n == 3:
+                return [Field(path, "", "info", help="Volume sources (right-hand side).")]
+            kind = spec.get("source", M.SCALAR)
+            return [Field(path + ("selection",), "Domain", "choice", domains),
+                    _value_field(path + ("value",), "Value", kind, dim)]
+        if rest[2] == "conditions":
+            if n == 3:
+                return [Field(path, "", "info", help="Boundaries without condition are free "
+                              "(zero flux, zero traction).")]
+            bc = get_at(model, path, {})
+            specs = spec.get("conditions", {})
+            out = [Field(path + ("type",), "Type", "choice",
+                         tuple((t, t.replace("_", " ")) for t in specs), op="mcond_type"),
+                   Field(path + ("selection",), "Boundary", "choice", boundaries)]
+            for key, kind in specs.get(bc.get("type"), {}).items():
+                out.append(_value_field(path + (key,), _LABELS.get(key, key), kind, dim))
+            return out
+        return []
+    if head == "terms":
+        if n == 1:
+            return [Field(path, "", "info", help="Terms of the weak formulation in GWFL; the terms "
+                          "of a model sum to zero (a source is written -f*Test_u).")]
+        return [Field(path + ("name",), "Name", "ident"),
+                Field(path + ("expr",), "Expression (GWFL)", "value"),
+                Field(path + ("selection",), "Integrated on", "choice", anywhere),
+                Field(path + ("linear",), "Linear", "choice",
+                      (("auto", "detected"), (True, "yes"), (False, "no")))]
+    if head == "conditions":
+        if n == 1:
+            return [Field(path, "", "info", help="Generic conditions on a variable (the modules "
+                          "have their own ones).")]
+        c = get_at(model, path, {})
+        kinds = {v.get("name"): M.variable_kind(v) for v in md.get("variables", [])}
+        vkind = kinds.get(c.get("variable"), M.SCALAR)
+        out = [Field(path + ("type",), "Type", "choice",
+                     tuple((t, t.replace("_", " ")) for t in M.CONDITIONS), op="cond_type"),
+               Field(path + ("variable",), "Variable", "choice", _choices(kinds)),
+               Field(path + ("selection",), "Boundary", "choice", boundaries)]
+        for key, kind in M.CONDITIONS.get(c.get("type"), {}).items():
+            out.append(_value_field(path + (key,), _LABELS.get(key, key),
+                                    vkind if kind == "var" else kind, dim))
+        if c.get("type") in ("dirichlet", "normal_dirichlet"):
+            methods = M.DIRICHLET_METHODS if c.get("type") == "dirichlet" else M.DIRICHLET_METHODS[1:]
+            out.append(Field(path + ("method",), "Method", "choice", _choices(methods)))
+            if c.get("method") == "penalization":
+                out.append(Field(path + ("penalty",), "Penalty coefficient", "number"))
+        return out
+    if head == "solver":
+        out = [Field(path + ("type",), "Type", "choice",
+                     (("auto", "automatic (linear or Newton)"), ("linear", "linear"), ("newton", "Newton")))]
+        if get_at(model, path + ("type",), "auto") != "linear":
+            out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
+                    Field(path + ("max_res",), "Residual tolerance", "number")]
+        out.append(Field(path + ("linear_solver",), "Linear solver", "choice", tuple(M.LINEAR_SOLVERS.items()),
+                         op="linear_solver", help="The solver of the linear systems (at each Newton iteration): "
+                         "automatic, GetFEM chooses (direct up to a size, then iterative); a direct one "
+                         "(MUMPS, SuperLU, dense LU) or an iterative one, with an incomplete factorization: CG "
+                         "for a symmetric positive definite system only (no multiplier, and a Dirichlet "
+                         "condition by simplification makes the system non symmetric), GMRES otherwise"))
+        return out
+    if head == "graphics":
+        return [Field(path, "", "info", help="Saved views of the result fields, with their "
+                      "display settings (changing the display of a result field saves it here).")] \
+            if n == 1 else []
+    if head == "plots":
+        return _plot_fields(model, md, path, dim, anywhere)
+    if head == "outputs":
+        if n == 1:
+            return [Field(base + ("vtu",), "VTU file", "text")]
+        return [Field(path + ("name",), "Name", "ident"),
+                Field(path + ("expr",), "Integrand (GWFL)", "value"),
+                Field(path + ("selection",), "Integrated on", "choice", anywhere)]
+    return []
+
+
+def _plot_line(model: dict, md_path: Path) -> tuple[list, list, list]:
+    """A default segment of a plot: across the bounding box of the geometry
+    of the model at mid-height (A, B, its middle); [0..] to [1, 0..] if unknown."""
+    md = get_at(model, md_path)
+    geom = M.model_geometry(model, md) if md else None
+    dim = (M.model_dim(model, md) if md else None) or 2
+    b = None
+    if geom is not None:
+        gi = model["geometries"].index(geom)
+        src = P.resolved(model)["geometries"][gi].get("source", {})
+        try:
+            if src.get("type") == "box":
+                lo = np.asarray(src["origin"], float)
+                b = (lo, lo + np.asarray(src["size"], float))
+            elif src.get("type") in ("csg", "surface") and isinstance(src.get("shape"), dict):
+                b = _shape_bounds(model, ("geometries", gi, "source", "shape"))
+        except (KeyError, TypeError, ValueError):
+            b = None
+    if b is None or len(b[0]) != dim or not (np.all(np.isfinite(b[0])) and np.all(np.isfinite(b[1]))):
+        b = (np.zeros(dim), np.r_[1.0, np.zeros(dim - 1)])
+    r = lambda v: 0.0 if abs(v) < 1e-12 else float(f"{v:.6g}")          # noqa: E731
+    mid = [(x + y) / 2 for x, y in zip(b[0], b[1])]
+    a = [r(b[0][0])] + [r(x) for x in mid[1:]]
+    bb = [r(b[1][0])] + [r(x) for x in mid[1:]]
+    return a, bb, [r(x) for x in mid]
+
+
+def _default_curve(model: dict, plot_path: Path, kind: str, like: dict | None = None) -> dict:
+    """A new curve of a plot (as the curve like: its expression, its segment)."""
+    md = get_at(model, plot_path[:2])
+    var = (md.get("variables") or [None])[0]
+    expr = (like or {}).get("expr") or (
+        "1" if var is None else var["name"] if M.variable_kind(var) == M.SCALAR else f"Norm({var['name']})")
+    a, b, mid = _plot_line(model, plot_path[:2])
+    if kind == "line":
+        out = {"label": "", "expr": expr, "from": (like or {}).get("from", a), "to": (like or {}).get("to", b),
+               "points": M.PLOT_POINTS, "times": "last"}
+    else:
+        out = {"label": "", "expr": expr, "at": "point", "point": (like or {}).get("point", mid)}
+    return out
+
+
+def _plot_fields(model, md, path, dim, anywhere) -> list[Field]:
+    """A plot (1D: curves along a line, or in time) or one of its curves."""
+    rest = path[2:]
+    if len(rest) == 1:
+        return [Field(path, "", "info", help="Plots: curves computed with the solution (GWFL "
+                      "expressions of the variables, the fields, the macros: von_mises, T...), along a "
+                      "segment or in time, shown in the Results; a change computes them again.")]
+    p = get_at(model, path[:4])
+    if len(rest) == 2:
+        return [Field(path + ("name",), "Name", "ident"),
+                Field(path + ("type",), "Abscissa", "choice", tuple(M.PLOT_TYPES.items()), op="plot_type",
+                      help="Along a segment (the distance from its start A), or in time (a transient "
+                           "solver: the saved times)"),
+                Field(path + ("title",), "Title", "text"),
+                Field(path, "", "info", help="Its curves: Add a curve. Each one a GWFL expression (scalar: "
+                      "Norm(u), u(1) for a vector), evaluated with the solution.")]
+    out = [Field(path + ("label",), "Label", "text", help="In the legend (empty: the expression)"),
+           Field(path + ("expr",), "Expression (GWFL)", "value",
+                 help="A scalar GWFL expression: T, von_mises, Norm(Grad_T), u(2), T - 20...")]
+    if p.get("type") == "line":
+        out += [_vec_field(path + ("from",), "From A", "numbers", dim),
+                _vec_field(path + ("to",), "To B", "numbers", dim),
+                Field(path + ("points",), "Number of points", "int"),
+                Field(path + ("times",), "Times", "text", op="plot_times",
+                      help="In time: last (the end), all (each saved time), or a list of times "
+                           "(0.5, 1: the nearest saved ones), a curve each; stationary: the solution")]
+    else:
+        cv = get_at(model, path)
+        out.append(Field(path + ("at",), "Value", "choice", tuple(M.PLOT_AT.items()), op="plot_at"))
+        if cv.get("at", "point") == "point":
+            out.append(_vec_field(path + ("point",), "Point", "numbers", dim))
+        else:
+            out.append(Field(path + ("selection",), "Selection", "choice", anywhere))
+    return out
+
+
+def fields(model: dict, path: Path) -> list[Field]:
+    """Form fields of the node at `path`."""
+    n = len(path)
+    if path == ():
+        return [Field(("name",), "Name", "text")]
+    if path[0] == "models":
+        if n == 1:
+            return [Field(path, "", "info", help="Each model is a GetFEM model (gf.Model): variables, "
+                          "modules, terms and conditions solved together.")]
+        return _model_fields(model, path)
+
+    if path[0] == "geometries" and n >= 2:
+        gi = path[1]
+        geom = get_at(model, ("geometries", gi), {})
+        dim = geometry_dim(model, gi)
+        if n == 2:
+            src = geom.get("source", {})
+            base = ("geometries", gi, "source")
+            out = [Field(("geometries", gi, "name"), "Name", "ident", op="rename_geometry"),
+                   Field(base + ("type",), "Source", "choice",
+                         (("box", "box"), ("csg", "constructive geometry (csg)"),
+                          ("curve", "curve (2D or 3D)"), ("surface", "surface in 3D (flat domain + height)"),
+                          ("swept_surface", "surface in 3D swept by a curve"),
+                          ("cad", "CAD file (STEP, IGES, BREP)"), ("mesh_file", "mesh file (.msh)"),
+                          ("boundary", "boundary of a 3D geometry")),
+                         op="source_type")]
+            t = src.get("type")
+            if t == "box":
+                out += [Field(base + ("size",), "Dimension", "choice",
+                              ((1, "1D"), (2, "2D"), (3, "3D")), op="box_dim"),
+                        _vec_field(base + ("origin",), "Origin", "numbers", dim),
+                        _vec_field(base + ("size",), "Size", "numbers", dim)]
+            elif t == "csg":
+                out.append(Field(base + ("dim",), "Dimension", "choice", ((2, "2D"), (3, "3D")),
+                                 op="csg_dim"))
+            elif t == "curve" and isinstance(src.get("shape"), dict):
+                out.append(Field(base + ("dim",), "Dimension of the space", "choice",
+                                 ((2, "2D"), (3, "3D")), op="curve_dim"))
+                if src.get("dim") == 3:
+                    out += [_vec_field(base + ("origin",), "Origin", "numbers", 3),
+                            _vec_field(base + ("axes", 0), "Axis x", "numbers", 3),
+                            _vec_field(base + ("axes", 1), "Axis y", "numbers", 3),
+                            Field(base + ("height",), "Height", "value",
+                                  help="Along the normal of the plane: a number or an expression of the local "
+                                       "coordinates x, y and the parameters (0: a plane curve).")]
+                out.append(Field(base, "", "info", help="The curve is the polygon below, drawn and edited in "
+                                                        "the view as the polygons of a 2D geometry (vertices, "
+                                                        "fillets, curved sides, constraints, dimensions), "
+                                                        "open or closed"
+                                                        + (", in the local coordinates (x, y) of its plane"
+                                                           if src.get("dim") == 3 else "")
+                                                        + ". The ends of an open curve are the built-in "
+                                                          "selections start and end."))
+            elif t == "curve" and isinstance(src.get("parametric"), dict):
+                dim = 3 if src.get("dim") == 3 else 2
+                out.append(Field(base + ("dim",), "Dimension of the space", "choice",
+                                 ((2, "2D"), (3, "3D")), op="curve_dim"))
+                out += [Field(base + ("parametric", k), f"{k}(t)", "value",
+                              help="An expression of t and the parameters (cos, sin, exp, sqrt, pow...)")
+                        for k in "xyz"[:dim]]
+                out += [_vec_field(base + ("t",), "From t to t", "numbers", 2),
+                        Field(base, "", "info", help="The curve t -> (x(t), y(t)" + (", z(t)" if dim == 3 else "")
+                              + "), divided into elements along its length; closed when its two ends meet "
+                                "(else they are the built-in selections start and end).")]
+            elif t == "swept_surface" and isinstance(src.get("shape"), dict):
+                out += _sweep_fields(base, src)
+                out.append(Field(base, "", "info", help="The swept curve is the polygon below, drawn and edited "
+                                                        "in the view as the polygons of a 2D geometry, open or "
+                                                        "closed, in the plane "
+                                                        + ("(r, z): it must not touch the axis r = 0."
+                                                           if src.get("sweep") == "revolution" else "(x, y).")))
+            elif t in ("curve", "swept_surface"):
+                if t == "curve":
+                    out.append(Field(base + ("dim",), "Dimension of the space", "choice",
+                                     ((2, "2D"), (3, "3D")), op="curve_dim"))
+                else:
+                    out.append(Field(base + ("sweep",), "Sweep", "choice",
+                                     (("extrusion", "extrusion along z (curve in the (x, y) plane)"),
+                                      ("revolution", "revolution about z (curve in the (r, z) plane)"))))
+                    if src.get("sweep") == "revolution":
+                        out.append(_vec_field(base + ("angle",), "From angle to angle (degrees)", "numbers", 2))
+                    else:
+                        out.append(_vec_field(base + ("z",), "From z to z", "numbers", 2))
+                out += [Field(base + ("points",), "Points", "chain_table",
+                              help="The curve goes through the points in order: a segment to the next one, "
+                                   "or an arc of circle through the point given in the last column "
+                                   "(\"x, y\" or \"x, y, z\"; empty: a segment)."),
+                        Field(base + ("closed",), "Closed", "choice", ((False, "no"), (True, "yes")),
+                              help="Closed: the last point is joined to the first one.")]
+                if t == "curve":
+                    out.append(Field(base, "", "info", help="The ends of an open curve are the built-in "
+                                                            "selections start and end."))
+            elif t == "surface" and "parametric" in src:
+                out.append(Field(base + ("parametric",), "Map", "choice",
+                                 ((False, "a plane and a height"), (True, "parametric (x, y, z of u, v)")),
+                                 op="surface_map"))
+                out += [Field(base + ("parametric", k), f"{k}(u, v)", "value",
+                              help="An expression of u, v (the coordinates of the flat domain) and the "
+                                   "parameters (cos, sin, exp, sqrt, pow...)") for k in "xyz"]
+                out.append(Field(base, "", "info", help="The flat domain (2D shape below, in the coordinates u, "
+                                                        "v: x and y of its view) is mapped to (x(u, v), y(u, v), "
+                                                        "z(u, v)); its selections are defined on it. Its sides "
+                                                        "that the map sends to the same curve are merged (a "
+                                                        "seam: a cylinder, a torus); the map must not degenerate "
+                                                        "(no pole: take a flat domain that avoids it)."))
+            elif t == "surface":
+                out += [Field(base + ("parametric",), "Map", "choice",
+                              ((False, "a plane and a height"), (True, "parametric (x, y, z of u, v)")),
+                              op="surface_map"),
+                        _vec_field(base + ("origin",), "Origin", "numbers", 3),
+                        _vec_field(base + ("axes", 0), "Axis x", "numbers", 3),
+                        _vec_field(base + ("axes", 1), "Axis y", "numbers", 3),
+                        Field(base + ("height",), "Height", "value",
+                              help="Height along the normal: a number or an expression of the local "
+                                   "coordinates x, y and the parameters (\"0.2*sqr(x)\")."),
+                        Field(base, "", "info", help="The flat domain (2D shape below) is drawn and its "
+                                                     "selections are defined in the local coordinates "
+                                                     "(x, y).")]
+            elif t in ("cad", "mesh_file"):
+                out.append(Field(base + ("file",), "File", "file"))
+            elif t == "boundary":
+                vol = M.volume_of(model, geom)
+                bsel = [n for n, sl in M.selection_table(model, vol).items() if sl["kind"] == M.BOUNDARY
+                        and n != M.BOUNDARY] if vol else []
+                out += [Field(base + ("geometry",), "Of the geometry", "choice", _choices(solids(model, geom)),
+                              op="boundary_of"),
+                        Field(base + ("selection",), "Faces", "choice",
+                              ((None, "all (its whole boundary)"),) + tuple(_choices(bsel)),
+                              help="A boundary selection of the geometry: its faces only (an open surface)",
+                              op="boundary_faces"),
+                        Field(base, "", "info", help="A surface: the 3D geometry is meshed with the parameters "
+                                                     "of the mesh, then its faces are taken. Its boundary "
+                                                     "selections are built-in selections (parts) of the "
+                                                     "surface; the selection 'boundary' is the edge of an "
+                                                     "open surface.")]
+            return out
+        if path[2] == "source" and constraint_owner(path) is not None:
+            return _constraint_fields(model, path)
+        if path[2] == "source":
+            return _shape_fields(model, path, shape_dim(model, path))
+        if path[2] == "selections" and n == 3:
+            return [Field(path, "", "info", help="Named parts of the geometry, used by properties, "
+                                                 "conditions, terms and outputs.")]
+        if path[2] == "selections" and n == 4:
+            name = path[3]
+            table = M.selection_table(model, geom)
+            if table.get(name, {}).get("inherited"):
+                return [Field(path, "", "info",
+                              help=f"Built-in domain selection: the faces of the boundary selection {name!r} "
+                                   f"of {geom['source'].get('geometry')!r}.")]
+            if table.get(name, {}).get("builtin"):
+                return [Field(path, "", "info",
+                              help=f"Built-in {table[name]['kind']} selection.")]
+            base = ("geometries", gi, "selections", name)
+            return [Field(base, "Name", "ident", op="rename_selection"),
+                    Field(base + ("kind",), "Kind", "choice",
+                          ((M.BOUNDARY, "boundary"), (M.DOMAIN, "domain")), op="selection_kind")
+                    ] + _criteria_fields(model, gi, name, M.selection_dim(model, geom) or dim)
+
+    if path == ("parameters",):
+        return [Field(path, "", "info", help="Named constants, usable in every numerical field "
+                      "(\"L/2\") and expression. A parameter may use the ones listed before it."),
+                Field(path, "", "parameter_table")]
+    if path[0] == "parameters" and n == 2:
+        return _param_fields(model, path)
+    if path == ("materials",):
+        return [Field(path, "", "info", help="Materials of the file: copies of library materials "
+                      "or your own ones, used by the properties of the modules (\"Given by\"). "
+                      "The table shows the properties asked by the modules of the file."),
+                Field(path, "", "material_table")]
+    if path[0] == "materials" and n == 2:
+        mat = get_at(model, path, {})
+        out = [Field(path + ("name",), "Name", "ident", op="rename_material"),
+               Field(path + ("description",), "Description", "text")]
+        if mat.get("from"):
+            out.append(Field(path, "", "info", help=f"Copied from the {mat['from'].replace(':', ' ', 1)} "
+                             "(the copy may be changed: the library is not)."))
+        for p in mat.get("properties", {}):
+            label, unit = M.PROPERTIES.get(p, (p, ""))
+            out.append(Field(path + ("properties", p), f"{p} ({unit})" if unit and unit != "1" else p,
+                             "value", help=label, remove=path + ("properties", p)))
+        return out
+    if path == ("fields",):
+        return [Field(path, "", "info", help="Fields defined by a value per domain selection of a "
+                      "geometry (the last one wins), usable in every expression.")]
+    if path[0] == "fields" and n == 2:
+        return _field_fields(model, path)
+
+    if path == ("geometries",):
+        return [Field(path, "", "info", help="Geometries and their named selections.")]
+    if path == ("meshes",):
+        return [Field(path, "", "info", help="Several meshes may be defined for one geometry; "
+                                             "the variables of the models say which one they use.")]
+    if path[0] == "meshes" and n == 4 and path[2] == "sizes":
+        mesh = get_at(model, path[:2], {})
+        geom = M.geometry_of(model, mesh) or {}
+        names = [x for x in M.selection_table(model, geom) if x != M.ALL] if geom else []
+        return [Field(path + ("selection",), "Selection", "choice", _choices(names),
+                      help="Its edges, faces or elements get the size below"),
+                Field(path + ("size",), "Size", "number",
+                      help="Smaller than the size of the mesh; the elements grow away from the selection by "
+                           "the rate of growth of the mesh"),
+                Field(path, "", "info", help="A first mesh of the global size locates the selection; the "
+                                             "final mesh has the size s on it, min(h, s + (growth - 1) d) at "
+                                             "a distance d from it.")]
+    if path[0] == "meshes" and n == 4 and path[2] == "refine":
+        mesh = get_at(model, path[:2], {})
+        geom = M.geometry_of(model, mesh) or {}
+        names = list(M.selection_table(model, geom)) if geom else [M.ALL]
+        return [Field(path + ("selection",), "Selection", "choice", _choices(names),
+                      help="'all': the whole mesh, refined by its mesher (following the geometry); a selection: "
+                           "its elements, or those along its faces, refined by GetFEM"),
+                Field(path + ("times",), "Times", "int",
+                      help=f"1 to {M.MAX_REFINE}: each time, the elements are split in 2^d (halved)"),
+                Field(path, "", "info", help="The refinements of 'all' come first, then the others in their "
+                                             "order; a local refinement splits enough neighbors to keep the "
+                                             "mesh conforming (triangles and tetrahedra).")]
+    if path[0] == "meshes" and n == 2:
+        mesh = get_at(model, path, {})
+        geom = M.geometry_of(model, mesh) or {}
+        geom = M.meshed_geometry(model, geom) if geom else geom      # a boundary: its volume meshed
+        stype = geom.get("source", {}).get("type")
+        dim = (M.geometry_dim(model, geom) if geom else None) or 2
+        meshers = [x for x, srcs in M.MESHERS.items() if stype in srcs] or list(M.MESHERS)
+        out = [Field(path + ("name",), "Name", "ident", op="rename_mesh"),
+               Field(path + ("geometry",), "Geometry", "choice",
+                     _choices(g["name"] for g in model.get("geometries", []))),
+               Field(path + ("mesher",), "Mesher", "choice", _choices(meshers), op="mesher")]
+        mesher = mesh.get("mesher")
+        if mesher == "structured":
+            out += [_vec_field(path + ("divisions",), "Divisions", "ints", dim),
+                    Field(path + ("element",), "Elements", "choice",
+                          (("simplex", "triangles / tetrahedra"),
+                           ("quad", "quadrilaterals / hexahedra")))]
+        elif mesher in M.FREE_MESHERS:
+            orders = ((1, "1 (straight)"), (2, "2 (curved)")) + (((3, "3"),) if mesher != "netgen" else ())
+            out += [Field(path + (_size_key(mesher),), "Element size", "number"),
+                    Field(path + ("order",), "Geometric order", "choice", orders)]
+            src = geom.get("source", {})
+            swept = src.get("type") == "csg" and src.get("dim") == 3 and M.swept_root(src.get("shape"))
+            if swept:
+                around = swept["type"] == "revolution"
+                out.append(Field(path + ("layers",), "Layers", "number",
+                                 help="0: free tetrahedra. Otherwise the profile is meshed in 2D, then "
+                                      + ("turned about the axis in this number of layers"
+                                         if around else "extruded in this number of layers")
+                                      + ": prisms, or hexahedra with quadrangles."))
+            if mesh.get("sizes"):
+                out.append(Field(path + ("growth",), "Growth of the local sizes", "number",
+                                 help="Away from the selections of the local sizes, each element is at most "
+                                      "this factor larger than its neighbor (1.3 by default)"))
+            if mesher != "getfem" and (dim == 2 or stype == "surface" or (swept and mesh.get("layers"))):
+                out.append(Field(path + ("element",), "Elements", "choice",
+                                 (("simplex", "triangles" + (" (prisms)" if dim == 3 else "")),
+                                  ("quad", "quadrangles" + (" (hexahedra)" if dim == 3 else ""))),
+                                 help="Quadrangles: Blossom recombination with Gmsh (quadrangles only), "
+                                      "quad dominated with Netgen" if mesher == "gmsh" or mesher == "netgen"
+                                 else ""))
+        return out
+
+    if path == ("solvers",):
+        return [Field(path, "", "info", help="Global solvers chain the models; several run one after the "
+                      "other (Compute), each one from the initial values or from the state left by the one "
+                      "before it, each one with its results (Compute this solver: one of them, after those "
+                      "it starts from). Without any, the models are solved in the order of their imports.")]
+    if path[0] == "solvers" and n == 2:
+        s = get_at(model, path, {})
+        start = [Field(path + ("start",), "Start from", "choice", tuple(M.SOLVER_STARTS.items()),
+                       op="solver_start", help="The initial values of the variables (the solver can run alone), "
+                       "or the state left by the solver before it (the values of the variables, the "
+                       "velocities of those in time: a preload, then a dynamics)")] if path[1] > 0 else []
+        out = [Field(path + ("name",), "Name", "ident")] + start + [
+               Field(path + ("type",), "Type", "choice",
+                     (("sequence", "sequence"), ("staggered", "staggered iterations"),
+                      ("transient", "transient (in time)"), ("modal", "modal analysis (eigenmodes)")),
+                     op="solver_type"),
+               Field(path + ("steps",), "Model" if s.get("type") == "modal" else "Steps, in order", "names",
+                     _step_choices(model, s), op="solver_steps",
+                     help="The model whose eigenmodes are computed (one, all its variables)"
+                     if s.get("type") == "modal" else
+                     "Each step solves a model, or some of its variables (model/u: u solved, the "
+                     "other variables of the model given; each variable solved by one step at least)")]
+        if s.get("type") == "transient":
+            out += [Field(path + ("time", "start"), "Start time", "value"),
+                    Field(path + ("time", "end"), "End time", "value"),
+                    Field(path + ("time", "step"), "Time step", "value"),
+                    Field(path + ("save", "every"), "Save every (steps)", "int"),
+                    Field(path + ("coupling",), "Coupling at each step", "choice",
+                          (("sequence", "the models in turn"), ("staggered", "staggered iterations")),
+                          op="solver_type")]
+            for name in M.step_models(s):
+                md = M.model_by_name(model, name)
+                for u in M.timeable_variables(md) if md else []:
+                    key = M.scheme_key(name, u)
+                    order = M.variable_order(md, u)
+                    sc = s.get("schemes", {}).get(key) or M.default_scheme(order)
+                    out.append(Field(path + ("schemes", key, "type"), f"Scheme of {u} ({name})", "choice",
+                                     tuple((k, M.SCHEMES[k]) for k in M.schemes_for(order)), op="scheme_type",
+                                     help="The time scheme of the variable: stationary (no time derivative, "
+                                          "the equation solved at each time), or a scheme of the order of its "
+                                          "time derivative" + (" (theta-method, BDF2; explicit: RK2, RK4)"
+                                                               if order == 1 else
+                                                               " (Newmark, HHT-alpha, generalized-alpha; explicit: "
+                                                               "Newmark, generalized-alpha, RK4)")))
+                    for prm, (_d, lo, hi, open_lo) in M.SCHEME_PARAMETERS.get(sc.get("type"), {}).items():
+                        out.append(Field(path + ("schemes", key, prm), f"{M.PARAMETER_LABELS[prm]} of {u}",
+                                         "number", op="scheme_param", help=_SCHEME_HELP[sc["type"]][prm]
+                                         + f" ({']' if open_lo else '['}{lo:.4g}, {hi:.4g}])"))
+                    if sc.get("type") == "bdf2":
+                        out.append(Field(path + ("schemes", key, "start"), f"First step of {u}", "choice",
+                                         tuple(M.BDF2_STARTS.items()), op="scheme_param",
+                                         help="BDF2 needs two previous values: its first step is an implicit "
+                                              "Euler step (monotone), or a Crank-Nicolson step (a smaller error, "
+                                              "but it may overshoot when the initial values do not satisfy the "
+                                              "conditions); both keep the second order"))
+                    if M.is_explicit(sc):
+                        out.append(Field(path + ("schemes", key, "mass"), f"Mass matrix of {u}", "choice",
+                                         tuple(M.MASS_MATRICES.items()), op="scheme_param",
+                                         help="Explicit: M a = -G at each time step (each stage of "
+                                              "Runge-Kutta). The consistent mass "
+                                              "matrix, factorized once; or lumped (diagonal: the sums of its "
+                                              "rows), a larger stable time step, for P1 or Q1 elements (with "
+                                              "P2 on simplices some sums are not positive)"))
+                    if M.SCHEME_ORDER.get(sc.get("type")) == 2:
+                        out.append(Field(path + ("schemes", key, "initial_acceleration"),
+                                         f"Initial acceleration of {u}", "choice",
+                                         tuple(M.INITIAL_ACCELERATIONS.items()), op="scheme_param",
+                                         help="From the equation at the start time (M a0 = -G: all the other "
+                                              "terms at the initial displacement and velocity), or zero"))
+            out.append(Field(path, "", "info", help="At each time step, the models are solved in turn (or "
+                             "by staggered iterations), every equation written at the new time; the scheme "
+                             "of each variable in time gives its time derivative (Dot_T for T) from its "
+                             "value and the previous ones; the time t may appear in the expressions. The "
+                             "variables start from their initial value; the results are saved every few "
+                             "steps (a VTU file each, a .pvd collection)."))
+        if s.get("type") == "modal":
+            md = M.model_by_name(model, (M.step_models(s) or [None])[0])
+            order = M.modal_order(md) if md else 0
+            out += [Field(path + ("modes",), "Number of modes", "int",
+                          help="The eigenmodes computed: those whose eigenvalues are the nearest to the shift"),
+                    Field(path + ("shift",), "Shift: frequency (Hz)" if order != 1 else "Shift: decay rate (1/s)",
+                          "value", help="The modes sought near this frequency (second order in time: the "
+                          "elastodynamics, omega = 2 pi f), or this decay rate (first order: the heat); 0: "
+                          "the lowest ones (a free body: its rigid modes at 0)"),
+                    Field(path, "", "info", help="The eigenmodes of one model, K phi = lambda M phi: K the "
+                          "matrix of its equations (at the initial values, or at the state left by the solver "
+                          "before it: a prestressed structure), M that of its time derivatives (the mass: rho, "
+                          "rho cp, m), on the dofs free of Dirichlet conditions; the damping ignored. ARPACK "
+                          "(by SciPy), shift-invert. The results: the frequencies (Hz) and the effective "
+                          "masses (a displacement), or the decay rates and the time constants (the heat); "
+                          "each mode a VTU file, scaled to a largest value 1 (the slider of the view: the "
+                          "modes).")]
+        if s.get("type") == "staggered" or (s.get("type") == "transient" and s.get("coupling") == "staggered"):
+            out += [Field(path + ("max_iter",), "Maximum iterations", "int"),
+                    Field(path + ("tolerance",), "Tolerance (relative change)", "number"),
+                    Field(path + ("relaxation",), "Relaxation", "number")]
+        return out
+    return []
+
+
+# ------------------------------------------------------------------ changes
+
+def _default_shape(t: str, dim: int) -> dict:
+    if t == "rectangle":
+        return {"type": "rectangle", "min": [0.0] * dim, "max": [1.0] * dim}
+    if t == "ball":
+        return {"type": "ball", "center": [0.0] * dim, "radius": 0.5}
+    if t == "polygon":
+        return {"type": "polygon", "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 0.6], [0.5, 1.0], [0.0, 0.6]]}
+    if t == "ellipse":
+        return {"type": "ellipse", "center": [0.0, 0.0], "radii": [0.6, 0.3], "angle": 0.0}
+    if t == "ellipsoid":
+        return {"type": "ellipsoid", "center": [0.0] * dim, "radii": [0.6, 0.4, 0.3]}
+    if t == "cylinder":
+        return {"type": "cylinder", "origin": [0.0] * dim, "axis": [0.0] * (dim - 1) + [1.0],
+                "length": 1.0, "radius": 0.5}
+    if t == "extrusion":
+        return {"type": "extrusion", "z": [0.0, 0.5],
+                "profile": {"type": "difference", "of": [
+                    {"type": "rectangle", "min": [0.0, 0.0], "max": [2.0, 1.0]},
+                    {"type": "ball", "center": [1.0, 0.5], "radius": 0.25}]}}
+    if t == "revolution":
+        return {"type": "revolution",
+                "profile": {"type": "rectangle", "min": [0.5, 0.0], "max": [1.0, 1.0]}}
+    if t == "transform":
+        return dict({"type": "transform", "translate": [0.0] * dim, "angle": 0.0, "center": [0.5] * dim},
+                    **({"axis": [0.0, 0.0, 1.0]} if dim == 3 else {}), of=[_default_shape("rectangle", dim)])
+    if t == "array":
+        return {"type": "array", "kind": "linear", "count": 3, "step": [1.2] + [0.0] * (dim - 1),
+                "of": [_default_shape("rectangle", dim)]}
+    return {"type": t, "of": [_default_shape("rectangle", dim), _default_shape("ball", dim)]}
+
+
+def _shape_in_profile(model: dict, path: Path, t: str) -> dict:
+    """A new primitive in the profile of an extrusion or a revolution, at its scale."""
+    ext = _profile_extent(model, path)
+    return _default_shape(t, 2) if ext is None else _scaled_shape(t, ext[0], ext[1], 2)
+
+
+def _profile_extent(model: dict, path: Path):
+    """The extent (lo, hi) of a profile in its plane; when it is empty, that
+    of the rest of the 3D geometry seen in the plane; None if unknown."""
+    from . import geometry2d as G
+    from . import geometry3d as G3
+    prof = profile_root(path)
+    if prof is None:
+        return None
+    try:
+        r = P.resolved(model)
+        try:
+            return G.bounds(get_at(r, prof))
+        except ValueError:                       # empty: the rest of the geometry
+            rest = G3.without(r["geometries"][prof[1]]["source"]["shape"], tuple(prof[5:-1:2]))
+            return G3.plane_extent(rest, placed_swept(r, prof))
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+        return None
+
+
+def _scaled_shape(t: str, lo, hi, dim: int) -> dict:
+    import numpy as np
+    if not np.all(np.isfinite([*lo, *hi])) or np.any(hi <= lo):
+        return _default_shape(t, dim)
+    r = lambda v: float(f"{v:.3g}")          # noqa: E731
+    c, e = (lo + hi) / 2, float((hi - lo).min())
+    if t == "rectangle":
+        return {"type": "rectangle", "min": [r(x - e / 8) for x in c], "max": [r(x + e / 8) for x in c]}
+    if t == "ball":
+        return {"type": "ball", "center": [r(x) for x in c], "radius": r(e / 8)}
+    if t == "ellipse":
+        return {"type": "ellipse", "center": [r(x) for x in c], "radii": [r(e / 6), r(e / 12)], "angle": 0.0}
+    if t == "polygon":
+        house = _default_shape("polygon", 2)["points"]
+        return {"type": "polygon", "points": [[r(c[0] + (x - 0.5) * e / 4), r(c[1] + (y - 0.5) * e / 4)]
+                                              for x, y in house]}
+    return _default_shape(t, dim)
+
+
+def _polygon_from(model: dict, path: Path, shape: dict) -> dict:
+    """A polygon replacing a 2D primitive: the corners of a rectangle, an
+    octagon in a disk, 12 points of an ellipse (the default polygon otherwise)."""
+    try:
+        s = get_at(P.resolved(model), path)
+        if s.get("type") == "rectangle":
+            (x0, y0), (x1, y1) = (float(v) for v in s["min"]), (float(v) for v in s["max"])
+            return {"type": "polygon", "points": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]}
+        if s.get("type") == "ball":
+            (cx, cy), rad = (float(v) for v in s["center"]), float(s["radius"])
+            return {"type": "polygon", "points": [
+                [float(f"{cx + rad * math.cos(a):.6g}"), float(f"{cy + rad * math.sin(a):.6g}")]
+                for a in (k * math.pi / 4 for k in range(8))]}
+        if s.get("type") == "ellipse":
+            from . import geometry2d as G
+            import numpy as np
+            pts = G.sides(s)[0].points(np.arange(12) / 12.0)
+            return {"type": "polygon", "points": [[float(f"{x:.6g}"), float(f"{y:.6g}")] for x, y in pts]}
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        pass
+    return _default_shape("polygon", 2)
+
+
+def _map_side_refs(model: dict, path: Path, mapping) -> None:
+    """The sides of the 2D primitive at path were renamed or split: update
+    the edge references of the selections (mapping(old side) -> new sides)."""
+    if path[:4] != ("geometries", path[1], "source", "shape") or "profile" in path[4:] \
+            or any(not isinstance(k, int) for k in path[5::2]):
+        return
+    prim = list(path[5::2])
+    for sel in model["geometries"][path[1]].get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") != "edges":
+            continue
+        out = []
+        for ref in crit.get("edges", []):
+            if list(ref.get("shape", [])) != prim:
+                out.append(ref)
+                continue
+            for new in mapping(ref.get("side")):
+                if not any(list(r.get("shape", [])) == prim and r.get("side") == new for r in out):
+                    out.append({"shape": prim, "side": new})
+        crit["edges"] = out
+
+
+def _rename_face(model: dict, path: Path, old: str, new: str) -> None:
+    """The face old of the 3D primitive at path is now named new: in the face
+    references of the selections."""
+    if path[:4] != ("geometries", path[1], "source", "shape") or "profile" in path[4:] \
+            or any(not isinstance(k, int) for k in path[5::2]):
+        return
+    prim = list(path[5::2])
+    for sel in model["geometries"][path[1]].get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "faces":
+            for ref in crit.get("faces", []):
+                if list(ref.get("shape", [])) == prim and ref.get("face") == old:
+                    ref["face"] = new
+
+
+def _side_number(name) -> int | None:
+    return int(name[4:]) if isinstance(name, str) and name.startswith("side") and name[4:].isdigit() else None
+
+
+def _vertex_inserted(model: dict, path: Path, i: int) -> None:
+    """A vertex inserted after the vertex i (0-based): the side i + 1 is split."""
+    def mapping(name):
+        k = _side_number(name)
+        if k is None:
+            return [name]
+        return [f"side{k}", f"side{k + 1}"] if k == i + 1 else [f"side{k + 1 if k > i + 1 else k}"]
+    _map_side_refs(model, path, mapping)
+    # constraints: those of the split side dropped, the numbers after it shifted
+    _remap_constraints(model, path, lambda k: None if k == i + 1 else (k + 1 if k > i + 1 else k),
+                       lambda k: k + 1 if k > i + 1 else k)
+
+
+def _vertex_removed(model: dict, path: Path, i: int, n: int) -> None:
+    """The vertex i (0-based) of a polygon of n vertices removed: its two
+    sides become one."""
+    def mapping(name):
+        k = _side_number(name)
+        if k is None:
+            return [name]
+        if i == 0:                     # sides n and 1 -> n - 1; k -> k - 1
+            return [f"side{n - 1}"] if k in (1, n) else [f"side{k - 1}"]
+        if k in (i, i + 1):
+            return [f"side{i}"]
+        return [f"side{k - 1 if k > i + 1 else k}"]
+    _map_side_refs(model, path, mapping)
+    v = i + 1                          # 1-based: the vertex v gone, its two sides merged
+
+    def side(k):
+        if k in (v - 1 if v > 1 else n, v):
+            return None
+        return k - 1 if k > v else k
+    _remap_constraints(model, path, side, lambda k: None if k == v else (k - 1 if k > v else k))
+
+
+def chain_rows(model: dict, gi: int) -> tuple[int, list[tuple]]:
+    """(dimension, rows) of the point table of a curve or a swept surface:
+    a row per point, its coordinates (as given) then the point of the arc
+    to the next point ("x, y[, z]", or "" for a segment)."""
+    from . import manifold
+    src = model["geometries"][gi]["source"]
+    dim = manifold.chain_dim(src)
+    through = list(src.get("through") or [])
+    rows = []
+    for i, p in enumerate(src.get("points", [])):
+        t = through[i] if i < len(through) else None
+        coords = (p,) + ("",) * (dim - 1) if isinstance(p, str) else tuple((list(p) + [0.0] * dim)[:dim])
+        rows.append(coords + (", ".join(format_value(x) for x in t) if isinstance(t, list)
+                              else t if isinstance(t, str) else "",))
+    return dim, rows
+
+
+def fillet_cells(model: dict, path: Path) -> list:
+    """The radii of the fillets of the vertices of the polygon at path (the
+    polygon, not its points), as given, None for a sharp vertex."""
+    shape = get_at(model, path, {}) or {}
+    n = len(shape.get("points") or [])
+    out = [None] * n
+    for f in shape.get("fillets") or []:
+        if isinstance(f, dict) and isinstance(f.get("vertex"), int) and 1 <= f["vertex"] <= n:
+            out[f["vertex"] - 1] = f.get("radius")
+    return out
+
+
+def _corner_radius(model: dict, path: Path, k: int) -> float:
+    """A radius for a new fillet of the vertex k: its arc takes a quarter of
+    the shorter of its two sides (less, if the fillets around do not leave
+    room for it); rounded."""
+    from . import geometry2d as G
+    r = get_at(P.resolved(model), path)
+    V = np.asarray(r["points"], float)
+    n, i = len(V), k - 1
+    u, w = V[i - 1] - V[i], V[(i + 1) % n] - V[i]
+    lu, lw = np.linalg.norm(u), np.linalg.norm(w)
+    half = math.acos(max(-1.0, min(1.0, float(u @ w) / ((lu * lw) or 1.0)))) / 2
+    radius = 0.25 * min(lu, lw) * math.tan(half)
+    for _ in range(20):
+        radius = float(f"{radius:.2g}")
+        trial = copy.deepcopy(r)
+        trial["fillets"] = [f for f in trial.get("fillets") or [] if f.get("vertex") != k] + \
+            [{"vertex": k, "radius": radius}]
+        if not G.fillet_problem(trial):
+            return radius
+        radius /= 2
+    raise ValueError(f"no room to round the vertex {k}")
+
+
+def set_fillet(model: dict, path: Path, k: int, radius) -> None:
+    """The fillet of the vertex k (1-based) of the polygon at path: radius
+    (a number or an expression), or None (sharp)."""
+    shape = get_at(model, path)
+    kept = [f for f in shape.get("fillets") or [] if not (isinstance(f, dict) and f.get("vertex") == k)]
+    if radius not in (None, ""):
+        kept.append({"vertex": k, "radius": radius})
+    kept.sort(key=lambda f: f.get("vertex", 0) if isinstance(f, dict) else 0)
+    if kept:
+        shape["fillets"] = kept
+    else:
+        shape.pop("fillets", None)
+
+
+def handle_actions(model: dict, path: Path, handle: str) -> list[tuple[str, str]]:
+    """The editing actions of a handle of the primitive at path, for the
+    menu of a right click on it: [(label, action)]. A vertex of a polygon:
+    remove it, round it or make it sharp again (smooth or a corner at an end
+    of a spline); the middle of a side: a vertex there, or the side curved;
+    a point of a spline: another one, remove it, the side straight; the
+    middle of an arc: remove the fillet."""
+    shape = get_at(model, path, {}) or {}
+    if shape.get("type") != "polygon":
+        return []
+    if handle[:1] == "s" and re.fullmatch(r"s\d+_\d+", handle):    # a point of a spline
+        i, p = (int(x) for x in handle[1:].split("_"))
+        return [(f"Insert a point after this one", f"spline:insert:{i + 1}:{p}"),
+                (f"Remove this point", f"spline:remove:{i + 1}:{p}"),
+                (f"Make side {i + 1} straight", f"spline:straight:{i + 1}")]
+    if not handle[1:].isdigit():
+        return []
+    i = int(handle[1:])
+    n = len(shape.get("points") or [])
+    if handle[0] == "v":
+        least = 2 if shape.get("open") else 3
+        out = [(f"Remove vertex {i + 1}", f"remove_vertex:{i}")] if n > least else []
+        if shape.get("open") and i in (0, n - 1):           # an end of a curve: no corner there
+            return out + [("Extend the curve from this end", f"extend:{i}")]
+        if near_spline(model, path, i + 1):
+            out.append((f"Make vertex {i + 1} a corner", f"smooth:{i + 1}") if i + 1 in (shape.get("smooth") or [])
+                       else (f"Make vertex {i + 1} smooth (tangent)", f"smooth:{i + 1}"))
+        elif fillet_cells(model, path)[i] is None:
+            out.append((f"Round vertex {i + 1} (fillet)", f"fillet:vertex:{i + 1}"))
+        else:
+            out.append((f"Remove the fillet of vertex {i + 1}", f"fillet:sharp:{i + 1}"))
+        return out
+    if handle[0] == "m":
+        return [(f"Insert a vertex in side {i + 1}", f"insert_vertex:{i}"),
+                (f"Make side {i + 1} curved (a spline)", f"spline:side:{i + 1}")]
+    if handle[0] == "f":
+        return [(f"Remove the fillet of vertex {i}", f"fillet:sharp:{i}")]
+    return []
+
+
+def spline_sides(model: dict, path: Path) -> dict:
+    """{side (1-based): index in "splines"} of the polygon at path."""
+    shape = get_at(model, path, {}) or {}
+    return {c["side"]: j for j, c in enumerate(shape.get("splines") or [])
+            if isinstance(c, dict) and isinstance(c.get("side"), int)}
+
+
+def near_spline(model: dict, path: Path, k: int) -> bool:
+    """Whether the vertex k (1-based) of the polygon at path is an end of a
+    spline (its third cell: smooth or not, instead of a fillet)."""
+    n = len((get_at(model, path, {}) or {}).get("points") or [])
+    sides = spline_sides(model, path)
+    return n > 0 and (k in sides or (k - 2) % n + 1 in sides)
+
+
+def polygon_rows(model: dict, path: Path) -> list[tuple]:
+    """The rows of the vertex table of the polygon at path: the vertices,
+    each followed by the points of the spline of the side after it:
+    ("vertex", i, row of vertex_rows) or ("spline", k, p, row) (side k,
+    1-based, its point p, 0-based)."""
+    rows = vertex_rows(model, path + ("points",))
+    sides = spline_sides(model, path)
+    out = []
+    for i, r in enumerate(rows):
+        out.append(("vertex", i, r))
+        j = sides.get(i + 1)
+        if j is not None:
+            out += [("spline", i + 1, p, q) for p, q in
+                    enumerate(vertex_rows(model, path + ("splines", j, "points")))]
+    return out
+
+
+def set_smooth(model: dict, path: Path, k: int, on: bool) -> None:
+    """The boundary of the polygon at path smooth at its vertex k (1-based)
+    or not."""
+    shape = get_at(model, path)
+    sm = sorted({x for x in shape.get("smooth") or [] if x != k} | ({k} if on else set()))
+    if sm:
+        shape["smooth"] = sm
+    else:
+        shape.pop("smooth", None)
+
+
+def _spline_point(model: dict, path: Path, k: int, after: int):
+    """A new point of the spline of the side k (1-based) of the polygon at
+    path, after its point `after` (-1: after the vertex k): on the curve,
+    in the middle of that part of it."""
+    from . import geometry2d as G
+    r = get_at(P.resolved(model), path)
+    C = G.spline_controls(r).get(k - 1)
+    if C is None:
+        raise ValueError(f"side {k} is not a spline")
+    m = (len(C) - 1) // 3
+    x, y = G.bezier_points(C, [(after + 1.5) / m])[0]
+    return [float(f"{x:.6g}"), float(f"{y:.6g}")]
+
+
+def make_spline(model: dict, path: Path, k: int) -> None:
+    """The side k (1-based) of the polygon at path made a spline: through a
+    point a little off the middle of the side, outward."""
+    from . import geometry2d as G
+    shape = get_at(model, path)
+    V = np.asarray(get_at(P.resolved(model), path)["points"], float)
+    n = len(V)
+    a, b = V[k - 1], V[k % n]
+    d = b - a
+    out = np.array([d[1], -d[0]]) * (1.0 if G.polygon_area(V) > 0 else -1.0)   # outward for the polygon
+    q = (a + b) / 2 + 0.15 * out
+    set_fillet(model, path, k, None)                       # (no fillet at the ends of a spline)
+    set_fillet(model, path, k % n + 1, None)
+    sp = [c for c in shape.get("splines") or [] if not (isinstance(c, dict) and c.get("side") == k)]
+    sp.append({"side": k, "points": [[float(f"{x:.6g}") for x in q]]})
+    shape["splines"] = sorted(sp, key=lambda c: c.get("side", 0) if isinstance(c, dict) else 0)
+
+
+def make_straight(model: dict, path: Path, k: int) -> None:
+    """The side k (1-based) of the polygon at path straight again; its ends
+    no longer smooth unless another spline is there."""
+    shape = get_at(model, path)
+    sp = [c for c in shape.get("splines") or [] if not (isinstance(c, dict) and c.get("side") == k)]
+    if sp:
+        shape["splines"] = sp
+    else:
+        shape.pop("splines", None)
+    n = len(shape.get("points") or [])
+    for v in (k, k % n + 1):
+        if not near_spline(model, path, v):
+            set_smooth(model, path, v, False)
+
+
+def vertex_rows(model: dict, path: Path) -> list[tuple]:
+    """Rows of the vertex table of a polygon at path (the points list):
+    (x, y) as given (numbers or expressions) and their values."""
+    pts = get_at(model, path, []) or []
+    try:
+        vals = get_at(P.resolved(model), path, []) or []
+    except P.ParameterError:
+        vals = []
+    out = []
+    for i, p in enumerate(pts):
+        v = vals[i] if i < len(vals) and isinstance(vals[i], list) else [None, None]
+        if isinstance(p, str):             # a vector parameter: the whole vertex
+            out.append((p, "", v[0], v[1]))
+        else:
+            out.append((p[0] if len(p) > 0 else 0.0, p[1] if len(p) > 1 else 0.0, v[0], v[1]))
+    return out
+
+
+def _swept_in_geometry(model: dict, gi: int, t: str) -> dict:
+    """A new extrusion or revolution in a 3D geometry: an empty profile, to
+    draw; an extrusion between the heights of the rest of the geometry
+    (from 0 to 0.5 when there is none)."""
+    from . import geometry3d as G3
+    shape = _default_shape(t, 3)
+    shape["profile"] = copy.deepcopy(EMPTY_SHAPE)
+    if t == "extrusion":
+        try:
+            lo, hi = G3.bounds(G3.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+            if np.all(np.isfinite([lo[2], hi[2]])) and hi[2] > lo[2]:
+                shape["z"] = [float(lo[2]), float(hi[2])]
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+            pass
+    return shape
+
+
+def selected_after(action: str, new_path) -> tuple | None:
+    """Where to go after an action of creation: in a new constructive
+    geometry, on its root (an empty union, to add shapes), or on the profile
+    of a new extrusion or revolution, or on the polygon of a new curve or
+    swept surface (the 2D view, to draw it); in a new model of a kind, on
+    its module (its parameters)."""
+    if new_path is None:
+        return None
+    new_path = tuple(new_path)
+    if action in ("add_geometry:csg2", "add_geometry:csg3", "add_geometry:curve2", "add_geometry:curve3",
+                  "add_geometry:swept_extrusion", "add_geometry:swept_revolution"):
+        return new_path + ("source", "shape")
+    if action in ("add_geometry:extrusion", "add_geometry:revolution"):
+        return new_path + ("source", "shape", "profile")
+    if action in ("add_shape:extrusion", "add_shape:revolution"):
+        return new_path + ("profile",)
+    if action.startswith("add_model:") and action != "add_model:" and new_path[:1] == ("models",) \
+            and len(new_path) == 2:
+        return new_path + ("modules", 0)        # a new heat, elasticity model: the form of its module
+    return new_path
+
+
+def _shape_in_geometry(model: dict, gi: int, t: str) -> dict:
+    """A new primitive for a 2D geometry: in its middle, at its scale (the
+    default shape otherwise)."""
+    from . import geometry2d as G
+    dim = shape_dim(model, ("geometries", gi, "source", "shape"))
+    if dim != 2:
+        return _default_shape(t, dim)
+    try:
+        lo, hi = G.bounds(G.shape_of(P.resolved(model)["geometries"][gi]["source"]))
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        return _default_shape(t, dim)
+    return _scaled_shape(t, lo, hi, dim)
+
+
+# The kinds of geometry offered by "Add a geometry": (group, identifier,
+# label, description); new_geometry_source gives the source of each.
+GEOMETRY_KINDS = (
+    ("Boxes", "box1", "Segment (1D)", "an interval: bars, 1D problems"),
+    ("Boxes", "box2", "Rectangle (2D)", "a structured mesh"),
+    ("Boxes", "box3", "Box (3D)", "a structured mesh"),
+    ("Constructive geometries", "csg2", "2D domain", "rectangles, disks, ellipses, polygons and booleans"),
+    ("Constructive geometries", "csg3", "3D solid", "boxes, balls, cylinders and booleans"),
+    ("Constructive geometries", "extrusion", "3D extrusion of a 2D profile", "a profile extruded along z"),
+    ("Constructive geometries", "revolution", "3D revolution of a 2D profile",
+     "a profile in the (r, z) plane turned about the z axis"),
+    ("Curves and surfaces", "curve2", "Curve in 2D", "segments and arcs: beams, cables"),
+    ("Curves and surfaces", "curve3", "Curve in 3D", "segments and arcs: beams, cables"),
+    ("Curves and surfaces", "surface", "Surface in 3D", "a flat domain plus a height: shells"),
+    ("Curves and surfaces", "surface_param", "Parametric surface (3D)",
+     "x, y, z functions of (u, v) on a flat domain: a cylinder, a torus"),
+    ("Curves and surfaces", "swept_extrusion", "Extruded curve (3D surface)", "a 2D curve extruded along z"),
+    ("Curves and surfaces", "swept_revolution", "Revolved curve (3D surface)",
+     "a 2D curve turned about the z axis"),
+    ("Curves and surfaces", "boundary", "Boundary of a 3D geometry",
+     "its faces (or some of them) as a surface: shells, membranes"),
+    ("Files", "cad", "CAD file (STEP, IGES, BREP)", "read by Gmsh"),
+    ("Files", "mesh_file", "Gmsh mesh file (.msh)", "the mesh is the geometry"),
+)
+
+
+def new_geometry_source(kind: str) -> dict:
+    """The source of a new geometry of a kind of GEOMETRY_KINDS."""
+    if kind in ("box1", "box2", "box3"):
+        return _default_source("box", int(kind[-1]))
+    if kind in ("csg2", "csg3"):             # from nothing: shapes and booleans to add
+        return {"type": "csg", "dim": int(kind[-1]), "shape": copy.deepcopy(EMPTY_SHAPE)}
+    if kind in ("extrusion", "revolution"):  # its profile from nothing
+        shape = _default_shape(kind, 3)
+        shape["profile"] = copy.deepcopy(EMPTY_SHAPE)
+        return {"type": "csg", "dim": 3, "shape": shape}
+    empty = {"type": "polygon", "open": True, "points": []}      # a curve: its polygon drawn in the view
+    if kind == "curve2":
+        return {"type": "curve", "dim": 2, "shape": empty}
+    if kind == "curve3":                      # (in the plane z = 0 at first)
+        return {"type": "curve", "dim": 3, "shape": empty, "origin": [0.0, 0.0, 0.0],
+                "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], "height": 0.0}
+    if kind == "surface":
+        return _default_source("surface", 3)
+    if kind == "surface_param":               # a cylinder (u: the angle, v: the height)
+        return {"type": "surface", "shape": {"type": "rectangle", "min": [0.0, 0.0], "max": ["2*pi", 1.0]},
+                "parametric": {"x": "cos(u)", "y": "sin(u)", "z": "v"}}
+    if kind == "swept_extrusion":
+        return {"type": "swept_surface", "sweep": "extrusion", "z": [0.0, 1.0], "shape": empty}
+    if kind == "swept_revolution":
+        return {"type": "swept_surface", "sweep": "revolution", "angle": [0.0, 360.0], "shape": empty}
+    if kind in ("cad", "mesh_file"):
+        return _default_source(kind, 3)
+    if kind == "boundary":                    # (of the first 3D solid of the model: add_geometry)
+        return {"type": "boundary", "geometry": ""}
+    raise ValueError(f"unknown kind of geometry {kind!r}")
+
+
+def solids(model: dict, but: dict | None = None) -> list[str]:
+    """The names of the 3D solids of the model (the geometries whose
+    boundary may be taken), but one."""
+    return [g["name"] for g in model.get("geometries", [])
+            if g is not but and M.volume_of(model, {"source": {"type": "boundary", "geometry": g.get("name")}})]
+
+
+def _default_source(t: str, dim: int) -> dict:
+    if t == "box":
+        return {"type": "box", "origin": [0.0] * dim, "size": [1.0] * dim}
+    if t == "csg":
+        return {"type": "csg", "dim": max(dim, 2), "shape": _default_shape("difference", max(dim, 2))}
+    if t == "curve" and dim != 3:              # a 2D curve: an open polygon, edited in the view
+        return {"type": "curve", "dim": 2, "shape": {"type": "polygon", "open": True,
+                                                     "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]}}
+    if t == "curve":
+        d = 3 if dim == 3 else 2
+        return {"type": "curve", "dim": d, "points": [[0.0] * d, [1.0] + [0.0] * (d - 1), [1.0] * d],
+                "through": [None, None], "closed": False}
+    if t == "surface":
+        return {"type": "surface", "shape": {"type": "rectangle", "min": [0.0, 0.0], "max": [1.0, 1.0]},
+                "origin": [0.0, 0.0, 0.0], "axes": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], "height": 0.0}
+    if t == "swept_surface":
+        return {"type": "swept_surface", "sweep": "revolution", "angle": [0.0, 360.0],
+                "shape": {"type": "polygon", "open": True, "points": [[1.0, 0.0], [1.0, 1.0]]}}
+    if t == "boundary":
+        return {"type": "boundary", "geometry": ""}
+    return {"type": t, "file": ""}
+
+
+def _default_criteria(t: str, dim: int, kind: str) -> dict:
+    e = [1.0] + [0.0] * (dim - 1)
+    return {
+        "plane": {"type": "plane", "point": [0.0] * dim, "normal": e},
+        "normal": {"type": "normal", "direction": e, "angle": 1.0},
+        "in_box": {"type": "in_box", "min": [0.0] * dim, "max": [1.0] * dim},
+        "in_ball": {"type": "in_ball", "center": [0.0] * dim, "radius": 0.5},
+        "physical": {"type": "physical", "tag": 1},
+        "union": {"type": "union", "of": []},
+        "edges": {"type": "edges", "edges": []},
+        "faces": {"type": "faces", "faces": []},
+        "regions": {"type": "regions", "regions": []},
+    }[t]
+
+
+# Mesher of the new meshes of constructive (csg) and CAD geometries: Gmsh,
+# more robust than the GetFEM mesher (in 3D above all); a box keeps a
+# structured mesh. GETFEM_LAB_DEFAULT_MESHER=getfem chooses the GetFEM mesher.
+DEFAULT_MESHER = os.environ.get("GETFEM_LAB_DEFAULT_MESHER", "gmsh")
+
+
+def default_mesher(source_type: str | None) -> str:
+    """The mesher of a new mesh of a geometry of that source type."""
+    if source_type == "box":
+        return "structured"
+    if source_type in M.MESHERS.get(DEFAULT_MESHER, ()):
+        return DEFAULT_MESHER
+    return next((x for x, srcs in M.MESHERS.items() if source_type in srcs), "gmsh")
+
+
+def _fit_meshes(model: dict, gi: int) -> list[str]:
+    """The meshes of a geometry whose mesher cannot mesh its new source get
+    the default one (their element size kept). Returns notes."""
+    notes = []
+    for geom in [model["geometries"][gi]] + [g for g in model["geometries"]       # and its boundaries
+                                             if M.volume_of(model, g) is model["geometries"][gi]]:
+        notes += _fit_meshes_of(model, geom)
+    return notes
+
+
+def _fit_meshes_of(model: dict, geom: dict) -> list[str]:
+    stype = M.meshed_geometry(model, geom).get("source", {}).get("type")
+    notes = []
+    for mesh in model.get("meshes", []):
+        if mesh.get("geometry") == geom.get("name") and stype not in M.MESHERS.get(mesh.get("mesher"), ()):
+            new = default_mesher(stype)
+            _change_mesher(model, mesh, new)
+            notes.append(f"mesh {mesh.get('name')!r}: {new} mesher")
+    return notes
+
+
+def size_label(rule: dict) -> str:
+    """The label of a local size of a mesh in the tree."""
+    return f"Size {format_value(rule.get('size'))} on {rule.get('selection', '?')}"
+
+
+def refine_label(rule: dict) -> str:
+    """The label of a refinement of a mesh in the tree."""
+    where = rule.get("selection", M.ALL)
+    return f"Refined {format_value(rule.get('times', 1))}× " + ("everywhere" if where == M.ALL else f"on {where}")
+
+
+def can_refine(model: dict, mesh: dict) -> bool:
+    """Whether a mesh may be refined: of a box, a constructive geometry, a
+    CAD or mesh file, not in layers."""
+    geom = M.geometry_of(model, mesh) or {}
+    return not mesh.get("layers") and geom.get("source", {}).get("type") in M.REFINED_SOURCES
+
+
+def add_refinement(model: dict, path: Path) -> Path:
+    """A new refinement of the mesh at path: of the whole mesh if it has
+    none, else of its first selection made by the user not refined yet;
+    once."""
+    mesh = get_at(model, path)
+    if not can_refine(model, mesh):
+        raise ValueError("refinements are for a mesh of a box, a constructive geometry, a CAD or mesh file "
+                         "(not in layers)")
+    used = {r.get("selection", M.ALL) for r in mesh.get("refine") or [] if isinstance(r, dict)}
+    name = M.ALL
+    if M.ALL in used and mesh.get("element") != "quad":
+        table = M.selection_table(model, M.geometry_of(model, mesh))
+        name = next((n for n, sel in table.items() if not sel["builtin"] and n not in used), M.BOUNDARY)
+    mesh.setdefault("refine", []).append({"selection": name, "times": 1})
+    return path + ("refine", len(mesh["refine"]) - 1)
+
+
+def can_size(model: dict, mesh: dict) -> bool:
+    """Whether a mesh may have local sizes: an unstructured mesher (not in
+    layers) of a box, a constructive geometry or a CAD file."""
+    geom = M.geometry_of(model, mesh) or {}
+    return mesh.get("mesher") in M.FREE_MESHERS and not mesh.get("layers") \
+        and geom.get("source", {}).get("type") in M.SIZED_SOURCES
+
+
+def add_size(model: dict, path: Path) -> Path:
+    """A new local size for the mesh at path: on its first selection of
+    edges or faces made by the user (else the whole boundary), a quarter of
+    its size."""
+    mesh = get_at(model, path)
+    if not can_size(model, mesh):
+        raise ValueError("local sizes are for a mesh by GetFEM, Gmsh or Netgen of a box, a constructive "
+                         "geometry or a CAD file (not in layers)")
+    geom = M.geometry_of(model, mesh)
+    table = M.selection_table(model, geom)
+    used = {r.get("selection") for r in mesh.get("sizes") or [] if isinstance(r, dict)}
+    user = [n for n, sel in table.items() if not sel["builtin"] and n not in used]
+    name = next((n for n in user if sel_kind(table[n]) == M.BOUNDARY), user[0] if user else M.BOUNDARY)
+    rmesh = M.find_mesh(P.resolved(model), mesh.get("name")) or {}
+    h = rmesh.get(_size_key(mesh["mesher"]))
+    size = float(f"{h / 4:.2g}") if isinstance(h, (int, float)) and h > 0 else 0.01
+    mesh.setdefault("sizes", []).append({"selection": name, "size": size})
+    return path + ("sizes", len(mesh["sizes"]) - 1)
+
+
+def sel_kind(sel: dict) -> str:
+    return sel.get("kind", M.DOMAIN)
+
+
+def _size_key(mesher: str) -> str:
+    """The key of the element size of an unstructured mesher."""
+    return "h" if mesher == "getfem" else "size"
+
+
+def _default_mesh_params(mesher: str, dim: int) -> dict:
+    return {"structured": {"divisions": [10] * dim, "element": "simplex"},
+            "getfem": {"h": 0.1, "order": 1},
+            "gmsh": {"size": 0.1, "order": 1},
+            "netgen": {"size": 0.1, "order": 1},
+            "import": {}}[mesher]
+
+
+def _zero(kind: str, dim: int):
+    return [0.0] * dim if kind == M.VECTOR else 0.0
+
+
+def _zero(kind: str, dim: int):
+    return [0.0] * dim if kind == M.VECTOR else 0.0
+
+
+def _default_condition(btype: str, values: dict, selection: str, dim: int) -> dict:
+    bc = {"type": btype, "selection": selection}
+    for key, kind in values.items():
+        bc[key] = 20.0 if key == "T_ext" else (1.0 if key in ("h", "q") else _zero(kind, dim))
+    return bc
+
+
+def field_value(model: dict, f: Field):
+    """The current value shown by a field (the model value, but for a few
+    special fields)."""
+    if f.op == "piece_source":
+        pc = get_at(model, f.key, {})
+        return f"material:{pc['material']}" if "material" in pc else "value"
+    if f.op == "box_dim":
+        return len(get_at(model, f.key, []))
+    if f.op == "first_source":                 # no source: 0
+        return [0.0] * f.size if f.kind == "vector" else 0.0
+    if f.op == "surface_map":
+        return "parametric" in get_at(model, f.key[:-1], {})
+    if f.op == "placement":
+        shape = get_at(model, f.key[:-1], {})
+        return "custom" if "origin" in shape or "axes" in shape else "xy"
+    if f.op == "array_kind":
+        return get_at(model, f.key, "linear")
+    if f.op == "constraint_shape":
+        return ",".join(str(i) for i in get_at(model, f.key, []))
+    if f.op == "solver_start":
+        return get_at(model, f.key, "initial")
+    if f.op == "linear_solver":
+        return get_at(model, f.key, "auto")
+    if f.op == "plot_times":
+        t = get_at(model, f.key, "last")
+        return ", ".join(format_number(x) for x in t) if isinstance(t, list) else str(t)
+    if f.op in ("scheme_type", "scheme_param"):     # (the default scheme of the variable if not given)
+        return M.scheme_with_defaults(get_at(model, f.key[:-1]) or _default_of(model, f.key[:-1])).get(f.key[-1])
+    return get_at(model, f.key)
+
+
+_WORD = r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])"
+_NOT_EXPRESSIONS = ("name", "selection", "geometry", "mesh", "type", "file", "description", "vtu",
+                    "kind", "element", "mesher", "fem", "method", "model", "material", "linear",
+                    "components", "side", "plane")
+
+
+def rename_identifier(scope: dict, old: str, new: str) -> None:
+    """Rename a parameter, a field or a variable, and its uses in the
+    expressions of `scope` (the whole file or one model), whole words only
+    (Grad_L is not a use of L, but Grad_T and Test_T are uses of the variable
+    T). Variable references of the modules and conditions ("variable",
+    "temperature"...) follow."""
+    pattern = re.compile(r"(?<![A-Za-z0-9_])((?:Grad_|Hess_|Div_|Test_|Test2_|Dot_|Dot2_|Previous_|Previous2_)*)"
+                         + re.escape(old) + r"(?![A-Za-z0-9_])")
+    sub = pattern.sub
+
+    class _P:      # pattern.sub(new, text), keeping the prefixes
+        @staticmethod
+        def sub(repl, text):
+            return sub(lambda mt: mt.group(1) + repl, text)
+    pattern = _P
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k == "name" and v == old and any(obj is x for x in named):
+                    obj[k] = new
+                elif k == "variable" and "model" in obj:
+                    continue                 # an import: a variable of the other model
+                elif isinstance(v, str) and k not in _NOT_EXPRESSIONS:
+                    obj[k] = pattern.sub(new, v)
+                elif isinstance(v, (dict, list)) and not (k in ("of", "steps")
+                                                          and all(isinstance(x, str) for x in v)):
+                    walk(v)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                if isinstance(v, str):
+                    obj[i] = pattern.sub(new, v)
+                else:
+                    walk(v)
+    named = [x for key in ("parameters", "fields", "variables", "imports") for x in scope.get(key, [])
+             if isinstance(x, dict) and x.get("name") == old]
+    walk({k: v for k, v in scope.items() if not k.startswith("_")})
+    # the imports of other models referring to a renamed variable keep their local name
+
+
+def _items_with_selection(model: dict, geom: dict) -> list[dict]:
+    """The items using a selection of a geometry: in the models on that
+    geometry (properties, sources, conditions, terms, outputs, filtered
+    variables, local fields) and the fields of the top level on it."""
+    out = []
+
+    def collect(obj):
+        if isinstance(obj, dict):
+            if isinstance(obj.get("selection"), str):
+                out.append(obj)
+            for v in obj.values():
+                collect(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                collect(v)
+    for md in model.get("models", []):
+        if M.model_geometry(model, md) is geom:
+            collect({k: v for k, v in md.items() if k not in ("geometries", "meshes")})
+    geoms = model.get("geometries", [])
+    for f in model.get("fields", []):
+        if M.by_name(geoms, f.get("geometry", geoms[0].get("name") if len(geoms) == 1 else None)) is geom:
+            collect(f)
+    for mesh, _ in M.all_meshes(model):              # the local sizes of its meshes
+        if M.geometry_of(model, mesh) is geom:
+            collect(mesh.get("sizes") or [])
+            collect(mesh.get("refine") or [])
+    return out
+
+
+def _rename_selection(model, gi, old, new) -> None:
+    geom = model["geometries"][gi]
+    geom["selections"] = {(new if k == old else k): v for k, v in geom.get("selections", {}).items()}
+    for sel in geom["selections"].values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "union":
+            crit["of"] = [new if o == old else o for o in crit.get("of", [])]
+    for it in _items_with_selection(model, geom):
+        if it.get("selection") == old:
+            it["selection"] = new
+    for bi, g in enumerate(model.get("geometries", [])):     # its boundaries: their faces, their parts
+        src = g.get("source", {})
+        if bi != gi and src.get("type") == "boundary" and src.get("geometry") == geom.get("name") \
+                and old not in g.get("selections", {}):
+            if src.get("selection") == old:
+                src["selection"] = new
+            _rename_selection(model, bi, old, new)
+
+
+def _share_property(model: dict, path: Path) -> None:
+    """A property of a module edited (path under models[k].modules[j].properties.p):
+    the same data for the other modules of the model that have it (a
+    property is a data of the model: rho of a heat conduction and of an
+    elasticity)."""
+    if len(path) < 6 or path[0] != "models" or path[2] != "modules" or path[4] != "properties":
+        return
+    md = get_at(model, path[:2])
+    mod = get_at(model, path[:4])
+    if not isinstance(md, dict) or not isinstance(mod, dict):
+        return
+    prop = path[5]
+    pieces = mod.get("properties", {}).get(prop)
+    for other in md.get("modules", []):
+        if other is not mod and prop in M.spec_of(other).get("properties", {}) \
+                and M.data_name(other, prop) == M.data_name(mod, prop):
+            other.setdefault("properties", {})[prop] = copy.deepcopy(pieces) if pieces else []
+
+
+def apply(model: dict, f: Field, value) -> Path | None:
+    """Set a field. Returns the new path of the node when it changed (renaming
+    a selection changes its path), None otherwise."""
+    out = _apply(model, f, value)
+    _share_property(model, f.key)
+    return out
+
+
+def _apply(model: dict, f: Field, value) -> Path | None:
+    key = f.key
+    if f.op is None:
+        set_at(model, key, value)
+        return None
+    if f.op == "surface_map":                # a plane and a height, or parametric (the flat domain kept)
+        src = get_at(model, key[:-1])
+        if bool(value) != ("parametric" in src):
+            for k in ("origin", "axes", "height", "parametric"):
+                src.pop(k, None)
+            if value:
+                src["parametric"] = {"x": "u", "y": "v", "z": "0"}
+            else:
+                src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
+        return None
+    if f.op == "first_source":               # the first source of a module: on the whole domain
+        get_at(model, key[:-1])["sources"] = [{"selection": M.ALL, "value": value}]
+        return None
+    if f.op == "scheme_type":                # the scheme of a variable: its parameters, rho... if in time
+        sc = get_at(model, key[:-2]).setdefault(key[-2], {})
+        sc.clear()
+        sc.update(M.scheme_with_defaults({"type": value}))
+        _time_properties(model)
+        return None
+    if f.op == "pde_option":                 # the properties of the new spec, converted or by default
+        mod = get_at(model, key[:-1])
+        md = owner(model, key)
+        if mod.get(key[-1]) != value:
+            pde_option(model, md, mod, key[-1], value, item_dim(model, key[:-1]))
+        return None
+    if f.op == "tensor_option":              # (an)isotropic: the values of its tensor properties converted
+        mod = get_at(model, key[:-1])
+        spec = M.MODULE_SPECS[mod["type"]]
+        mod[key[-1]] = value
+        dim = item_dim(model, key[:-1])
+        for prop, (opt, tval) in spec.get("tensor_properties", {}).items():
+            if opt != key[-1]:
+                continue
+            for pc in mod.get("properties", {}).get(prop, []):
+                if "value" in pc:
+                    pc["value"] = to_matrix(pc["value"], dim) if value == tval else to_scalar(pc["value"])
+        return None
+    if f.op == "linear_solver":
+        s = get_at(model, key[:-1])
+        if value == "auto":
+            s.pop("linear_solver", None)       # (the default)
+        else:
+            s["linear_solver"] = value
+        return None
+    if f.op == "solver_start":
+        s = get_at(model, key[:-1])
+        if value == "initial":
+            s.pop("start", None)               # (the default)
+        else:
+            s["start"] = value
+        return None
+    if f.op == "scheme_param":
+        sc = get_at(model, key[:-2]).setdefault(key[-2], _default_of(model, key[:-1]))
+        sc.update(M.scheme_with_defaults(sc))
+        sc[key[-1]] = value
+        sc.update(M.scheme_with_defaults(sc))        # (explicit: its mass matrix)
+        if not M.is_explicit(sc):
+            sc.pop("mass", None)
+        return None
+    if f.op == "solver_steps":               # its models; in time: the schemes of their variables
+        s = get_at(model, key[:-1])
+        s["steps"] = list(value)
+        if s.get("type") == "transient":
+            _fill_schemes(model, s)
+        return None
+    if f.op == "solver_type":                # its type or its coupling; in time: its settings
+        s = get_at(model, key[:-1])
+        s[key[-1]] = value
+        if s["type"] == "transient":
+            s.setdefault("time", {"start": 0.0, "end": 1.0, "step": 0.1})
+            s.setdefault("save", {"every": 1})
+            s.setdefault("coupling", "sequence")
+            _fill_schemes(model, s)
+        else:
+            for k in ("time", "save", "coupling", "schemes"):
+                s.pop(k, None)
+        if s["type"] == "modal":             # one model (with a time derivative), all its variables
+            names = M.step_models(s)
+            timed = [n for n in names if M.modal_order(M.model_by_name(model, n) or {}) > 0]
+            s["steps"] = (timed or names)[:1]
+            s.setdefault("modes", 6)
+            s.setdefault("shift", 0.0)
+            _time_properties(model)
+        else:
+            for k in ("modes", "shift"):
+                s.pop(k, None)
+        if s["type"] == "staggered" or s.get("coupling") == "staggered":
+            s.setdefault("max_iter", 20)
+            s.setdefault("tolerance", 1e-6)
+            s.setdefault("relaxation", 1.0)
+        return None
+    if f.op == "boundary_of":                # another volume: its faces kept if it has that selection
+        src = get_at(model, key[:-1])
+        src["geometry"] = value
+        vol = M.volume_of(model, {"source": src})
+        if src.get("selection") and (vol is None or M.selection_table(model, vol).get(src["selection"], {})
+                                     .get("kind") != M.BOUNDARY):
+            src.pop("selection")
+        return None
+    if f.op == "boundary_faces":             # None: the whole boundary (no key)
+        if value is None:
+            get_at(model, key[:-1]).pop("selection", None)
+        else:
+            set_at(model, key, value)
+        return None
+    if f.op == "placement":
+        shape = get_at(model, key[:-1])
+        if value == "custom":
+            shape.setdefault("origin", [0.0, 0.0, 0.0])
+            shape.setdefault("axes", [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        else:
+            shape.pop("origin", None)
+            shape.pop("axes", None)
+        return None
+    if f.op == "vertex_fillet":             # key: the polygon, "fillets", the index of the vertex
+        set_fillet(model, key[:-2], key[-1] + 1, value)
+        return None
+    if f.op == "constraint_type":
+        c = get_at(model, key[:-1])
+        if c.get("type") != value:
+            set_at(model, key[:-1], _default_constraint(model, constraint_owner(key[:-1]), value))
+        return None
+    if f.op == "constraint_shape":
+        c = get_at(model, key[:-1])
+        c["shape"] = [int(x) for x in str(value).split(",") if x.strip() != ""]
+        c["other"] = 1
+        return None
+    if f.op == "array_kind":
+        arr = get_at(model, key[:-1])
+        if arr.get("kind", "linear") != value:
+            for k in ("step", "center", "angle", "axis"):
+                arr.pop(k, None)
+            arr.update(_array_defaults(model, key[:-1], value))
+        return None
+    if f.op == "point_component":
+        # a component j of the point key[:-1] (a vertex, a point of a curve):
+        # a vector parameter typed in the first one gives the whole point
+        pkey, j, n = key[:-1], key[-1], f.size
+        point = get_at(model, pkey)
+        if isinstance(point, str):
+            vals, _ = M.parameter_values(model, owner(model, pkey))
+            try:
+                comps = P.vector(point, vals, n)
+            except P.ParameterError:
+                comps = [0.0] * n
+        else:
+            comps = (list(point) + [0.0] * n)[:n]
+        comps[j] = value
+        set_at(model, pkey, vector_entry(model, pkey, comps, n))
+        return None
+    if f.op == "numbers":
+        set_at(model, key, vector_entry(model, key, value, f.size, f.kind == "ints"))
+        return None
+    if f.op == "plot_times":
+        text = str(value).strip().lower()
+        if text in ("last", "all", ""):
+            set_at(model, key, text or "last")
+        else:
+            try:
+                set_at(model, key, [float(x) for x in text.replace(";", ",").split(",") if x.strip()])
+            except ValueError:
+                raise ValueError("last, all, or a list of times (0.5, 1) expected") from None
+        return None
+    if f.op == "plot_type":
+        p = get_at(model, key[:-1])
+        if p.get("type", "line") != value:
+            p["type"] = value
+            p["curves"] = [_default_curve(model, key[:-1], value, cv) for cv in p.get("curves", [])]
+        return None
+    if f.op == "plot_at":
+        cv = get_at(model, key[:-1])
+        cv["at"] = value
+        if value == "point":
+            cv.pop("selection", None)
+            cv.setdefault("point", _plot_line(model, key[:2])[2])
+        else:
+            cv.pop("point", None)
+            cv.setdefault("selection", M.ALL)
+        return None
+    if f.op == "field_kind":
+        f_ = get_at(model, key[:-1])
+        if value == M.SCALAR:
+            f_.pop("kind", None)
+        else:
+            f_["kind"] = value
+        dim = (M.geometry_dim(model, item_geometry(model, key[:-1])) if item_geometry(model, key[:-1])
+               else None) or 2
+        for v in f_.get("values", []):        # a number: zero vector, or the number times the identity
+            if value == M.VECTOR and not isinstance(v.get("value"), (list, str)):
+                v["value"] = [0.0] * dim
+            elif value == M.SCALAR and isinstance(v.get("value"), list):
+                v["value"] = 0.0
+        return None
+    if f.op == "parameter_value":
+        set_at(model, key, parse_parameter(value) if isinstance(value, str) else value)
+        return None
+    if f.op == "rename_geometry":
+        old = get_at(model, key)
+        set_at(model, key, value)
+        for mesh, _ in M.all_meshes(model):
+            if mesh.get("geometry") == old:
+                mesh["geometry"] = value
+        for fld in model.get("fields", []):
+            if fld.get("geometry") == old:
+                fld["geometry"] = value
+        for g in model.get("geometries", []):           # the boundaries of the geometry
+            if g.get("source", {}).get("type") == "boundary" and g["source"].get("geometry") == old:
+                g["source"]["geometry"] = value
+    elif f.op in ("rename_parameter", "rename_field", "rename_variable"):
+        old = get_at(model, key)
+        if value != old:
+            md = owner(model, key)
+            rename_identifier(md if md is not None else model, old, value)
+            if f.op == "rename_variable":
+                if any(m.get("type") == "pde" and m.get("variable") == value for m in md.get("modules", [])):
+                    for q in list(M.MODULE_SPECS["pde"]["properties"]) + ["tau"]:   # c_u, ... of its PDE
+                        rename_identifier(md, f"{q}_{old}", f"{q}_{value}")
+                for other in model.get("models", []):
+                    for im in other.get("imports", []):
+                        if im.get("model") == md.get("name") and im.get("variable") == old:
+                            im["variable"] = value
+                for s in model.get("solvers", []):              # its steps, its time schemes
+                    s["steps"] = [M.make_step(n, [value if x == old else x for x in v])
+                                  if n == md.get("name") and v is not None else st
+                                  for st in s.get("steps", []) for n, v in [M.parse_step(st)]]
+                    schemes = s.get("schemes", {})
+                    if M.scheme_key(md.get("name"), old) in schemes:
+                        schemes[M.scheme_key(md.get("name"), value)] = schemes.pop(M.scheme_key(md.get("name"), old))
+    elif f.op == "rename_mesh":
+        old = get_at(model, key)
+        set_at(model, key, value)
+        for md in model.get("models", []):
+            for v in md.get("variables", []):
+                if v.get("mesh") == old:
+                    v["mesh"] = value
+    elif f.op == "rename_model":
+        old = get_at(model, key)
+        set_at(model, key, value)
+        for md in model.get("models", []):
+            for im in md.get("imports", []):
+                if im.get("model") == old:
+                    im["model"] = value
+        for s in model.get("solvers", []):
+            s["steps"] = [M.make_step(value, v) if n == old else st
+                          for st in s.get("steps", []) for n, v in [M.parse_step(st)]]
+            for k in [k for k in s.get("schemes", {}) if k.partition("/")[0] == old]:
+                s["schemes"][M.scheme_key(value, k.partition("/")[2])] = s["schemes"].pop(k)
+    elif f.op == "rename_material":
+        old = get_at(model, key)
+        set_at(model, key, value)
+        for md in model.get("models", []):
+            for mod in md.get("modules", []):
+                for pieces in mod.get("properties", {}).values():
+                    for pc in pieces:
+                        if pc.get("material") == old:
+                            pc["material"] = value
+    elif f.op == "rename_selection":
+        gi, old = key[1], key[3]
+        if value == old:
+            return None
+        if value in M.selection_table(model, model["geometries"][gi]):
+            raise ValueError(f"the name {value!r} is already used")
+        _rename_selection(model, gi, old, value)
+        return ("geometries", gi, "selections", value)
+    elif f.op == "piece_source":
+        pc = get_at(model, key)
+        if value == "value":
+            if "material" in pc:
+                mat = M.material(model, pc.pop("material")) or {}
+                p = key[-2]
+                pc["value"] = (mat.get("properties") or {}).get(p, 1.0)
+        else:
+            pc.pop("value", None)
+            pc["material"] = value.split(":", 1)[1]
+    elif f.op == "source_type":
+        gi = key[1]
+        if get_at(model, key) != value:
+            model["geometries"][gi]["source"] = _default_source(value, geometry_dim(model, gi))
+            if value == "boundary":
+                model["geometries"][gi]["source"]["geometry"] = next(iter(solids(model, model["geometries"][gi])), "")
+            _fit_meshes(model, gi)
+    elif f.op == "box_dim":
+        src = get_at(model, key[:-1])
+        dim = int(value)
+        src["origin"] = (list(src.get("origin", [])) + [0.0] * dim)[:dim]
+        src["size"] = (list(src.get("size", [])) + [1.0] * dim)[:dim]
+        _fit_dimension(model, key[1], dim)
+    elif f.op == "chain_through":
+        src = get_at(model, key[:2] + ("source",))
+        i = key[-1]
+        through = list(src.get("through") or [])
+        through += [None] * (i + 1 - len(through))
+        text = str(value).strip() if value is not None else ""
+        if text:
+            parts = [parse_value(x.strip()) for x in text.split(",")]
+            from . import manifold
+            if len(parts) == 1 and isinstance(parts[0], str):       # a vector parameter
+                through[i] = parts[0]
+            elif len(parts) != manifold.chain_dim(src):
+                raise ValueError(f"{manifold.chain_dim(src)} coordinates expected")
+            else:
+                through[i] = parts
+        else:
+            through[i] = None
+        n = len(src.get("points", [])) if src.get("closed") else len(src.get("points", [])) - 1
+        src["through"] = through[:max(n, 0)]
+    elif f.op == "curve_dim":
+        dim = int(value)
+        src = get_at(model, key[:-1])
+        if src.get("dim") != dim and isinstance(src.get("shape"), dict):   # a polygon: in its plane in 3D
+            src["dim"] = dim
+            for k in ("origin", "axes", "height"):
+                src.pop(k, None)
+            if dim == 3:
+                src.update(origin=[0.0, 0.0, 0.0], axes=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], height=0.0)
+            _fit_dimension(model, key[1], dim)
+        elif src.get("dim") != dim and isinstance(src.get("parametric"), dict):
+            src["dim"] = dim
+            if dim == 3:
+                src["parametric"].setdefault("z", 0.0)
+            else:
+                src["parametric"].pop("z", None)
+            _fit_dimension(model, key[1], dim)
+        if src.get("dim") != dim:
+            src["dim"] = dim
+            fit = lambda p: (list(p) + [0.0] * dim)[:dim]          # noqa: E731
+            src["points"] = [fit(p) for p in src.get("points", [])]
+            src["through"] = [fit(p) if p is not None else None for p in src.get("through", [])]
+            _fit_dimension(model, key[1], dim)
+    elif f.op == "csg_dim":
+        dim = int(value)
+        src = get_at(model, key[:-1])
+        if src.get("dim") != dim:
+            src["dim"] = dim
+            src["shape"] = _default_shape("difference", dim)
+            _fit_dimension(model, key[1], dim)
+    elif f.op == "shape_type":
+        path = key[:-1]
+        shape = get_at(model, path)
+        old = shape.get("type")
+        dim = shape_dim(model, path)
+        if value == old:
+            return None
+        if value in M.SHAPES_BOOLEAN and old in M.SHAPES_BOOLEAN:
+            shape["type"] = value
+        elif value in M.SHAPES_BOOLEAN:
+            set_at(model, path, {"type": value, "of": [shape, _default_shape("ball", dim)]})
+        elif value == "ellipse" and old == "ball":       # same center, both semi-axes the radius
+            set_at(model, path, {"type": "ellipse", "center": copy.deepcopy(shape.get("center", [0.0, 0.0])),
+                                 "radii": [copy.deepcopy(shape.get("radius", 0.5))] * 2, "angle": 0.0})
+            _map_side_refs(model, path, lambda name: ["ellipse" if name == "circle" else name])
+        elif value == "ball" and old == "ellipse":
+            set_at(model, path, {"type": "ball", "center": copy.deepcopy(shape.get("center", [0.0, 0.0])),
+                                 "radius": copy.deepcopy((shape.get("radii") or [0.5])[0])})
+            _map_side_refs(model, path, lambda name: ["circle" if name == "ellipse" else name])
+        elif value == "ellipsoid" and old == "ball":     # same center, the three semi-axes the radius
+            set_at(model, path, {"type": "ellipsoid", "center": copy.deepcopy(shape.get("center", [0.0] * 3)),
+                                 "radii": [copy.deepcopy(shape.get("radius", 0.5))] * 3})
+            _rename_face(model, path, "sphere", "surface")
+        elif value == "ball" and old == "ellipsoid":
+            set_at(model, path, {"type": "ball", "center": copy.deepcopy(shape.get("center", [0.0] * 3)),
+                                 "radius": copy.deepcopy((shape.get("radii") or [0.5])[0])})
+            _rename_face(model, path, "surface", "sphere")
+        elif value == "polygon" and old in ("rectangle", "ball", "ellipse"):
+            poly = _polygon_from(model, path, shape)
+            set_at(model, path, poly)
+            n = len(poly["points"])
+            if old == "rectangle" and n == 4:
+                names = {"ymin": "side1", "xmax": "side2", "ymax": "side3", "xmin": "side4"}
+                _map_side_refs(model, path, lambda name: [names.get(name, name)])
+            else:
+                _map_side_refs(model, path, lambda name: [f"side{k + 1}" for k in range(n)]
+                               if name in ("circle", "ellipse") else [name])
+        else:
+            set_at(model, path, _default_shape(value, dim))
+    elif f.op == "selection_kind":
+        sel = get_at(model, key[:-1])
+        sel["kind"] = value
+        if value not in M.CRITERIA.get(sel.get("criteria", {}).get("type"), ()):
+            dim = M.selection_dim(model, model["geometries"][key[1]]) or geometry_dim(model, key[1])
+            sel["criteria"] = _default_criteria("in_box", dim, value)
+    elif f.op == "criteria_type":
+        sel = get_at(model, key[:-2])
+        if sel.get("criteria", {}).get("type") != value:
+            sel["criteria"] = _default_criteria(value, M.selection_dim(model, model["geometries"][key[1]])
+                                                or geometry_dim(model, key[1]), sel.get("kind"))
+    elif f.op == "mesher":
+        mesh = get_at(model, key[:-1])
+        if mesh.get("mesher") != value:
+            _change_mesher(model, mesh, value)
+    elif f.op == "mcond_type":
+        bc = get_at(model, key[:-1])
+        if bc.get("type") != value:
+            mod = get_at(model, key[:-3])
+            spec = M.spec_of(mod)
+            set_at(model, key[:-1], _default_condition(value, spec["conditions"][value],
+                                                       bc.get("selection", M.BOUNDARY), item_dim(model, key)))
+    elif f.op == "cond_type":
+        c = get_at(model, key[:-1])
+        if c.get("type") != value:
+            md = owner(model, key)
+            var = M.by_name(md.get("variables", []), c.get("variable")) or {}
+            vk = M.variable_kind(var)
+            values = {k2: (vk if kd == "var" else kd) for k2, kd in M.CONDITIONS[value].items()}
+            new = _default_condition(value, values, c.get("selection", M.BOUNDARY), item_dim(model, key))
+            new = {"type": value, "variable": c.get("variable"), **{k2: v for k2, v in new.items() if k2 != "type"}}
+            if value in ("dirichlet", "normal_dirichlet"):
+                new["method"] = "simplification" if value == "dirichlet" else "multiplier"
+            set_at(model, key[:-1], new)
+    else:
+        raise ValueError(f"unknown operation {f.op!r}")
+    return None
+
+
+def _change_mesher(model: dict, mesh: dict, mesher: str) -> None:
+    """Change the mesher of a mesh, keeping its fineness: the element size is
+    kept between the GetFEM mesher and Gmsh (an expression of parameters
+    too), and converted from or to the divisions of a structured mesh; the
+    geometric order is kept."""
+    geom = M.geometry_of(model, mesh) or {}
+    dim = (M.geometry_dim(model, geom) if geom else None) or 2
+    old = mesh.get("mesher")
+    size = mesh.get(_size_key(old)) if old in M.FREE_MESHERS else None
+    keep = {k: mesh[k] for k in ("layers", "element", "sizes", "growth") if k in mesh and old in M.FREE_MESHERS}
+    order = mesh.get("order", 1)
+    rmesh = M.find_mesh(P.resolved(model), mesh.get("name")) or {}
+    rgeom = M.geometry_of(P.resolved(model), rmesh) or {}
+    src = rgeom.get("source", {})
+    lengths = None
+    if src.get("type") == "box" and all(isinstance(x, (int, float)) for x in src.get("size", [])):
+        lengths = [float(x) for x in src["size"]]
+    if old == "structured" and lengths:
+        div = rmesh.get("divisions", [])
+        if len(div) == len(lengths) and all(isinstance(d, int) and d > 0 for d in div):
+            size = float(f"{min(l / d for l, d in zip(lengths, div)):.6g}")
+    for k in ("divisions", "element", "h", "size", "order", "layers", "sizes", "growth"):
+        mesh.pop(k, None)
+    mesh["mesher"] = mesher
+    mesh.update(_default_mesh_params(mesher, dim))
+    if mesher in M.FREE_MESHERS:
+        mesh[_size_key(mesher)] = size if size is not None else M.default_element_size(model, geom or {})
+        mesh["order"] = min(order, 2) if mesher == "netgen" else order
+        if "layers" in keep:
+            mesh["layers"] = keep["layers"]
+        for k in ("sizes", "growth"):              # the local sizes: the same for another free mesher
+            if k in keep:
+                mesh[k] = keep[k]
+        if keep.get("element") == "quad" and mesher != "getfem":
+            mesh["element"] = "quad"
+    elif mesher == "structured" and lengths:
+        h = rmesh.get(_size_key(old))
+        if isinstance(h, (int, float)) and h > 0:
+            mesh["divisions"] = [max(1, int(math.ceil(l / h - 1e-9))) for l in lengths]
+
+
+def _fit_dimension(model: dict, gi: int, dim: int) -> None:
+    """After a change of dimension: adapt the meshes of the geometry, the
+    criteria of its selections, and the models using it (the plane option,
+    the vector values)."""
+    geom = model["geometries"][gi]
+    for mesh in model.get("meshes", []):
+        if mesh.get("geometry") == geom["name"] and mesh.get("mesher") == "structured":
+            div = list(mesh.get("divisions", []))
+            mesh["divisions"] = (div + [10] * dim)[:dim]
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        for k, v in list(crit.items()):
+            if isinstance(v, list) and k not in ("of", "edges", "regions", "faces"):
+                crit[k] = (list(v) + [0.0] * dim)[:dim]
+    for md in model.get("models", []):
+        if M.model_geometry(model, md) is not geom:
+            continue
+        for mod in md.get("modules", []):
+            spec = M.spec_of(mod)
+            if dim != 2:
+                mod.pop("plane", None)
+            elif "plane" in spec.get("options", {}):
+                mod.setdefault("plane", spec["options"]["plane"][0])
+            if spec.get("source") == M.VECTOR:
+                for s in mod.get("sources", []):
+                    if isinstance(s.get("value"), list):
+                        s["value"] = (s["value"] + [0.0] * dim)[:dim]
+            for bc in mod.get("conditions", []):
+                for k, kind in spec.get("conditions", {}).get(bc.get("type"), {}).items():
+                    if kind == M.VECTOR and isinstance(bc.get(k), list):
+                        bc[k] = (bc[k] + [0.0] * dim)[:dim]
+        for c in md.get("conditions", []):
+            for k in ("value",):
+                if isinstance(c.get(k), list):
+                    c[k] = (c[k] + [0.0] * dim)[:dim]
+
+
+# ------------------------------------------------------------------ actions
+
+def actions(model: dict, path: Path) -> list[tuple[str, str]]:
+    """Possible operations on a node: [(identifier, label)]. Headers offer to
+    add their items (the interface shows them in a context menu and as a +
+    button)."""
+    n = len(path)
+    out: list[tuple[str, str]] = []
+    md = owner(model, path)
+    rest = path[2:] if md is not None else ()
+    if path == ():
+        out += [("add_parameter", "Add a parameter"), ("add_material", "Add a material"),
+                ("add_geometry", "Add a geometry"), ("add_field", "Add a field")]
+        if model.get("meshes"):          # (a model: on a mesh; a mesh: of a geometry)
+            out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                    if "requires" not in s]
+            out.append(("add_model:", "Add an empty model"))
+        out.append(("add_solver", "Add a global solver"))
+    elif path == ("parameters",):
+        out.append(("add_parameter", "Add a parameter"))
+    elif path == ("materials",):
+        out += [("add_from_library", "Add from a library…"), ("add_material", "Add an empty material")]
+    elif path[:1] == ("materials",) and n == 2:
+        out += [("add_property", "Add a property"), ("cmd:save_material", "Save in my library"),
+                ("remove", "Remove")]
+    elif path == ("fields",):
+        out.append(("add_field", "Add a field"))
+    elif path[:1] in (("fields",), ("parameters",)) and n == 2:
+        if path[0] == "fields":
+            out.append(("add_field_value", "Add a value on a domain"))
+        out.append(("remove", "Remove"))
+    elif path == ("geometries",):
+        out.append(("add_geometry", "Add a geometry"))
+    elif path[:1] == ("geometries",) and n == 2:
+        out += [("add_selection", "Add a selection"), ("add_mesh", "Add a mesh of this geometry")]
+        src = get_at(model, path + ("source",), {})
+        if src.get("type") == "swept_surface":
+            out.append(("curve:points", "Give the swept curve by points and arcs (a table)")
+                       if isinstance(src.get("shape"), dict) else
+                       ("curve:polygon", "Draw the swept curve as a polygon (in the view)"))
+        if src.get("type") == "curve":
+            in_plane = " in a plane" if src.get("dim") == 3 else ""
+            if not isinstance(src.get("shape"), dict):
+                out.append(("curve:polygon", f"Draw the curve as a polygon{in_plane} (in the view)"))
+            if isinstance(src.get("shape"), dict) or isinstance(src.get("parametric"), dict):
+                out.append(("curve:points", "Give the curve by points and arcs (a table)"))
+            if not isinstance(src.get("parametric"), dict):
+                out.append(("curve:parametric", "Give the curve by parametric equations"))
+        if model.get("geometries"):
+            out.append(("remove", "Remove"))
+    elif path[:1] == ("geometries",) and n > 3 and path[2] == "source" and constraint_owner(path) is not None:
+        out.append(("remove", "Remove"))
+    elif is_curve_polygon(model, path):
+        from . import geometry2d as G
+        shape = get_at(model, path, {})
+        if len(shape.get("points") or []) >= G.min_points(shape):
+            two = G.side_count(shape) >= 2               # an angle, a pair of sides
+            out += [(f"constrain:{t}", f"Constrain: {SK.LABELS[t]}") for t in SK.TYPES if t != "coincident"
+                    and (two or (t != "angle" and t not in SK.PAIR_TYPES))]
+            if len(shape["points"]) >= 3:
+                out.append(("fillet:all", "Fillets: round all the corners"))
+            if shape.get("fillets"):
+                out.append(("fillet:remove", "Fillets: remove them"))
+            if shape.get("splines"):
+                out.append(("spline:remove_all", "Curved sides: make them all straight"))
+        if shape.get("points"):
+            out.append(("clear_curve", "Clear (draw it again in the view)"))
+    elif path[:1] == ("geometries",) and n > 3 and path[2] == "source":
+        shape = get_at(model, path, {})
+        if isinstance(shape, dict) and shape.get("type"):
+            if shape.get("type") in M.SHAPES_BOOLEAN:
+                d = shape_dim(model, path)
+                out += [(f"add_shape:{t}", f"Add {_a(M.shape_word(t, d))} {M.shape_word(t, d)}")
+                        for t in primitives_of_dim(d)]
+                out += [(f"add_shape:{t}", f"Add {_a(t)} {t} (of shapes to add)") for t in M.SHAPES_BOOLEAN]
+            if shape.get("type") in M.SHAPES_BOOLEAN and shape_dim(model, path) == 3 \
+                    and "profile" not in path[4:] and shape.get("of"):
+                out += [("pick_plane:boss", "On a face: a boss (extrusion out of the face)"),
+                        ("pick_plane:pocket", "On a face: a pocket (extrusion into the solid)")]
+            if shape.get("type") not in M.SHAPES_BOOLEAN or shape.get("of"):
+                out += [(f"wrap:{t}", f"Put in {_a(t)} {t}") for t in M.SHAPES_BOOLEAN]
+                out += [("transform:transform", "Transform: move or turn"),
+                        ("transform:array", "Transform: copy in an array (linear, circular)")]
+            if shape.get("type") == "polygon" and len(shape.get("points") or []) >= 3:
+                out += [(f"constrain:{t}", f"Constrain: {SK.LABELS[t]}") for t in SK.TYPES
+                        if t != "coincident" or _other_polygons(model, path)]
+                out.append(("fillet:all", "Fillets: round all the corners"))
+                if shape.get("fillets"):
+                    out.append(("fillet:remove", "Fillets: remove them"))
+                if shape.get("splines"):
+                    out.append(("spline:remove_all", "Curved sides: make them all straight"))
+            if shape.get("type") in M.SHAPES_TRANSFORM:
+                out.append(("unwrap", f"Remove the {shape['type']} only"))
+            if path[-2] == "of":      # a boolean of two shapes left with one is replaced by it
+                out.append(("remove", "Remove"))
+            elif path[-1] in ("shape", "profile") and shape != EMPTY_SHAPE:
+                out.append(("clear_shape", "Clear (start again from nothing)"))
+    elif path[:1] == ("geometries",) and n == 3 and path[2] == "selections":
+        out.append(("add_selection", "Add a selection"))
+    elif path[:1] == ("geometries",) and n == 4:
+        geom = model["geometries"][path[1]]
+        if path[3] in geom.get("selections", {}):
+            out.append(("remove", "Remove"))
+    elif path == ("meshes",):
+        if model.get("geometries"):
+            out.append(("add_mesh", "Add a mesh"))
+    elif path[:1] == ("meshes",) and n == 2:
+        if can_size(model, get_at(model, path, {})):
+            out.append(("add_size", "Add a local size"))
+        if can_refine(model, get_at(model, path, {})):
+            out.append(("add_refinement", "Add a refinement"))
+        if model.get("meshes"):
+            out.append(("remove", "Remove"))
+    elif path[:1] == ("meshes",) and n == 4 and path[2] in ("sizes", "refine"):
+        out.append(("remove", "Remove"))
+    elif path == ("models",):
+        if model.get("meshes"):
+            out += [(f"add_model:{t}", f"Add a model: {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                    if "requires" not in s]
+            out.append(("add_model:", "Add an empty model"))
+    elif path == ("solvers",):
+        out.append(("add_solver", "Add a global solver"))
+    elif path[:1] == ("solvers",) and n == 2:
+        out.append(("remove", "Remove"))
+    elif md is not None and not rest:
+        out += [("add_variable", "Add a variable"), ("add_module", "Add a module…"),
+                ("add_term", "Add a term"), ("add_condition", "Add a condition"),
+                ("add_quantity", "Add an integrated quantity"),
+                ("add_local_parameter", "Add a parameter"), ("add_local_field", "Add a field"),
+                ("add_import", "Import a variable of another model")]
+        if model.get("models"):
+            out.append(("remove", "Remove"))
+    elif rest == ("parameters",):
+        out.append(("add_local_parameter", "Add a parameter"))
+    elif rest == ("fields",):
+        out.append(("add_local_field", "Add a field"))
+    elif rest == ("imports",):
+        out.append(("add_import", "Import a variable of another model"))
+    elif rest == ("variables",):
+        out.append(("add_variable", "Add a variable"))
+    elif rest == ("modules",):
+        present = {m.get("type") for m in md.get("modules", [])}
+        macros = {x for m in md.get("modules", []) for x in M.spec_of(m).get("macros", ())}
+        out += [(f"add_module:{t}", f"Add {s['label'].lower()}") for t, s in M.MODULE_SPECS.items()
+                if (t not in present or s.get("several")) and not macros & set(s["macros"])]
+        # (one module of each type per model, PDE: several; nor two of the same macros: electrostatics
+        # and electric currents, E_field)
+    elif rest == ("terms",):
+        out.append(("add_term", "Add a term"))
+    elif rest == ("conditions",):
+        out.append(("add_condition", "Add a condition"))
+    elif rest == ("outputs",):
+        out.append(("add_quantity", "Add an integrated quantity"))
+    elif rest == ("graphics",):
+        out.append(("add_graphic", "Add a graphic"))
+    elif rest == ("plots",):
+        out.append(("add_plot", "Add a plot"))
+    elif rest[:1] == ("plots",) and len(rest) == 2:
+        out += [("add_curve", "Add a curve"), ("remove", "Remove")]
+    elif rest[:1] == ("plots",) and len(rest) == 4:
+        out += [("duplicate_curve", "Duplicate"), ("remove", "Remove")]
+    elif rest[:1] == ("modules",) and len(rest) == 2:
+        spec = M.spec_of(get_at(model, path))
+        out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(model, get_at(model, path))]
+        if spec.get("source") is not None:       # (f, or the symbol of its source: rho_v)
+            out.append(("add_source", f"Add a domain for {(spec.get('source_label') or 'f').split(' ')[0]}"))
+        if spec.get("conditions"):
+            out.append(("add_bc", "Add a condition"))
+        out += [("unfold", "Unfold into terms and conditions")] if _can_unfold(get_at(model, path)) else []
+        out.append(("remove", "Remove"))
+    elif rest[:1] == ("modules",) and len(rest) == 3 and rest[2] == "sources":
+        out.append(("add_source", "Add a source"))
+    elif rest[:1] == ("modules",) and len(rest) == 3 and rest[2] == "conditions":
+        out.append(("add_bc", "Add a condition"))
+    elif rest[:1] == ("modules",) and len(rest) == 5 and rest[2] == "properties":
+        if len(get_at(model, path[:-1], [])) > 1:
+            out.append(("remove", "Remove"))
+    elif rest[:1] in (("parameters",), ("fields",), ("imports",), ("variables",), ("terms",),
+                      ("conditions",), ("outputs",), ("graphics",)) and len(rest) == 2:
+        if rest[0] == "fields":
+            out.append(("add_field_value", "Add a value on a domain"))
+        out.append(("remove", "Remove"))
+    elif rest[:1] == ("modules",) and len(rest) == 4 and rest[2] in ("sources", "conditions"):
+        out.append(("remove", "Remove"))
+    return out
+
+
+def needs_name(action: str) -> bool:
+    """Actions for which the interface asks for a name first."""
+    return action == "add_property"
+
+
+def _names_in(model: dict, md: dict | None) -> set:
+    names = set(M.global_names(model))
+    for m in model.get("models", []):
+        if md is None or m is md:
+            names |= set(M.local_names(m))
+    return names
+
+
+def _first_boundary(model, md, used=()) -> str:
+    boundaries = selections_of_kind(model, M.BOUNDARY, M.model_geometry(model, md))
+    return next((s for s in boundaries if s != M.BOUNDARY and s not in used),
+                boundaries[0] if boundaries else M.BOUNDARY)
+
+
+def do_action(model: dict, path: Path, action: str, name: str | None = None) -> Path | None:
+    """Perform an action; returns the path of the node to select afterwards."""
+    md = owner(model, path)
+    dim = item_dim(model, path) if md is not None else \
+        ((M.geometry_dim(model, model["geometries"][0]) if model.get("geometries") else None) or 2)
+    if action.split(":")[0] in ("insert_point", "remove_point") and path[:1] == ("geometries",) \
+            and len(path) == 2:
+        verb, i = action.split(":")
+        src, i = model["geometries"][path[1]]["source"], int(i)
+        pts = src.setdefault("points", [])
+        through = list(src.get("through") or [])
+        through += [None] * (len(pts) - len(through))
+        if verb == "remove_point":
+            if len(pts) <= 2:
+                raise ValueError("a curve keeps at least two points")
+            del pts[i]
+            del through[min(i, len(through) - 1)]
+        else:                          # a point in the middle of the piece after the point i
+            r = P.resolved(model)["geometries"][path[1]]["source"]["points"]
+            a = r[i]
+            if i + 1 < len(r) or src.get("closed"):
+                b = r[(i + 1) % len(r)]
+                new = [(x + y) / 2 for x, y in zip(a, b)]
+            else:                      # after the last point: one further on
+                prev = r[i - 1] if i > 0 else [x - 1.0 for x in a]
+                new = [2 * x - y for x, y in zip(a, prev)]
+            pts.insert(i + 1, [float(f"{x:.6g}") for x in new])
+            through.insert(i + 1, None)
+            if i < len(through) - 1:
+                through[i] = None          # an arc there is split into segments
+        n = len(pts) if src.get("closed") else len(pts) - 1
+        src["through"] = through[:n]
+        return path
+    if action in ("curve:polygon", "curve:points", "curve:parametric"):
+        conv = {"curve:polygon": curve_as_polygon, "curve:points": curve_as_points,
+                "curve:parametric": curve_as_parametric}[action]
+        model["geometries"][path[1]]["source"] = conv(model, path[1])
+        return path + ("source", "shape") if action == "curve:polygon" else path
+    if action == "clear_curve":
+        shape = get_at(model, path)
+        set_at(model, path, {"type": "polygon", "points": [], "open": bool(shape.get("open", True))})
+        return path
+    if action.startswith("extend:"):          # an end of an open polygon: one more side, along the last one
+        i = int(action.split(":")[1])
+        pts = get_at(model, path + ("points",))
+        r = get_at(P.resolved(model), path + ("points",))
+        j = 1 if i == 0 else len(r) - 2
+        a, b = np.asarray(r[i], float), np.asarray(r[j], float)
+        new = [float(f"{x:.6g}") for x in a + (a - b) / 2]
+        if i == 0:
+            pts.insert(0, new)
+            _vertex_inserted(model, path, -1)
+        else:
+            pts.append(new)
+        return path
+    if action == "add_vertex":                # a vertex after the last one (a polygon being typed)
+        pts = get_at(model, path + ("points",))
+        r = [v for v in (get_at(P.resolved(model), path + ("points",)) or []) if isinstance(v, list)]
+        from . import geometry2d as G
+        try:
+            ext = _profile_extent(model, path)
+            if ext is None:
+                ext = G.bounds(G.shape_of(P.resolved(model)["geometries"][path[1]]["source"]))
+            lo, hi = ext
+            c, e = (lo + hi) / 2, float((hi - lo).max()) / 4
+        except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+            c, e = [0.0, 0.0], 1.0
+        if not r:
+            new = [float(c[0]), float(c[1])]
+        elif len(r) == 1:
+            new = [r[0][0] + e, r[0][1]]
+        else:                                 # the last side turned by a quarter
+            dx, dy = r[-1][0] - r[-2][0], r[-1][1] - r[-2][1]
+            new = [r[-1][0] - dy, r[-1][1] + dx]
+        pts.append([float(f"{x:.6g}") for x in new])
+        return path
+    if action.split(":")[0] in ("insert_vertex", "remove_vertex"):
+        verb, i = action.split(":")
+        pts, i = get_at(model, path + ("points",)), int(i)
+        if verb == "remove_vertex":
+            if len(pts) <= (2 if get_at(model, path).get("open") else 3):
+                raise ValueError("a polygon keeps at least three vertices (an open one, two)")
+            n, v = len(pts), i + 1          # the vertex v (1-based): its sides v - 1 and v merged
+            sides = spline_sides(model, path)
+            before, after = (v - 2) % n + 1, v
+            merged = None
+            if before in sides or after in sides:   # one curved side, through the vertex
+                sp = get_at(model, path + ("splines",))
+                merged = [q for q in (sp[sides[before]]["points"] if before in sides else [])] + [pts[i]] + \
+                    [q for q in (sp[sides[after]]["points"] if after in sides else [])]
+            del pts[i]
+            _vertex_removed(model, path, i, n)
+            if merged is not None:
+                shape = get_at(model, path)
+                k = v - 1 if v > 1 else n - 1
+                shape["splines"] = sorted((shape.get("splines") or []) + [{"side": k, "points": merged}],
+                                          key=lambda c: c.get("side", 0))
+        elif i + 1 in spline_sides(model, path):    # a curved side: a point of its spline, after the vertex
+            return do_action(model, path, f"spline:insert:{i + 1}:-1")
+        else:                              # a new vertex in the middle of the side i
+            r = get_at(P.resolved(model), path + ("points",))
+            a, b = r[i], r[(i + 1) % len(r)]
+            pts.insert(i + 1, [float(f"{(a[k] + b[k]) / 2:.6g}") for k in range(2)])
+            _vertex_inserted(model, path, i)
+        return path
+    if action.split(":")[0] in ("remove_row", "move_up", "move_down"):
+        verb, i = action.split(":")
+        items, i = get_at(model, path), int(i)
+        if verb == "remove_row":
+            del items[i]
+        elif verb == "move_up" and i > 0:
+            items[i - 1], items[i] = items[i], items[i - 1]
+        elif verb == "move_down" and i + 1 < len(items):
+            items[i + 1], items[i] = items[i], items[i + 1]
+        return path
+    if action == "remove" and constraint_owner(path) is not None:
+        remove_at(model, path)
+        return constraint_owner(path)
+    if action.startswith("constrain:"):
+        return add_constraint(model, path, action.split(":", 1)[1])
+    if action == "fillet:all":                # a radius of a fifth of the shortest side, at every vertex
+        V = _resolved_points(model, path)
+        L = np.linalg.norm(np.roll(V, -1, axis=0) - V, axis=1) if V is not None else np.ones(1)
+        radius = float(f"{0.2 * float(np.min(L)):.2g}")
+        on_axis = set()                       # a profile of revolution: not its vertices on the axis
+        if "profile" in path:
+            swept = get_at(model, path[:len(path) - path[::-1].index("profile") - 1])
+            if isinstance(swept, dict) and swept.get("type") == "revolution" and V is not None:
+                scale = float(np.max(np.abs(V))) or 1.0
+                on_axis = {k for k in range(len(V)) if abs(V[k, 0]) <= 1e-9 * scale}
+        npts = len(get_at(model, path)["points"])
+        if get_at(model, path).get("open"):        # an open polygon (a curve): no corner at its ends
+            on_axis |= {0, npts - 1}
+            L = L[:-1] if len(L) > 1 else L
+            radius = float(f"{0.2 * float(np.min(L)):.2g}")
+        get_at(model, path)["fillets"] = [{"vertex": k + 1, "radius": radius}
+                                          for k in range(npts) if k not in on_axis]
+        return path
+    if action.startswith("fillet:vertex:"):    # one vertex rounded: its sides shortened by a quarter
+        k = int(action.rsplit(":", 1)[1])
+        set_fillet(model, path, k, _corner_radius(model, path, k))
+        return path
+    if action.startswith("fillet:sharp:"):
+        set_fillet(model, path, int(action.rsplit(":", 1)[1]), None)
+        return path
+    if action == "spline:remove_all":
+        shape = get_at(model, path)
+        shape.pop("splines", None)
+        shape.pop("smooth", None)
+        return path
+    if action.startswith("spline:side:"):        # the side k made a spline
+        make_spline(model, path, int(action.rsplit(":", 1)[1]))
+        return path
+    if action.startswith("spline:straight:"):
+        make_straight(model, path, int(action.rsplit(":", 1)[1]))
+        return path
+    if action.startswith(("spline:insert:", "spline:remove:")):     # a point of the spline of side k
+        verb, k, p = action.split(":")[1:]
+        k, p = int(k), int(p)
+        j = spline_sides(model, path).get(k)
+        if j is None:
+            raise ValueError(f"side {k} is not a spline")
+        pts = get_at(model, path + ("splines", j, "points"))
+        if verb == "remove":
+            del pts[p]
+        else:
+            pts.insert(p + 1, _spline_point(model, path, k, p))
+        return path
+    if action.startswith("smooth:"):              # the vertex k smooth, or a corner again
+        k = int(action.rsplit(":", 1)[1])
+        set_smooth(model, path, k, k not in (get_at(model, path).get("smooth") or []))
+        return path
+    if action == "fillet:remove":
+        get_at(model, path).pop("fillets", None)
+        return path
+    if action == "remove" and path[:1] == ("geometries",) and len(path) > 5 and path[2] == "source" \
+            and path[-2] == "of":
+        # the shape of a transform or an array goes with it
+        while path[-2] == "of" and get_at(model, path[:-2], {}).get("type") in M.SHAPES_TRANSFORM:
+            path = path[:-2]
+        if path[-2] != "of":                  # the root (or a profile) was a transform
+            return do_action(model, path, "clear_shape")
+        return _remove_shape(model, path)
+    if action == "add_size":
+        return add_size(model, path)
+    if action == "add_refinement":
+        return add_refinement(model, path)
+    if action == "remove" and path[:1] == ("meshes",) and len(path) == 4 and path[2] in ("sizes", "refine"):
+        mesh, key = get_at(model, path[:2]), path[2]
+        del mesh[key][path[3]]
+        if mesh[key]:
+            return path[:3] + (min(path[3], len(mesh[key]) - 1),)
+        mesh.pop(key)
+        if key == "sizes":
+            mesh.pop("growth", None)
+        return path[:2]
+    if action == "remove":
+        parent = get_at(model, path[:-1])
+        if isinstance(parent, list):
+            del parent[path[-1]]
+            if parent:
+                return path[:-1] + (min(path[-1], len(parent) - 1),)
+        else:
+            del parent[path[-1]]
+        return path[:-2] if path[-2] == "of" else path[:-1]
+    if action in ("add_parameter", "add_local_parameter"):
+        target = model if action == "add_parameter" else md
+        params = target.setdefault("parameters", [])
+        params.append({"name": unique_name(name or "p", _names_in(model, md)), "value": 1.0, "description": ""})
+        return (("models", path[1]) if md is not None else ()) + ("parameters",)
+    if action in ("add_field", "add_local_field"):
+        target = model if action == "add_field" else md
+        fields_ = target.setdefault("fields", [])
+        f = {"name": unique_name(name or "f", _names_in(model, md)), "description": "",
+             "values": [{"selection": M.ALL, "value": 0.0}]}
+        if action == "add_field" and model.get("geometries"):
+            f = {"name": f["name"], "geometry": model["geometries"][0]["name"], **{k: v for k, v in f.items()
+                                                                                 if k != "name"}}
+        fields_.append(f)
+        return (("models", path[1]) if md is not None else ()) + ("fields", len(fields_) - 1)
+    if action == "add_field_value":
+        f_ = get_at(model, path)
+        value = 0.0
+        if M.field_kind(f_) == M.VECTOR:
+            geom = item_geometry(model, path)
+            value = [0.0] * ((M.geometry_dim(model, geom) if geom else None) or 2)
+        f_.setdefault("values", []).append({"selection": M.ALL, "value": value})
+        return path
+    if action.startswith("add_from_library:"):
+        from . import library
+        return ("materials", library.copy_into(model, action.split(":", 1)[1]))
+    if action == "add_material":
+        mats = model.setdefault("materials", [])
+        mats.append({"name": unique_name(name or "material", [m.get("name") for m in mats]),
+                     "description": "", "properties": {}})
+        return ("materials", len(mats) - 1)
+    if action == "add_property":
+        if not name or not M._IDENT.match(name):
+            raise ValueError("a property name (letters, digits, _) is required")
+        props = model["materials"][path[1]].setdefault("properties", {})
+        if name in props:
+            raise ValueError(f"the property {name!r} already exists")
+        props[name] = 1.0
+        return path
+    if action == "add_geometry" or action.startswith("add_geometry:"):
+        geoms = model.setdefault("geometries", [])
+        gname = unique_name(name or "geometry", [g.get("name") for g, _ in M.all_geometries(model)])
+        kind = action.partition(":")[2]
+        src = new_geometry_source(kind) if kind else _default_source("box", dim)
+        if src["type"] == "boundary":
+            src["geometry"] = next(iter(solids(model)), "")
+        geoms.append({"name": gname, "source": src, "selections": {}})
+        return ("geometries", len(geoms) - 1)
+    if action == "add_selection":
+        gi = path[1]
+        geom = model["geometries"][gi]
+        table = M.selection_table(model, geom)
+        sname = unique_name(name or "selection", table)
+        gdim = M.selection_dim(model, geom) or geometry_dim(model, gi)
+        geom.setdefault("selections", {})[sname] = {
+            "kind": M.BOUNDARY, "criteria": _default_criteria("plane", gdim, M.BOUNDARY)}
+        return ("geometries", gi, "selections", sname)
+    if action.startswith("add_shape:"):
+        shape = get_at(model, path)
+        t = action.split(":", 1)[1]
+        if t in M.SHAPES_BOOLEAN:
+            new = {"type": t, "of": []}
+        elif t == "polygon":                 # empty: its vertices clicked in the view, or typed
+            new = {"type": "polygon", "points": []}
+        elif t in M.SHAPES_SWEPT and "profile" not in path[4:]:   # its profile from nothing
+            new = _swept_in_geometry(model, path[1], t)
+        else:
+            new = _shape_in_profile(model, path, t) if "profile" in path[4:] \
+                else _shape_in_geometry(model, path[1], t)
+        shape.setdefault("of", []).append(new)
+        return path + ("of", len(shape["of"]) - 1)
+    if action.startswith("transform:"):     # the shape moved, or copied: in a new transform or array
+        return do_action(model, path, "wrap:" + action.split(":", 1)[1])
+    if action.startswith("wrap:"):          # the shape becomes the first part of a new boolean
+        t = action.split(":", 1)[1]
+        node = {"type": t, "of": [get_at(model, path)]}
+        if t in M.SHAPES_TRANSFORM:           # or the shape of a new transform or array
+            node.update(_transform_defaults(model, path, t))
+        set_at(model, path, node)
+        _fit_layers(model, path[1])
+        swept, inner = _shape_location(path)
+        _remap_shape_refs(model["geometries"][path[1]],
+                          lambda p: tuple(p)[:len(inner)] + (0,) + tuple(p)[len(inner):]
+                          if tuple(p)[:len(inner)] == inner else tuple(p), swept)
+        return path
+    if action == "unwrap":                    # a transform or an array replaced by its shape
+        node = get_at(model, path)
+        set_at(model, path, node["of"][0])
+        swept, inner = _shape_location(path)
+        n = len(inner)
+        _remap_shape_refs(model["geometries"][path[1]],
+                          lambda p: tuple(p)[:n] + tuple(p)[n + 1:] if tuple(p)[:n] == inner else tuple(p), swept)
+        return path
+    if action == "clear_shape":               # the root (or a profile) emptied
+        set_at(model, path, copy.deepcopy(EMPTY_SHAPE))
+        swept, inner = _shape_location(path)
+        _remap_shape_refs(model["geometries"][path[1]], lambda p: None, swept)
+        return path
+    if action == "add_mesh":
+        if not model.get("geometries"):
+            raise ValueError("no geometry to mesh: add a geometry first")
+        meshes = model.setdefault("meshes", [])
+        geom = model["geometries"][path[1]] if path[:1] == ("geometries",) else model["geometries"][0]
+        stype = M.meshed_geometry(model, geom).get("source", {}).get("type")
+        mesher = default_mesher(stype)
+        gdim = M.geometry_dim(model, geom) or 2
+        mesh = {"name": unique_name(name or "mesh", [m.get("name") for m, _ in M.all_meshes(model)]),
+                "geometry": geom["name"], "mesher": mesher}
+        mesh.update(_default_mesh_params(mesher, gdim))
+        if mesher in M.FREE_MESHERS:             # of the scale of the geometry
+            mesh[_size_key(mesher)] = M.default_element_size(model, geom)
+        meshes.append(mesh)
+        return ("meshes", len(meshes) - 1)
+    if action.startswith("add_model:"):
+        mtype = action.split(":", 1)[1] or None
+        models = model.setdefault("models", [])
+        base = {"heat_conduction": "heat", "linear_elasticity": "mechanics",
+                "electrostatics": "electrostatics", "electric_currents": "currents"}.get(mtype, "model")
+        mname = unique_name(name or base, [m.get("name") for m in models])
+        if not model.get("meshes"):
+            raise ValueError("a model is on a mesh: add a geometry and a mesh first")
+        mesh = model["meshes"][0].get("name", "mesh")
+        new = M.new_model(mname, mesh, mtype, dim)
+        if mtype is None:                       # one variable to start with
+            new["variables"].append(M.new_variable(unique_name("u", _names_in(model, None)), mesh))
+        taken = _names_in(model, None)
+        for v in new["variables"]:          # names already used in the file: the next ones
+            if v["name"] in M.global_names(model):
+                old = v["name"]
+                v["name"] = unique_name(old, taken)
+                for mod in new["modules"]:
+                    for role in M.spec_of(mod)["variables"]:
+                        if mod.get(role) == old:
+                            mod[role] = v["name"]
+        models.append(new)
+        return ("models", len(models) - 1)
+    if action == "add_solver":             # the first: all the models; then: a copy of the last one
+        solvers = model.setdefault("solvers", [])
+        new = copy.deepcopy(solvers[-1]) if solvers else {"type": "sequence", "steps": M.solve_order(model)}
+        new.pop("start", None)
+        new["name"] = unique_name(name or "solver", [s.get("name") for s in solvers])
+        solvers.append(new)
+        return ("solvers", len(solvers) - 1)
+    base = ("models", path[1]) if md is not None else ()
+    mesh_name = (M.model_mesh(model, md) or (model.get("meshes") or [{}])[0]).get("name", "mesh") \
+        if md is not None else None
+    if action == "add_variable":
+        vars_ = md.setdefault("variables", [])
+        vars_.append(M.new_variable(unique_name(name or "v", _names_in(model, md)), mesh_name, M.SCALAR, 1))
+        return base + ("variables", len(vars_) - 1)
+    if action == "add_import":
+        others = [m for m in model.get("models", []) if m is not md and m.get("variables")]
+        if not others:
+            raise ValueError("no other model to import from")
+        src = others[0]
+        var = src["variables"][0]["name"]
+        imps = md.setdefault("imports", [])
+        imps.append({"name": unique_name(var, _names_in(model, md)), "model": src["name"], "variable": var})
+        return base + ("imports", len(imps) - 1)
+    if action == "add_module":
+        return base + ("modules",)
+    if action.startswith("add_module:"):
+        mtype = action.split(":", 1)[1]
+        spec = M.MODULE_SPECS[mtype]
+        names = {}
+        existing = {v["name"]: M.variable_kind(v) for v in md.get("variables", [])}
+        imports = [im["name"] for im in md.get("imports", [])]
+        taken = {m.get("variable") for m in md.get("modules", []) if mtype == "pde" and m.get("type") == "pde"}
+        for role, v in spec["variables"].items():
+            same = [n for n, k in existing.items() if k == v["kind"] and n not in taken] + \
+                (imports if v.get("import") else [])        # (a new PDE: a new unknown)
+            if v["name"] in same or (v["name"] in imports and v.get("import")):
+                names[role] = v["name"]
+            elif same and role != "variable":
+                names[role] = same[0]
+            else:                            # a new variable
+                vname = unique_name(v["name"], _names_in(model, md))
+                md.setdefault("variables", []).append(M.new_variable(vname, mesh_name, v["kind"], v["degree"]))
+                names[role] = vname
+                existing[vname] = v["kind"]
+        mods = md.setdefault("modules", [])
+        before = list(mods)
+        mods.append(M.new_module(mtype, dim, names))
+        if "requires" in spec:
+            other, role = spec["requires"]
+            if not any(m.get("type") == other and m.get("variable") == names[role] for m in mods):
+                mods.insert(len(mods) - 1, M.new_module(other, dim, {"variable": names[role]}))
+        for new in [m for m in mods if all(m is not b for b in before)]:     # the properties already given
+            for prop in list(new.get("properties", {})):
+                given = next((b["properties"][prop] for b in before if b.get("properties", {}).get(prop)
+                              and M.data_name(b, prop) == M.data_name(new, prop)), None)
+                if given:
+                    new["properties"][prop] = copy.deepcopy(given)
+        return base + ("modules", len(mods) - 1)
+    if action.startswith("add_piece:"):
+        p = action.split(":", 1)[1]
+        pieces = get_at(model, path).setdefault("properties", {}).setdefault(p, [])
+        default = M.default_property(get_at(model, path), p, dim)
+        pieces.append({"selection": M.ALL, "value": default})
+        _share_property(model, path + ("properties", p))
+        return path                                 # (edited in the form of the module)
+    if action == "add_source":
+        mpath = path[:4]
+        mod = get_at(model, mpath)
+        spec = M.spec_of(mod)
+        srcs = mod.setdefault("sources", [])
+        srcs.append({"selection": M.ALL, "value": _zero(spec.get("source", M.SCALAR), dim)})
+        return mpath                                # (edited in the form of the module)
+    if action == "add_bc":
+        mpath = path[:4]
+        mod = get_at(model, mpath)
+        spec = M.spec_of(mod)
+        bcs = mod.setdefault("conditions", [])
+        btype = next(iter(spec["conditions"]))
+        sel = _first_boundary(model, md, {bc.get("selection") for bc in bcs})
+        bcs.append(_default_condition(btype, spec["conditions"][btype], sel, dim))
+        return mpath + ("conditions", len(bcs) - 1)
+    if action == "add_term":
+        terms = md.setdefault("terms", [])
+        var = (md.get("variables") or [{"name": "u"}])[0]["name"]
+        terms.append({"name": unique_name(name or "term", [t.get("name") for t in terms]),
+                      "expr": f"Grad_{var}.Grad_Test_{var}", "selection": M.ALL})
+        return base + ("terms", len(terms) - 1)
+    if action == "add_condition":
+        conds = md.setdefault("conditions", [])
+        var = (md.get("variables") or [{"name": "u"}])[0]
+        kind = M.variable_kind(var)
+        conds.append({"type": "dirichlet", "variable": var["name"],
+                      "selection": _first_boundary(model, md, {c.get("selection") for c in conds}),
+                      "value": _zero(kind, dim), "method": "simplification"})
+        return base + ("conditions", len(conds) - 1)
+    if action == "add_quantity":
+        qs = md.setdefault("outputs", [])
+        qs.append({"name": unique_name(name or "quantity", [q.get("name") for q in qs]),
+                   "expr": "1", "selection": M.ALL})
+        return base + ("outputs", len(qs) - 1)
+    if action == "add_graphic":
+        return add_graphic(md, None, path[:2])
+    if action == "add_plot":
+        plots = md.setdefault("plots", [])
+        plots.append({"name": unique_name(name or "plot", [p.get("name") for p in plots]), "type": "line",
+                      "title": "", "curves": [_default_curve(model, path[:2] + ("plots", len(plots)), "line")]})
+        return path[:2] + ("plots", len(plots) - 1)
+    if action == "add_curve":
+        p = get_at(model, path[:4])
+        last = p["curves"][-1] if p.get("curves") else None
+        p.setdefault("curves", []).append(_default_curve(model, path[:4], p.get("type", "line"), last))
+        return path[:4] + ("curves", len(p["curves"]) - 1)
+    if action == "duplicate_curve":
+        curves = get_at(model, path[:5])
+        curves.insert(path[5] + 1, copy.deepcopy(curves[path[5]]))
+        return path[:5] + (path[5] + 1,)
+    if action == "unfold":
+        return unfold_module(model, path)
+    raise ValueError(f"unknown action {action!r}")
+
+
+def remove_at(model: dict, path: Path) -> None:
+    """Delete the item at path (dictionary key or list element)."""
+    parent = get_at(model, path[:-1])
+    if isinstance(parent, list):
+        del parent[path[-1]]
+    else:
+        parent.pop(path[-1], None)
+    if len(path) > 6:                       # (a piece of a property: the other modules too)
+        _share_property(model, path[:6])
+    if path[:1] == ("solvers",) and len(path) == 2 and model.get("solvers"):
+        model["solvers"][0].pop("start", None)          # (the first one: from the initial values)
+
+
+# ------------------------------------------------------------------ graphics
+
+def default_graphic_field(md: dict) -> str:
+    """The field shown by a new graphic: von Mises for an elasticity model,
+    otherwise the first variable."""
+    if any(m.get("type") == "linear_elasticity" for m in md.get("modules", [])):
+        return "von_mises"
+    return (md.get("variables") or [{"name": "u"}])[0]["name"]
+
+
+def find_graphic(md: dict, field: str) -> int | None:
+    """Index of the graphic named after a field (the one a result node shows)."""
+    return next((i for i, g in enumerate(md.get("graphics", [])) if g.get("name") == field), None)
+
+
+def add_graphic(md: dict, field: str | None, base: Path = ()) -> Path:
+    """A graphic of a field with the default settings, named after it."""
+    field = field or default_graphic_field(md)
+    graphics = md.setdefault("graphics", [])
+    graphics.append({"name": unique_name(field, [g.get("name") for g in graphics]), "field": field})
+    return base + ("graphics", len(graphics) - 1)
+
+
+def graphic_settings(graphic: dict | None) -> dict:
+    """The display settings of a graphic, the missing ones by default."""
+    out = copy.deepcopy(M.GRAPHIC_DEFAULTS)
+    out.update({k: copy.deepcopy(v) for k, v in (graphic or {}).items() if k in M.GRAPHIC_DEFAULTS})
+    return out
+
+
+def set_graphic(graphic: dict, change: dict) -> None:
+    """Change settings of a graphic; a default value is not stored."""
+    for k, v in change.items():
+        if k in ("name", "field"):
+            graphic[k] = v
+        elif v == M.GRAPHIC_DEFAULTS.get(k, object()):
+            graphic.pop(k, None)
+        else:
+            graphic[k] = v
+
+
+# ------------------------------------------------------------------ unfolding a module
+
+def _can_unfold(mod: dict) -> bool:
+    return isinstance(mod, dict) and mod.get("type") == "heat_conduction"
+
+
+def unfold_module(model: dict, path: Path) -> Path:
+    """Replace a heat conduction module by its GWFL terms and generic
+    conditions (the conductivity becomes a local field). The other modules
+    are not unfoldable yet (their macros: sigma, von_mises...)."""
+    md = owner(model, path)
+    mod = get_at(model, path)
+    if not _can_unfold(mod):
+        raise ValueError("only the heat conduction module can be unfolded for now")
+    u = mod["variable"]
+    pieces = mod.get("properties", {}).get("k", [])
+    values = []
+    for pc in pieces:
+        v = pc.get("value")
+        if "material" in pc:
+            v = (M.material(model, pc["material"]) or {}).get("properties", {}).get("k", 1.0)
+        values.append({"selection": pc.get("selection", M.ALL), "value": v})
+    md.setdefault("fields", []).append({"name": "k", "description": "thermal conductivity",
+                                        "values": values})
+    terms = md.setdefault("terms", [])
+    taken = [t.get("name") for t in terms]
+    terms.append({"name": unique_name("conduction", taken), "expr": f"k*Grad_{u}.Grad_Test_{u}",
+                  "selection": M.ALL})
+    for j, s in enumerate(mod.get("sources", [])):
+        terms.append({"name": unique_name("source", [t["name"] for t in terms]),
+                      "expr": f"-({format_value(s['value'])})*Test_{u}", "selection": s.get("selection", M.ALL)})
+    conds = md.setdefault("conditions", [])
+    for bc in mod.get("conditions", []):
+        sel = bc.get("selection")
+        if bc["type"] == "temperature":
+            conds.append({"type": "dirichlet", "variable": u, "selection": sel, "value": bc["value"],
+                          "method": "simplification"})
+        elif bc["type"] == "heat_flux":
+            conds.append({"type": "neumann", "variable": u, "selection": sel, "value": bc["value"]})
+        elif bc["type"] == "convection":
+            conds.append({"type": "robin", "variable": u, "selection": sel, "h": bc["h"], "value": bc["T_ext"]})
+    md["modules"].remove(mod)
+    for q in md.get("outputs", []):          # the macro q of the module
+        q["expr"] = re.sub(_WORD.format("q"), f"(-k*Grad_{u})", str(q.get("expr", "")))
+    return path[:2] + ("terms",)
+
+
+# ------------------------------------------------------------------ what the view shows
+
+def geometry_mesh(model: dict, geom: dict) -> dict | None:
+    """The mesh shown for a geometry: one used by a model, else the first one."""
+    meshes = [m for m in model.get("meshes", []) if m.get("geometry") == geom.get("name")]
+    for md in model.get("models", []):
+        mesh = M.model_mesh(model, md)
+        if mesh in meshes:
+            return mesh
+    return meshes[0] if meshes else None
+
+
+def highlighted_selection(model: dict, path: Path) -> tuple[str | None, str | None]:
+    """(mesh name, selection name) to highlight when a node is selected:
+    the selection itself, the domain of a property or a source, the boundary
+    of a condition, the support of a term or an output."""
+    if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
+        mesh = geometry_mesh(model, model["geometries"][path[1]]) or {}
+        return mesh.get("name"), path[3]
+    if path[:1] == ("meshes",) and len(path) == 4 and path[2] in ("sizes", "refine"):   # on its mesh
+        rule = get_at(model, path, {}) or {}
+        return get_at(model, path[:2] + ("name",)), rule.get("selection")
+    md = owner(model, path)
+    item = get_at(model, path)
+    if md is not None and isinstance(item, dict) and "selection" in item and len(path) > 2:
+        return (M.model_mesh(model, md) or {}).get("name"), item.get("selection", M.ALL)
+    return None, None
+
+
+def mesh_to_show(model: dict, path: Path) -> str | None:
+    """Name of the mesh the viewer should show for a node."""
+    if path[:1] == ("meshes",) and len(path) in (2, 4):
+        return get_at(model, path[:2] + ("name",))
+    if path[:1] == ("geometries",) and len(path) >= 2:
+        return (geometry_mesh(model, model["geometries"][path[1]]) or {}).get("name")
+    md = owner(model, path) or main_model(model)
+    return (M.model_mesh(model, md) or {}).get("name") if md else None
+
+
+def part_3d(model: dict, path: Path) -> dict | None:
+    """The 3D shape drawn over the preview for the shape node at path; in
+    the profile of an extrusion or a revolution, the part of the profile
+    extruded or turned likewise."""
+    shape = get_at(model, path)
+    if not isinstance(shape, dict):
+        return shape
+    if "profile" in path[4:]:
+        k = path.index("profile", 4)
+        swept = get_at(model, path[:k])
+        if not isinstance(swept, dict):
+            return None
+        shape, path = dict(swept, profile=shape), path[:k]
+    try:                                  # placed by the transforms above it
+        A, b = T.frame_along(get_at(model, path[:4]), tuple(path[5::2]), 3)
+        return T.flatten(shape, 3, A, b)
+    except (KeyError, TypeError, ValueError, IndexError):
+        return shape
+
+
+def placed_swept(model: dict, prof: Path) -> dict:
+    """The extrusion or revolution of the profile at prof (in a resolved
+    model), with the transforms above it ("_frame", see transforms.flatten)."""
+    swept = get_at(model, prof[:-1])
+    A, b = T.frame_along(get_at(model, prof[:4]), tuple(prof[5:-1:2]), 3)
+    if np.allclose(A, np.eye(3)) and np.allclose(b, 0):
+        return swept
+    return dict(swept, _frame=[b.tolist(), A.tolist()])
+
+
+def preview_geometry(model: dict, path: Path) -> int | None:
+    """Index of the (top level) geometry previewed for a node."""
+    if path[:1] == ("geometries",) and len(path) >= 2:
+        return path[1]
+    md = owner(model, path) or (main_model(model) if path[:1] not in (("meshes",),) else None)
+    geom = M.model_geometry(model, md) if md else None
+    geoms = model.get("geometries", [])
+    return next((i for i, g in enumerate(geoms) if g is geom), None)
+
+
+# ------------------------------------------------------------------ picking edges and regions for an item
+
+def selection_uses(model: dict, geom: dict, name: str) -> int:
+    """How many items (properties, sources, conditions, terms, outputs,
+    fields, unions) use a selection of a geometry."""
+    n = sum(1 for it in _items_with_selection(model, geom) if it.get("selection", M.ALL) == name)
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "union" and name in crit.get("of", []):
+            n += 1
+    return n
+
+
+def _item_base_name(model: dict, path: Path, item: dict) -> str:
+    rest = path[2:]
+    if rest[:1] == ("modules",) and len(rest) == 5 and rest[2] == "properties":
+        return item.get("material") or f"{rest[3]}_{rest[4] + 1}"
+    if rest[:1] == ("modules",) and len(rest) == 4:
+        return f"{item.get('type', 'source')}_{rest[3] + 1}" if rest[2] == "conditions" \
+            else f"source_{rest[3] + 1}"
+    if rest[:1] == ("conditions",):
+        return f"{item.get('type', 'condition')}_{rest[1] + 1}"
+    if rest[:1] == ("terms",):
+        return f"{item.get('name', 'term')}_support"
+    return f"{item.get('name', 'output')}_support"
+
+
+def _pickable(model: dict, path: Path, kind: str, dim: int = 2) -> tuple[int, dict] | None:
+    """(geometry index, item) when the item at path has a selection of that
+    kind on a box or csg geometry of the top level, of dimension dim (2 or 3)."""
+    from . import geometry2d as G2, geometry3d as G3
+    G = G2 if dim == 2 else G3
+    md = owner(model, path)
+    item = get_at(model, path)
+    if md is None or len(path) < 4 or not isinstance(item, dict) or "selection" not in item:
+        return None
+    geom = M.model_geometry(model, md)
+    geoms = model.get("geometries", [])
+    gi = next((i for i, g in enumerate(geoms) if g is geom), None)
+    if gi is None or G.shape_of(P.resolved(model)["geometries"][gi].get("source", {})) is None:
+        return None
+    if M.selection_table(model, geom).get(item.get("selection", M.ALL), {}).get("kind") != kind:
+        return None
+    return gi, item
+
+
+def can_pick_edges(model: dict, path: Path) -> bool:
+    """Whether clicks on edges edit the support of the item at path (a
+    condition, a term or an output on a boundary)."""
+    return _pickable(model, path, M.BOUNDARY) is not None
+
+
+def pick_edge_for_item(model: dict, path: Path, ref: dict) -> tuple[str, bool]:
+    """Add or remove an edge (side reference) in the support of the item at
+    path. Its selection is edited in place when it is an 'edges' selection
+    used by this item only; otherwise a new selection is created, starting
+    from the current support (empty if it is the whole boundary), named
+    after the item. Returns (selection name, created)."""
+    from . import geometry2d as G
+    gi, item = _pickable(model, path, M.BOUNDARY)
+    geom = model["geometries"][gi]
+    resolved = P.resolved(model)
+    rgeom = resolved["geometries"][gi]
+    table = M.selection_table(resolved, rgeom)
+    name = item.get("selection", M.ALL)
+    sel = geom.get("selections", {}).get(name)
+    if sel is not None and sel.get("criteria", {}).get("type") == "edges" \
+            and selection_uses(model, geom, name) == 1:
+        sel["criteria"] = G.toggle_edge(sel["criteria"], ref)
+        return name, False
+    shape = G.shape_of(rgeom["source"])
+    start: list[dict] = []
+    # from the whole boundary (the default of a new condition), a click means
+    # "this edge", not "everything but this edge"
+    for p in (G.pieces_matching(shape, name, table) or []) if name != M.BOUNDARY else []:
+        if p.side.ref not in start:
+            start.append(p.side.ref)
+    criteria = G.toggle_edge({"type": "edges", "edges": start}, ref)
+    new = unique_name(_item_base_name(model, path, item), table)
+    geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
+    item["selection"] = new
+    return new, True
+
+
+def can_pick_faces(model: dict, path: Path) -> bool:
+    """Whether clicks on faces of a 3D preview edit the support of the item at
+    path (a condition, a term or an output on a boundary)."""
+    return _pickable(model, path, M.BOUNDARY, dim=3) is not None
+
+
+def can_pick_faces_of_selection(model: dict, path: Path) -> bool:
+    """Whether the node at path is a user boundary selection of a 3D box or
+    csg geometry (clicks on faces then edit it)."""
+    from . import geometry3d as G3
+    if not (path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections"):
+        return False
+    sel = model["geometries"][path[1]].get("selections", {}).get(path[3])
+    return sel is not None and sel.get("kind") == M.BOUNDARY and \
+        G3.shape_of(P.resolved(model)["geometries"][path[1]].get("source", {})) is not None
+
+
+def pick_face_for_item(model: dict, path: Path, ref: dict, start=()) -> tuple[str, bool]:
+    """Add or remove a face (geometry3d reference) in the support of the item
+    at path, as pick_edge_for_item does for edges. start: the faces of the
+    current support (computed on the preview), for a new selection."""
+    from . import geometry3d as G3
+    gi, item = _pickable(model, path, M.BOUNDARY, dim=3)
+    geom = model["geometries"][gi]
+    table = M.selection_table(model, geom)
+    name = item.get("selection", M.ALL)
+    sel = geom.get("selections", {}).get(name)
+    if sel is not None and sel.get("criteria", {}).get("type") == "faces" \
+            and selection_uses(model, geom, name) == 1:
+        sel["criteria"] = G3.toggle_face(sel["criteria"], ref)
+        return name, False
+    begin = [] if name == M.BOUNDARY else [dict(r) for r in start]
+    criteria = G3.toggle_face({"type": "faces", "faces": begin}, ref)
+    new = unique_name(_item_base_name(model, path, item), table)
+    geom.setdefault("selections", {})[new] = {"kind": M.BOUNDARY, "criteria": criteria}
+    item["selection"] = new
+    return new, True
+
+
+def can_pick_regions(model: dict, path: Path) -> bool:
+    """Whether clicks in the domain edit the support of the item at path (a
+    property, a source, a term or an output on a domain), or the selection at
+    path (a domain selection of a 2D box or csg geometry)."""
+    from . import geometry2d as G
+    if path[:1] == ("geometries",) and len(path) == 4 and path[2] == "selections":
+        sel = model["geometries"][path[1]].get("selections", {}).get(path[3], {})
+        return sel.get("kind") == M.DOMAIN and \
+            G.shape_of(P.resolved(model)["geometries"][path[1]].get("source", {})) is not None
+    return _pickable(model, path, M.DOMAIN) is not None
+
+
+def pick_region_for_item(model: dict, path: Path, region: list) -> tuple[str, bool]:
+    """Add or remove a region (see geometry2d.region_at) in the selection at
+    path, or in the support of the item at path. The selection of an item is
+    edited in place when it is a 'regions' selection used by this item only;
+    otherwise a new selection is created, starting from the current support
+    when it is made of regions (empty if it is the whole domain), named after
+    the item. Returns (selection name, created)."""
+    from . import geometry2d as G
+    if path[:1] == ("geometries",):
+        sel = model["geometries"][path[1]]["selections"][path[3]]
+        sel["criteria"] = G.toggle_region(sel.get("criteria", {}), region)
+        return path[3], False
+    gi, item = _pickable(model, path, M.DOMAIN)
+    geom = model["geometries"][gi]
+    name = item.get("selection", M.ALL)
+    sel = geom.get("selections", {}).get(name)
+    if sel is not None and sel.get("criteria", {}).get("type") == "regions" \
+            and selection_uses(model, geom, name) == 1:
+        sel["criteria"] = G.toggle_region(sel["criteria"], region)
+        return name, False
+    start = copy.deepcopy(sel["criteria"]) if sel is not None and \
+        sel.get("criteria", {}).get("type") == "regions" else {"type": "regions", "regions": []}
+    criteria = G.toggle_region(start, region)
+    new = unique_name(_item_base_name(model, path, item), M.selection_table(model, geom))
+    geom.setdefault("selections", {})[new] = {"kind": M.DOMAIN, "criteria": criteria}
+    item["selection"] = new
+    return new, True
+
+
+# ------------------------------------------------------------------ drawing shapes
+
+def polygon_to_enter(model: dict, path: Path) -> bool:
+    """The node is a polygon without its vertices yet, in a 2D geometry drawn
+    in the view: its vertices are then clicked there."""
+    shape = get_at(model, path) if path else None
+    return isinstance(shape, dict) and shape.get("type") == "polygon" and not shape.get("points") \
+        and can_draw(model, path) is not None
+
+
+def work_plane(center, normal) -> tuple[list, list]:
+    """A frame of the plane of a point and a normal: (origin, [x axis, y
+    axis]) with x along the global axis the least aligned with the normal,
+    projected, and x, y, normal direct."""
+    n = np.asarray(normal, float)
+    n = n / (np.linalg.norm(n) or 1.0)
+    a = np.eye(3)[int(np.argmin(np.abs(n)))]
+    e1 = a - (a @ n) * n
+    e1 = e1 / np.linalg.norm(e1)
+    e2 = np.cross(n, e1)
+    clean = lambda v: [0.0 if abs(x) < 1e-12 else float(f"{x:.12g}") for x in v]       # noqa: E731
+    return clean(center), [clean(e1), clean(e2)]
+
+
+def add_extrusion_on_plane(model: dict, path: Path, center, normal, depth: float, kind: str = "boss") -> Path:
+    """An extrusion in the work plane of a face (center, outward normal), with
+    the boolean at path: a boss (z from 0 to depth, out of the face) united
+    with it, or a pocket (z from -depth to 0, into the solid) subtracted from
+    it. The boolean is put in a union (a difference) first when it is not
+    one. Its profile starts from nothing; returns the path of the profile."""
+    op = "union" if kind == "boss" else "difference"
+    target = get_at(model, path)
+    if target.get("type") != op and target.get("of"):
+        do_action(model, path, f"wrap:{op}")
+        target = get_at(model, path)
+    elif target.get("type") != op:
+        target["type"] = op
+    origin, axes = work_plane(center, normal)
+    d = float(f"{depth:.3g}")
+    shape = {"type": "extrusion", "z": [0.0, d] if kind == "boss" else [-d, 0.0], "origin": origin,
+             "axes": axes, "profile": copy.deepcopy(EMPTY_SHAPE)}
+    target.setdefault("of", []).append(shape)
+    return path + ("of", len(target["of"]) - 1, "profile")
+
+
+def profile_root(path: Path) -> Path | None:
+    """The path of the profile (2D tree) of an extrusion or a revolution that
+    holds the node at path (the profile itself or one of its shapes), or None."""
+    if path[:1] == ("geometries",) and len(path) >= 5 and path[2:4] == ("source", "shape") \
+            and "profile" in path[4:]:
+        return tuple(path[:path.index("profile", 4) + 1])
+    return None
+
+
+def draw_root(model: dict, path: Path) -> Path | None:
+    """The path of the 2D tree that a shape drawn in the view goes to: the
+    profile of an extrusion or a revolution (a node of it selected), or the
+    tree of a 2D box or csg geometry; None when nothing is drawn."""
+    if can_draw(model, path) is None:
+        return None
+    return profile_root(path) or ("geometries", path[1], "source", "shape")
+
+
+def can_draw(model: dict, path: Path) -> int | None:
+    """Index of the geometry that a drawn shape goes to, when the node at
+    path is a 2D geometry (box or csg), one of its shapes, or the profile of
+    an extrusion or a revolution or one of its shapes; None otherwise."""
+    if path[:1] != ("geometries",) or len(path) < 2 or (len(path) > 2 and path[2] != "source"):
+        return None
+    gi = path[1]
+    if profile_root(path) is not None and isinstance(get_at(model, profile_root(path)), dict):
+        return gi
+    src = get_at(model, ("geometries", gi, "source"), {})
+    if src.get("type") == "box" and len(src.get("size", [])) == 2:
+        return gi
+    if src.get("type") == "csg" and src.get("dim") == 2:
+        return gi
+    if src.get("type") in ("curve", "swept_surface") and isinstance(src.get("shape"), dict) and len(path) <= 4 \
+            and (src.get("dim") == 2 or len(path) == 4):
+        return gi                             # a curve: its polygon (in 3D, in its plane: from its node)
+    return None
+
+
+def _fit_layers(model: dict, gi: int) -> None:
+    """Meshes in layers of a geometry that is no longer one extrusion or
+    revolution (copied in an array): meshed as a whole instead (tetrahedra)."""
+    geom = model["geometries"][gi]
+    if M.swept_root(geom.get("source", {}).get("shape")) is not None:
+        return
+    for mesh, _ in M.all_meshes(model):
+        if mesh.get("geometry") == geom.get("name") and mesh.pop("layers", None) is not None:
+            if mesh.get("element") == "quad":
+                mesh.pop("element")
+
+
+def _shape_bounds(model: dict, path: Path):
+    """The bounds (lo, hi) of the shape at path (before the transforms above
+    it), or None."""
+    from . import geometry2d as G
+    from . import geometry3d as G3
+    try:
+        node = get_at(P.resolved(model), path)
+        return (G if shape_dim(model, path) == 2 else G3).bounds(node)
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+        return None
+
+
+def _transform_defaults(model: dict, path: Path, t: str) -> dict:
+    """The parameters of a new transform (nothing moved, turned about the
+    center of the shape) or array (3 copies side by side)."""
+    dim = shape_dim(model, path)
+    b = _shape_bounds(model, path)
+    r = lambda v: 0.0 if abs(v) < 1e-12 else float(f"{v:.3g}")          # noqa: E731
+    center = [r(x) for x in (b[0] + b[1]) / 2] if b is not None and np.all(np.isfinite(b)) else [0.0] * dim
+    if t == "transform":
+        out = {"translate": [0.0] * dim, "angle": 0.0, "center": center}
+        if dim == 3:
+            out["axis"] = [0.0, 0.0, 1.0]
+        return out
+    return dict({"count": 3}, **_array_defaults(model, path + ("of", 0), "linear", b))
+
+
+def _array_defaults(model: dict, path: Path, kind: str, b=None) -> dict:
+    """The parameters of an array of the shape at path (its first copy):
+    linear, a step of 1.2 times its width along x; circular, 90 degrees about
+    the origin (about z in 3D)."""
+    dim = shape_dim(model, path)
+    if kind == "circular":
+        out = {"kind": "circular", "center": [0.0] * dim, "angle": 90.0}
+        if dim == 3:
+            out["axis"] = [0.0, 0.0, 1.0]
+        return out
+    b = _shape_bounds(model, path + ("of", 0) if get_at(model, path, {}).get("type") == "array" else path) \
+        if b is None else b
+    width = float(b[1][0] - b[0][0]) if b is not None and np.all(np.isfinite(b)) else 1.0
+    return {"kind": "linear", "step": [float(f"{1.2 * (width or 1.0):.3g}")] + [0.0] * (dim - 1)}
+
+
+def _shape_location(path: Path) -> tuple:
+    """(swept, inner) of a shape node: the path of the extrusion or revolution
+    whose profile holds it (None for the CSG tree itself), and its own path
+    (the indices in the "of" lists) from that tree."""
+    if "profile" in path[4:]:
+        k = path.index("profile", 4)
+        return tuple(path[5:k:2]), tuple(path[k + 2::2])
+    return None, tuple(path[5::2])
+
+
+def _remove_shape(model: dict, path: Path) -> Path:
+    """Remove a part of a boolean; a boolean left with one part is replaced
+    by it. The references to primitives (edges, faces, regions) follow."""
+    bpath, j = path[:-2], path[-1]
+    boolean = get_at(model, bpath)
+    del boolean["of"][j]
+    unwrap = len(boolean["of"]) == 1
+    if unwrap:
+        set_at(model, bpath, boolean["of"][0])
+    geom = model["geometries"][path[1]]
+    if "profile" in path[4:]:                 # in the profile of an extrusion or a revolution
+        k = path.index("profile", 4)
+        swept, inner = tuple(path[5:k:2]), tuple(path[k + 2::2])
+    else:
+        swept, inner = None, tuple(path[5::2])
+    bidx = inner[:-1]
+
+    def moved(p):
+        p = tuple(p)
+        if p[:len(bidx)] != bidx or len(p) == len(bidx):
+            return p
+        rest = p[len(bidx):]
+        if rest[0] == j:
+            return None                       # the removed shape (or a part of it)
+        if unwrap:
+            return bidx + rest[1:]
+        return bidx + (rest[0] - (rest[0] > j),) + rest[1:]
+    _remap_shape_refs(geom, moved, swept)
+    return bpath
+
+
+def _remap_shape_refs(geom: dict, moved, swept=None) -> None:
+    """Paths of primitives changed (moved(path) -> new path, or None if gone):
+    update the edges, faces and regions of the selections. swept: the path of
+    the extrusion or revolution whose profile changed (the profile sides of
+    its faces are then updated) or None (the CSG tree itself changed)."""
+    # the coincidences between polygons of the 2D tree that changed
+    tree = geom.get("source", {}).get("shape")
+    if swept is not None:
+        for i in swept:
+            tree = (tree or {}).get("of", [None])[i] if isinstance(tree, dict) and i < len(tree.get("of", [])) else None
+        tree = tree.get("profile") if isinstance(tree, dict) else None
+    for _, poly in SK.polygons(tree):
+        if poly.get("constraints"):
+            out = []
+            for c in poly["constraints"]:
+                if c.get("type") == "coincident":
+                    new = moved(c.get("shape", []))
+                    if new is None:
+                        continue
+                    c = dict(c, shape=list(new))
+                out.append(c)
+            poly["constraints"] = out
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        t = crit.get("type")
+        if swept is not None:
+            if t == "faces":
+                out = []
+                for ref in crit.get("faces", []):
+                    if tuple(ref.get("shape", [])) == swept and ref.get("profile"):
+                        new = moved(ref["profile"].get("shape", []))
+                        if new is None:
+                            continue
+                        ref = dict(ref, profile=dict(ref["profile"], shape=list(new)))
+                    out.append(ref)
+                crit["faces"] = out
+            continue
+        if t in ("edges", "faces"):
+            out = []
+            for ref in crit.get(t, []):
+                new = moved(ref.get("shape", []))
+                if new is not None:
+                    out.append(dict(ref, shape=list(new)))
+            crit[t] = out
+        elif t == "regions":
+            crit["regions"] = [[list(q) for q in (moved(p) for p in reg) if q is not None]
+                               for reg in crit.get("regions", [])]
+
+
+def _prefix_edge_refs(geom: dict, prefix: tuple) -> None:
+    """The CSG root moved under a boolean at `prefix`: update the edges refs
+    and the regions (paths of primitives)."""
+    for sel in geom.get("selections", {}).values():
+        crit = sel.get("criteria", {})
+        if crit.get("type") == "edges":
+            for ref in crit.get("edges", []):
+                ref["shape"] = list(prefix) + list(ref.get("shape", []))
+        elif crit.get("type") == "regions":
+            crit["regions"] = [[list(prefix) + list(p) for p in reg] for reg in crit.get("regions", [])]
+
+
+def _box_to_csg(model: dict, gi: int) -> list[str]:
+    """Turn a 2D box into a CSG rectangle; its built-in sides (xmin...) become
+    selections of the same name, so that their uses stay valid; structured
+    meshes of the geometry switch to the GetFEM mesher. Returns notes."""
+    geom = model["geometries"][gi]
+    src = geom["source"]
+    o, s = src["origin"], src["size"]
+    shape = {"type": "rectangle", "min": list(o),
+             "max": [f"{format_value(a)} + {format_value(b)}" if isinstance(a, str) or isinstance(b, str)
+                     else a + b for a, b in zip(o, s)]}
+    geom["source"] = {"type": "csg", "dim": 2, "shape": shape}
+    sides = {"xmin": "xmin", "xmax": "xmax", "ymin": "ymin", "ymax": "ymax"}
+    old = geom.get("selections", {})
+    new = {name: {"kind": M.BOUNDARY, "criteria": {"type": "edges", "edges": [{"shape": [], "side": side}]}}
+           for name, side in sides.items() if name not in old}
+    new.update(old)          # edges refs of a box already designate the root rectangle
+    geom["selections"] = new
+    notes = ["the box became a constructive geometry; its sides xmin... are now selections"]
+    for mesh in model.get("meshes", []):
+        if mesh.get("geometry") == geom.get("name") and mesh.get("mesher") == "structured":
+            vals, _ = P.values(model)
+            try:
+                sizes = P.vector(s, vals) if isinstance(s, str) else [P.scalar(x, vals) for x in s]
+                divs = mesh["divisions"]
+                divs = P.vector(divs, vals) if isinstance(divs, str) else [P.scalar(d, vals) for d in divs]
+                h = min(si / max(int(d), 1) for si, d in zip(sizes, divs))
+            except (P.ParameterError, KeyError, TypeError):
+                h = 0.1
+            new = default_mesher("csg")
+            for k in ("divisions", "element"):
+                mesh.pop(k, None)
+            mesh.update({"mesher": new, "h" if new == "getfem" else "size": h, "order": 1})
+            notes.append(f"mesh {mesh.get('name')!r}: structured mesher replaced by the "
+                         f"{'GetFEM mesher' if new == 'getfem' else 'Gmsh'} (element size {h:g})")
+    return notes
+
+
+def add_shape_2d(model: dict, gi: int, shape: dict, op: str, root: Path | None = None) -> tuple[Path, list[str]]:
+    """Combine a drawn primitive with a 2D tree (root: its path, by default
+    the tree of the 2D geometry gi; or a profile, see draw_root): op is union,
+    difference (the shape is removed) or intersection. Returns the path of
+    the new shape node and notes about what was changed."""
+    if op not in M.SHAPES_BOOLEAN:
+        raise ValueError(f"unknown operation {op!r}")
+    notes: list[str] = []
+    geom = model["geometries"][gi]
+    base = tuple(root) if root is not None else ("geometries", gi, "source", "shape")
+    if geom["source"].get("type") in ("curve", "swept_surface"):    # a curve: the polygon drawn replaces it
+        if shape.get("type") != "polygon":
+            raise ValueError("a curve is drawn as a polygon (the polygon tool)")
+        set_at(model, base, {"type": "polygon", "points": [list(p) for p in shape["points"]],
+                             "open": bool(shape.get("open", True))})
+        return base, notes
+    if geom["source"].get("type") == "box" and base == ("geometries", gi, "source", "shape"):
+        notes += _box_to_csg(model, gi)
+    tree = get_at(model, base)
+    if tree.get("type") in M.SHAPES_BOOLEAN and not tree.get("of"):     # the first shape
+        tree["of"] = [shape]
+        return base + ("of", 0), notes
+    if tree.get("type") == op:            # a \ b \ c, a u b u c...: one more operand
+        tree.setdefault("of", []).append(shape)
+        return base + ("of", len(tree["of"]) - 1), notes
+    set_at(model, base, {"type": op, "of": [tree, shape]})
+    swept, inner = _shape_location(base)
+    if swept is None:
+        _prefix_edge_refs(geom, (0,))
+    else:                                 # the sides of the profile in the faces of the swept shape
+        _remap_shape_refs(geom, lambda p: (0,) + tuple(p), swept)
+    return base + ("of", 1), notes
+
+
+# ------------------------------------------------------------------ constraints of polygons (sketch.py)
+
+def constraint_owner(path: Path) -> Path | None:
+    """The path of the polygon of a constraint node, or None."""
+    if len(path) >= 2 and path[-2] == "constraints" and path[:1] == ("geometries",):
+        return tuple(path[:-2])
+    return None
+
+
+def _tree_root(path: Path) -> Path:
+    """The 2D tree that holds the shape at path (a profile, or the tree of
+    the geometry)."""
+    return profile_root(path) or tuple(path[:4])
+
+
+def _other_polygons(model: dict, path: Path) -> list[tuple]:
+    """(path in the tree, label) of the other polygons of the 2D tree of the
+    polygon at path."""
+    root = _tree_root(path)
+    tree = get_at(model, root)
+    own = tuple(path[len(root) + 1::2])
+    return [(q, f"polygon {k + 1}") for k, (q, p) in enumerate(SK.polygons(tree))
+            if q != own and len(p.get("points") or []) >= 3]
+
+
+def _resolved_points(model: dict, path: Path):
+    try:
+        pts = get_at(P.resolved(model), path)["points"]
+        return np.asarray(pts, float)
+    except (KeyError, TypeError, ValueError, AttributeError, P.ParameterError):
+        return None
+
+
+def _default_constraint(model: dict, path: Path, t: str) -> dict:
+    """A new constraint of the polygon at path, that holds as it is drawn
+    (its value measured; rounded) on the sides or vertices it fits best."""
+    V = _resolved_points(model, path)
+    n = len(V) if V is not None else 3
+    used = {(c.get("type"), c.get("side")) for c in get_at(model, path).get("constraints") or []}
+    r = lambda v: float(f"{v:.4g}")          # noqa: E731
+    if V is None:
+        V = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    D = np.roll(V, -1, axis=0) - V                             # side k + 1: from vertex k to k + 1
+    L = np.linalg.norm(D, axis=1)
+    if get_at(model, path).get("open"):        # an open polygon (a curve): no closing side
+        n = max(n - 1, 1)
+        D, L = D[:n], L[:n]
+    if t in ("horizontal", "vertical"):
+        a = 1 if t == "horizontal" else 0                      # the component that must vanish
+        free = [k for k in range(n) if ("horizontal", k + 1) not in used and ("vertical", k + 1) not in used]
+        k = min(free or range(n), key=lambda k: abs(D[k, a]) / (L[k] or 1.0))
+        return {"type": t, "side": k + 1}
+    if t == "length":
+        free = [k for k in range(n) if ("length", k + 1) not in used] or list(range(n))
+        return {"type": t, "side": free[0] + 1, "value": r(L[free[0]])}
+    if t == "angle":
+        c = {"type": t, "vertex": 2 if get_at(model, path).get("open") else 1}
+        return dict(c, value=r(SK.measure(dict(c, value=0), V)))
+    if t in SK.PAIR_TYPES:
+        pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+
+        def score(ij):
+            d, e = D[ij[0]] / (L[ij[0]] or 1), D[ij[1]] / (L[ij[1]] or 1)
+            if t == "parallel":
+                return abs(d[0] * e[1] - d[1] * e[0])
+            if t == "perpendicular":
+                return abs(d @ e)
+            return abs(L[ij[0]] - L[ij[1]]) / (max(L) or 1)
+        i, j = min(pairs, key=score)
+        return {"type": t, "side": i + 1, "other": j + 1}
+    if t == "fixed":
+        return {"type": t, "vertex": 1, "at": [r(V[0, 0]), r(V[0, 1])]}
+    # coincident: the vertex and the vertex of another polygon closest to each other
+    root = _tree_root(path)
+    best = None
+    for q, _ in _other_polygons(model, path):
+        W = _resolved_points(model, root + sum((("of", i) for i in q), ()))
+        if W is None:
+            continue
+        d = np.linalg.norm(V[:, None, :] - W[None, :, :], axis=2)
+        i, j = np.unravel_index(np.argmin(d), d.shape)
+        if best is None or d[i, j] < best[0]:
+            best = (d[i, j], i, q, j)
+    if best is None:
+        return {"type": t, "vertex": 1, "shape": [], "other": 1}
+    return {"type": t, "vertex": int(best[1]) + 1, "shape": list(best[2]), "other": int(best[3]) + 1}
+
+
+def constraint_pick_hint(model: dict, path: Path) -> str:
+    """What a click in the view sets for the constraint at path."""
+    t = get_at(model, path, {}).get("type")
+    if t in SK.PAIR_TYPES:
+        return "click a side, then the other side"
+    if t in SK.SIDE_TYPES:
+        return "click its side"
+    if t in ("angle", "fixed"):
+        return "click its vertex"
+    if t == "coincident":
+        return "click its vertex (of this polygon)"
+    return ""
+
+
+def pick_for_constraint(model: dict, path: Path, kind: str, k: int, other: bool = False) -> str | None:
+    """A side or a vertex (kind "side" or "vertex", 1-based k) of its
+    polygon clicked for the constraint at path: its side (or, other, its
+    other side) or its vertex set. What was set (None: nothing applies)."""
+    c = get_at(model, path)
+    t = c.get("type")
+    if kind == "side" and (t in SK.SIDE_TYPES or t in SK.PAIR_TYPES):
+        key = "other" if other and t in SK.PAIR_TYPES else "side"
+        c[key] = k
+        return f"{'other side' if key == 'other' else 'side'} {k}"
+    if kind == "vertex" and t in SK.VERTEX_TYPES:
+        V = _resolved_points(model, constraint_owner(path)) if t == "fixed" else None
+        c["vertex"] = k
+        if V is not None and k <= len(V):      # fixed where it is now
+            c["at"] = [float(f"{x:.6g}") for x in V[k - 1]]
+        return f"vertex {k}"
+    return None
+
+
+def add_constraint(model: dict, path: Path, t: str) -> Path:
+    shape = get_at(model, path)
+    shape.setdefault("constraints", []).append(_default_constraint(model, path, t))
+    return path + ("constraints", len(shape["constraints"]) - 1)
+
+
+def _constraint_fields(model: dict, path: Path) -> list[Field]:
+    c = get_at(model, path, {})
+    t = c.get("type")
+    poly = constraint_owner(path)
+    n = len(get_at(model, poly, {}).get("points") or [])
+    out = [Field(path + ("type",), "Constraint", "choice", tuple((x, SK.LABELS[x]) for x in SK.TYPES
+                                                                  if x != "coincident" or t == x
+                                                                  or _other_polygons(model, poly)),
+                 op="constraint_type")]
+    if t in SK.SIDE_TYPES or t in SK.PAIR_TYPES:
+        out.append(Field(path + ("side",), "Side", "int", help=f"1 to {n}: side k goes from vertex k to k + 1"))
+    if t in SK.PAIR_TYPES:
+        out.append(Field(path + ("other",), "Other side", "int"))
+    if t in SK.VERTEX_TYPES:
+        out.append(Field(path + ("vertex",), "Vertex", "int", help=f"1 to {n}"))
+    if t == "length":
+        out.append(Field(path + ("value",), "Length", "number", help="a number or an expression of parameters"))
+    if t == "angle":
+        out.append(Field(path + ("value",), "Angle (degrees)", "number",
+                         help="between the two sides at the vertex (0 to 180)"))
+    if t == "fixed":
+        out.append(_vec_field(path + ("at",), "At", "numbers", 2))
+    if t == "coincident":
+        others = _other_polygons(model, poly)
+        out += [Field(path + ("shape",), "Polygon", "choice", tuple((",".join(map(str, q)), lab) for q, lab in others),
+                      op="constraint_shape"),
+                Field(path + ("other",), "Its vertex", "int")]
+    out.append(Field(path, "", "info", help="The vertices of the polygon are moved as little as possible for "
+                                            "its constraints to hold (those given by expressions stay)."))
+    return out
+
+
+def _remap_constraints(model: dict, path: Path, side, vertex) -> None:
+    """The sides and vertices of the polygon at path renumbered (side(k),
+    vertex(k): the new 1-based number, None if gone): its constraints, and
+    the coincidences of other polygons with its vertices, follow (dropped
+    when what they refer to is gone)."""
+    poly = get_at(model, path)
+    kept = []
+    for c in poly.get("constraints") or []:
+        new = dict(c)
+        ok = True
+        for key, f in (("side", side), ("other", side if c.get("type") in SK.PAIR_TYPES else None),
+                       ("vertex", vertex)):
+            if f is not None and key in c:
+                k = f(c[key]) if isinstance(c[key], int) else c[key]
+                ok = ok and k is not None
+                new[key] = k
+        if ok:
+            kept.append(new)
+    if "constraints" in poly:
+        poly["constraints"] = kept
+    if poly.get("splines"):                    # the splines follow their sides (gone with them)
+        sp = []
+        for c in poly["splines"]:
+            k = side(c["side"]) if isinstance(c, dict) and isinstance(c.get("side"), int) else None
+            if k is not None:
+                sp.append(dict(c, side=k))
+        if sp:
+            poly["splines"] = sorted(sp, key=lambda c: c["side"])
+        else:
+            poly.pop("splines")
+    if poly.get("smooth"):                     # the smooth vertices follow their vertices
+        sm = sorted(k for k in (vertex(k) if isinstance(k, int) else None for k in poly["smooth"])
+                    if k is not None)
+        if sm:
+            poly["smooth"] = sm
+        else:
+            poly.pop("smooth")
+    if poly.get("fillets"):                    # the fillets follow their vertices
+        fl = []
+        for f in poly["fillets"]:
+            k = vertex(f["vertex"]) if isinstance(f, dict) and isinstance(f.get("vertex"), int) else None
+            if k is not None:
+                fl.append(dict(f, vertex=k))
+        if fl:
+            poly["fillets"] = fl
+        else:
+            poly.pop("fillets")
+    root = _tree_root(path)
+    own = list(path[len(root) + 1::2])
+    for _, other in SK.polygons(get_at(model, root)):
+        if other is poly or not other.get("constraints"):
+            continue
+        out = []
+        for c in other["constraints"]:
+            if c.get("type") == "coincident" and list(c.get("shape", [])) == own and isinstance(c.get("other"), int):
+                k = vertex(c["other"])
+                if k is None:
+                    continue
+                c = dict(c, other=k)
+            out.append(c)
+        other["constraints"] = out
+
+
+def constraint_marks(model: dict, path: Path, lengths: bool = True) -> list[tuple[list[float], str]]:
+    """The marks of the constraints of the polygon at path (or of the
+    polygon of the constraint at path), where its sides and vertices are
+    drawn: (position, text); lengths: also those of the lengths of sides
+    (not when the dimensions are shown: they give them)."""
+    poly = constraint_owner(path) or path
+    shape = get_at(model, poly)
+    if not isinstance(shape, dict) or shape.get("type") != "polygon" or not shape.get("constraints"):
+        return []
+    V = _resolved_points(model, poly)
+    if V is None or len(V) < (2 if shape.get("open") else 3):
+        return []
+    A, b = handle_frame(model, poly)
+    V = V @ A.T + b
+    n = len(V)
+    size = float(np.max(np.ptp(V, axis=0))) or 1.0
+    out: dict[tuple, list] = {}
+    resolved = (get_at(P.resolved(model), poly) or {}).get("constraints") or []
+    for c, rc in zip(shape["constraints"], resolved):
+        if SK.check(rc, n) is not None or SK._open_check(rc, shape) is not None:
+            continue
+        t = c["type"]
+        if t == "length" and not lengths:
+            continue
+        text = SK.SYMBOLS.get(t, "")
+        if t == "length":
+            text = f"L={format_value(c['value'])}"
+        elif t == "angle":
+            text = f"{format_value(c['value'])}°"
+        for kind, k in SK.references(c):
+            if kind == "side":
+                pos = (V[k - 1] + V[k % n]) / 2
+            else:                             # out of the polygon, beside its handle
+                d = V[k - 1] - V.mean(axis=0)
+                pos = V[k - 1] + 0.15 * size * d / (np.linalg.norm(d) or 1.0)
+            out.setdefault((kind, k, tuple(pos)), []).append(text)
+    return [(list(pos), " ".join(texts)) for (_, _, pos), texts in out.items()]
+
+
+# ------------------------------------------------------------------ dimensions of polygons
+
+def _dimension_text(given, measured: float, prefix: str = "") -> tuple[str, str]:
+    """The label of an imposed dimension and the text to edit: its value,
+    or its expression with what it gives."""
+    if isinstance(given, str):
+        return f"{prefix}{given} = {measured:.4g}" if given.strip() != prefix.strip() \
+            else f"{prefix}= {measured:.4g}", given
+    return f"{prefix}{format_value(given)}", format_value(given)
+
+
+def polygon_dimensions(model: dict, path: Path) -> list[dict]:
+    """The dimensions of the polygon at path (or of the polygon of the
+    constraint at path), as in a CAD sketch: the length of each straight
+    side, from vertex to vertex (where the sides would meet without their
+    fillets), and the radius of each fillet. Where the transforms above the
+    polygon put it, for the view: [{"kind": "side" | "fillet", "k": the
+    side or the vertex (1-based), "a", "b": the ends of the side, or the
+    middle of the arc and its corner, "normal": out of the polygon (a side),
+    "text": the label, "edit": the text to edit, "imposed": given by a
+    constraint (a fillet: always)}]. A side without length constraint shows
+    its length in parentheses (a reference dimension)."""
+    poly = constraint_owner(path) or path
+    shape = get_at(model, poly)
+    least = 2 if isinstance(shape, dict) and shape.get("open") else 3
+    if not isinstance(shape, dict) or shape.get("type") != "polygon" or len(shape.get("points") or []) < least:
+        return []
+    V = _resolved_points(model, poly)
+    if V is None or V.ndim != 2 or len(V) < least:
+        return []
+    A, b = handle_frame(model, poly)
+    W = V @ A.T + b
+    n = len(V)
+    area = float(np.sum(W[:, 0] * np.roll(W[:, 1], -1) - np.roll(W[:, 0], -1) * W[:, 1]))
+    sign = 1.0 if area >= 0 else -1.0               # counterclockwise: the outer normal on the right
+    if shape.get("open"):                           # a curve: on the left of its direction
+        sign = -1.0
+    given = {}
+    for c in shape.get("constraints") or []:
+        if isinstance(c, dict) and c.get("type") == "length" and isinstance(c.get("side"), int):
+            given.setdefault(c["side"], c.get("value"))
+    curved = spline_sides(model, poly)
+    out = []
+    for i in range(n - 1 if shape.get("open") else n):
+        if i + 1 in curved:
+            continue
+        a, e = W[i], W[(i + 1) % n]
+        d = e - a
+        ld = float(np.linalg.norm(d))
+        if ld == 0:
+            continue
+        L = float(np.linalg.norm(V[(i + 1) % n] - V[i]))
+        if i + 1 in given:
+            text, edit = _dimension_text(given[i + 1], L)
+        else:
+            text, edit = f"({L:.4g})", f"{L:.4g}"
+        out.append({"kind": "side", "k": i + 1, "a": a.tolist(), "b": e.tolist(),
+                    "normal": (sign * np.array([d[1], -d[0]]) / ld).tolist(), "text": text, "edit": edit,
+                    "imposed": i + 1 in given})
+    arcs = {name: q for name, q in shape_handles(model, poly) if re.fullmatch(r"f\d+", name)}
+    resolved = {f.get("vertex"): f.get("radius") for f in (get_at(P.resolved(model), poly) or {}).get("fillets") or []
+                if isinstance(f, dict)}
+    for f in shape.get("fillets") or []:
+        k = f.get("vertex") if isinstance(f, dict) else None
+        if f"f{k}" not in arcs or not isinstance(resolved.get(k), (int, float)):
+            continue
+        text, edit = _dimension_text(f.get("radius"), float(resolved[k]), "R ")
+        out.append({"kind": "fillet", "k": k, "a": list(arcs[f"f{k}"]), "b": W[k - 1].tolist(), "normal": None,
+                    "text": text, "edit": edit, "imposed": True})
+    return out
+
+
+def set_dimension(model: dict, path: Path, kind: str, k: int, text: str) -> str:
+    """A dimension of the polygon at path (or of the polygon of the
+    constraint at path) edited: text is a number or an expression of
+    parameters. A side: its length constraint, added or changed (empty
+    text: removed, the side free again); the vertices move for it to hold.
+    A fillet: its radius. What was done (empty: nothing); raises ValueError,
+    the model unchanged, when the polygon cannot take it."""
+    from . import geometry2d as G
+    poly = constraint_owner(path) or path
+    shape = get_at(model, poly)
+    before = copy.deepcopy(shape)
+    errors0 = set(P.resolve(model)[1])
+    text = text.strip()
+    value = parse_value(text) if text else None
+    if isinstance(value, bool) or (isinstance(value, (int, float)) and not value > 0):
+        raise ValueError(f"{'a length' if kind == 'side' else 'a radius'} must be positive")
+    if kind == "side":
+        cons = shape.get("constraints") or []
+        idx = [j for j, c in enumerate(cons) if isinstance(c, dict) and c.get("type") == "length"
+               and c.get("side") == k]
+        if value is None:
+            if not idx:
+                return ""
+            cons = [c for j, c in enumerate(cons) if j not in idx]
+            if cons:
+                shape["constraints"] = cons
+            else:
+                shape.pop("constraints", None)
+            done = f"side {k}: its length free"
+        else:
+            if idx:
+                cons[idx[0]]["value"] = value
+                cons = [c for j, c in enumerate(cons) if j not in idx[1:]]
+            else:
+                cons.append({"type": "length", "side": k, "value": value})
+            shape["constraints"] = cons
+            done = f"length of side {k}: {text}"
+    elif kind == "fillet":
+        f = next((f for f in shape.get("fillets") or [] if isinstance(f, dict) and f.get("vertex") == k), None)
+        if f is None:
+            raise ValueError(f"vertex {k} has no fillet")
+        if value is None:
+            raise ValueError("a radius is needed (the menu of the arc removes the fillet)")
+        f["radius"] = value
+        done = f"radius of the fillet of vertex {k}: {text}"
+    else:
+        raise ValueError(f"unknown dimension {kind!r}")
+    resolved, errors = P.resolve(model)
+    new = [e for e in errors if e not in errors0]
+    problem = new[0] if new else None
+    if problem is None and kind == "fillet":
+        problem = G.fillet_problem(get_at(resolved, poly))
+    if problem:
+        shape.clear()
+        shape.update(before)
+        raise ValueError(problem.split(": ", 1)[-1] if new else problem)
+    return done
+
+
+# ------------------------------------------------------------------ handles of 2D primitives
+
+class LockedValue(ValueError):
+    """A value given by an expression of parameters cannot be dragged."""
+
+
+def primitive_node(model: dict, path: Path) -> dict | None:
+    """The 2D primitive (rectangle or disk) of a shape node, if path is one."""
+    if can_draw(model, path) is None or len(path) < 4 or path[2:4] != ("source", "shape"):
+        return None
+    shape = get_at(model, path)
+    return shape if isinstance(shape, dict) and shape.get("type") in PRIMITIVES_2D else None
+
+
+def handle_frame(model: dict, path: Path):
+    """The map (A, b), x -> A x + b, of the transforms above the 2D primitive
+    at path (the first copy of an array): its handles are moved by it."""
+    root = draw_root(model, path)
+    if root is None:
+        return np.eye(2), np.zeros(2)
+    try:
+        return T.frame_along(get_at(P.resolved(model), root), tuple(path[len(root) + 1::2]), 2)
+    except (KeyError, TypeError, ValueError, AttributeError, IndexError, P.ParameterError):
+        return np.eye(2), np.zeros(2)
+
+
+def shape_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
+    """Handles of the primitive at path: [(name, position)], in model values
+    (where the transforms above it put them)."""
+    A, b = handle_frame(model, path)
+    out = _local_handles(model, path)
+    if np.allclose(A, np.eye(2)) and np.allclose(b, 0):
+        return out
+    return [(name, (A @ np.asarray(q, float) + b).tolist()) for name, q in out]
+
+
+def _local_handles(model: dict, path: Path) -> list[tuple[str, list[float]]]:
+    shape = primitive_node(model, path)
+    if shape is None:
+        return []
+    r = P.resolved(model)
+    s = get_at(r, path)
+    if s is None or any(isinstance(v, str) for k in ("min", "max", "center") for v in s.get(k, [])) \
+            or isinstance(s.get("radius"), str) \
+            or any(not isinstance(v, (int, float)) for p in s.get("points", []) for v in p):
+        return []                          # invalid expressions: validation reports them
+    if s["type"] == "ellipse":
+        if any(isinstance(v, str) for v in s.get("radii", [])) or isinstance(s.get("angle", 0.0), str):
+            return []
+        (cx, cy), (r1, r2) = s["center"], s["radii"]
+        th = math.radians(float(s.get("angle", 0.0)))
+        return [("center", [cx, cy]),
+                ("axis1", [cx + r1 * math.cos(th), cy + r1 * math.sin(th)]),
+                ("axis2", [cx - r2 * math.sin(th), cy + r2 * math.cos(th)])]
+    if s["type"] == "polygon":
+        from . import geometry2d as G
+        if len(s["points"]) < G.min_points(s):          # being entered
+            return []
+        V = [[float(x), float(y)] for x, y in s["points"]]
+        n = len(V)
+        curved = G.spline_points(s)                         # the points of the splines (side i, 0-based)
+        mids = [(f"m{i}", [(V[i][0] + V[(i + 1) % n][0]) / 2, (V[i][1] + V[(i + 1) % n][1]) / 2])
+                for i in range(G.side_count(s)) if i not in curved]
+        through = [(f"s{i}_{p}", q.tolist()) for i in sorted(curved) for p, q in enumerate(curved[i])]
+        center = [sum(v[0] for v in V) / n, sum(v[1] for v in V) / n]
+        rounded = G._fillets_of(s)                          # the middles of the arcs: their radii
+        arcs = [(f"f{f.vertex}", f.points(3)[1].tolist()) for f in rounded[1]] if rounded else []
+        return [(f"v{i}", v) for i, v in enumerate(V)] + mids + through + arcs + [("center", center)]
+    if s["type"] == "rectangle":
+        (x0, y0), (x1, y1) = s["min"], s["max"]
+        return [("min", [x0, y0]), ("xmax_ymin", [x1, y0]), ("max", [x1, y1]), ("xmin_ymax", [x0, y1]),
+                ("center", [(x0 + x1) / 2, (y0 + y1) / 2])]
+    (cx, cy), rad = s["center"], s["radius"]
+    return [("center", [cx, cy]), ("radius", [cx + rad, cy])]
+
+
+def _move_fillet(model: dict, path: Path, k: int, x: float, y: float, r: dict, notes: list) -> list:
+    """The middle of the arc of the fillet of vertex k dragged to (x, y): its
+    radius, for the middle of the arc to be at the distance of the point
+    from the vertex (along the bisector of the corner)."""
+    from . import geometry2d as G
+    V = np.asarray(r["points"], float)
+    n, i = len(V), k - 1
+    u, w = V[i - 1] - V[i], V[(i + 1) % n] - V[i]
+    u, w = u / np.linalg.norm(u), w / np.linalg.norm(w)
+    half = math.acos(max(-1.0, min(1.0, float(u @ w)))) / 2
+    b = (u + w) / (np.linalg.norm(u + w) or 1.0)
+    s = float((np.array([x, y]) - V[i]) @ b)           # the middle of the arc is at r (1/sin - 1) from the vertex
+    radius = s / (1 / math.sin(half) - 1)
+    if radius <= 0:
+        raise ValueError("the fillet would vanish")
+    j = next(j for j, f in enumerate(get_at(model, path)["fillets"]) if f.get("vertex") == k)
+    trial = copy.deepcopy(r)
+    trial["fillets"][j]["radius"] = radius
+    problem = G.fillet_problem(trial)
+    if problem:
+        raise ValueError(problem)
+    _set_number(model, path + ("fillets", j, "radius"), float(f"{radius:.6g}"), notes)
+    return notes
+
+
+def _move_constrained(model: dict, path: Path, handle: str, x: float, y: float, V: list, notes: list) -> list:
+    """A handle of a polygon with constraints dragged: the vertex (or the
+    whole polygon, by its center) goes there as far as the constraints let
+    it, the other vertices move as little as possible; the result is
+    written to the model (the coordinates that are numbers)."""
+    from . import geometry2d as G
+    n = len(V)
+    W = np.asarray(V, float)
+    w = np.ones(n)
+    if handle == "center":
+        W = W + (np.array([x, y]) - W.mean(axis=0))
+        w[:] = 1e3
+    else:
+        i = int(handle[1:])
+        W[i] = [x, y]
+        w[i] = 1e3
+    root = _tree_root(path)
+    tree = copy.deepcopy(get_at(P.resolved(model), root))
+    own = tuple(path[len(root) + 1::2])
+    SK.node_at(tree, own)["points"] = W.tolist()
+    errors = SK.solve_tree(tree, weights={own: w})
+    if errors:
+        raise ValueError(errors[-1].split(": ", 1)[-1])
+    new = SK.node_at(tree, own)["points"]
+    _check_polygon(SK.node_at(tree, own))
+    shown = (get_at(P.resolved(model), path) or {}).get("splines") or []    # as seen, before the move
+    raw = get_at(model, path)["points"]
+    for i, v in enumerate(new):
+        for k in range(2):
+            if isinstance(raw[i], str) or (isinstance(raw[i], list) and isinstance(raw[i][k], str)):
+                continue                          # an expression: the solver keeps it (it does not move)
+            if abs(v[k] - float(raw[i][k])) > 1e-12 * max(1.0, abs(v[k])):
+                _set_number(model, path + ("points", i, k), float(f"{v[k]:.10g}"), notes)
+    if shown:                                     # the points of the splines follow their sides
+        moved = {"splines": copy.deepcopy(shown)}
+        SK.follow_splines(moved, V, new)
+        for j, sp in enumerate(moved["splines"]):
+            for p, q in enumerate(sp.get("points") or []):
+                rawq = get_at(model, path + ("splines", j, "points", p))
+                for k in range(2):
+                    if isinstance(rawq, str) or isinstance(rawq[k], str):
+                        continue
+                    if abs(q[k] - float(rawq[k])) > 1e-12 * max(1.0, abs(q[k])):
+                        _set_number(model, path + ("splines", j, "points", p, k), float(f"{q[k]:.10g}"), notes)
+    return notes
+
+
+def _check_polygon(prim: dict) -> None:
+    """A polygon moved by a handle: still simple (its curved sides too; an
+    open one: its vertices apart)."""
+    from . import geometry2d as G
+    if G.is_open(prim):
+        problem = G.open_chain_problem(prim["points"]) or G.spline_problem(prim)
+    else:
+        problem = G.spline_problem(prim) if prim.get("splines") else G.polygon_problem(prim["points"])
+    if problem:
+        raise ValueError(f"not a simple polygon ({problem})")
+
+
+def _set_number(model: dict, key: Path, value: float, notes: list[str]) -> None:
+    """Set a numerical value: a number is replaced; a bare parameter name sets
+    that parameter (when it is a number itself); an expression is locked."""
+    parent = get_at(model, key[:-1])
+    if isinstance(parent, str) and isinstance(key[-1], int):        # a component of a vector parameter
+        name = parent.strip()
+        for p in model.get("parameters", []):
+            v = p.get("value")
+            if p.get("name") == name and isinstance(v, list) and key[-1] < len(v) \
+                    and isinstance(v[key[-1]], (int, float)) and not isinstance(v[key[-1]], bool):
+                v[key[-1]] = float(value)
+                notes.append(f"parameter {name}({key[-1] + 1}) = {format_number(float(value))}")
+                return
+        raise LockedValue(f"{parent!r} is an expression of parameters: change it in the properties")
+    current = get_at(model, key)
+    if current is None or isinstance(current, (int, float)) and not isinstance(current, bool):
+        set_at(model, key, float(value))
+        return
+    name = current.strip() if isinstance(current, str) else None
+    for p in model.get("parameters", []):
+        if p.get("name") == name and isinstance(p.get("value"), (int, float)):
+            p["value"] = float(value)
+            notes.append(f"parameter {name} = {format_number(float(value))}")
+            return
+    raise LockedValue(f"{current!r} is an expression of parameters: change it in the properties")
+
+
+def move_handle(model: dict, path: Path, handle: str, point) -> list[str]:
+    """Move a handle of the primitive at path to point. Returns notes (e.g.
+    the parameters changed); raises LockedValue, leaving the model unchanged,
+    when a value to change is an expression."""
+    shape = primitive_node(model, path)
+    if shape is None:
+        raise ValueError("not a rectangle, a disk or a polygon")
+    before = copy.deepcopy(model)
+    notes: list[str] = []
+    A, b = handle_frame(model, path)              # the point brought back before the transforms
+    x, y = (float(v) for v in A.T @ (np.asarray(point[:2], float) - b))
+    r = get_at(P.resolved(model), path)
+    try:
+        if shape["type"] == "ellipse":
+            (cx, cy), (r1, r2) = (float(v) for v in r["center"]), (float(v) for v in r["radii"])
+            if handle == "center":
+                for i, v in enumerate((x, y)):
+                    if abs(v - r["center"][i]) > 1e-15 * max(1.0, abs(v)):
+                        _set_number(model, path + ("center", i), v, notes)
+                return notes
+            dist = math.hypot(x - cx, y - cy)
+            if dist <= 0:
+                raise ValueError("the semi-axis would be zero")
+            # the first axis turns the ellipse; the second one only sets its length
+            if handle == "axis1":
+                angle = math.degrees(math.atan2(y - cy, x - cx))
+                _set_number(model, path + ("radii", 0), dist, notes)
+            else:
+                angle = math.degrees(math.atan2(y - cy, x - cx)) - 90.0
+                _set_number(model, path + ("radii", 1), dist, notes)
+            angle = (angle + 180.0) % 360.0 - 180.0
+            if abs(angle - float(r.get("angle", 0.0))) > 1e-9:
+                _set_number(model, path + ("angle",), float(f"{angle:.10g}"), notes)
+            return notes
+        if shape["type"] == "polygon" and handle[:1] == "f" and handle[1:].isdigit():
+            return _move_fillet(model, path, int(handle[1:]), x, y, r, notes)
+        if shape["type"] == "polygon" and re.fullmatch(r"s\d+_\d+", handle):     # a point of a spline
+            i, p = (int(v) for v in handle[1:].split("_"))
+            j = spline_sides(model, path)[i + 1]
+            trial = copy.deepcopy(r)
+            trial["splines"][j]["points"][p] = [x, y]
+            _check_polygon(trial)
+            for k, v in enumerate((x, y)):
+                if abs(v - r["splines"][j]["points"][p][k]) > 1e-15 * max(1.0, abs(v)):
+                    _set_number(model, path + ("splines", j, "points", p, k), v, notes)
+            return notes
+        if shape["type"] == "polygon":
+            V = [list(map(float, v)) for v in r["points"]]
+            if shape.get("constraints") and not handle.startswith("m"):
+                return _move_constrained(model, path, handle, x, y, V, notes)
+            if handle == "center":
+                cx, cy = sum(v[0] for v in V) / len(V), sum(v[1] for v in V) / len(V)
+                new = [[v[0] + x - cx, v[1] + y - cy] for v in V]
+                for i, (v, old) in enumerate(zip(new, V)):
+                    for k in range(2):
+                        if abs(v[k] - old[k]) > 1e-15 * max(1.0, abs(old[k])):
+                            _set_number(model, path + ("points", i, k), v[k], notes)
+                for j, c in enumerate(r.get("splines") or []):       # the points of the splines with them
+                    for p, q in enumerate(c.get("points") or []):
+                        for k, d in enumerate((x - cx, y - cy)):
+                            if abs(d) > 1e-15 * max(1.0, abs(q[k])):
+                                _set_number(model, path + ("splines", j, "points", p, k), q[k] + d, notes)
+                return notes
+            if handle.startswith("m"):
+                i = int(handle[1:])
+                V.insert(i + 1, [x, y])
+                from . import geometry2d as G
+                problem = G.open_chain_problem(V) if G.is_open(r) else G.polygon_problem(V)
+                if problem:
+                    raise ValueError(f"not a simple polygon ({problem})")
+                shape["points"].insert(i + 1, [x, y])
+                _vertex_inserted(model, path, i)
+                return notes
+            i = int(handle[1:])
+            V[i] = [x, y]
+            _check_polygon(dict(r, points=V))
+            for k, v in enumerate((x, y)):
+                if abs(v - r["points"][i][k]) > 1e-15 * max(1.0, abs(v)):
+                    _set_number(model, path + ("points", i, k), v, notes)
+        elif shape["type"] == "rectangle":
+            (x0, y0), (x1, y1) = r["min"], r["max"]
+            if handle == "center":
+                dx, dy = x - (x0 + x1) / 2, y - (y0 + y1) / 2
+                new = (x0 + dx, y0 + dy, x1 + dx, y1 + dy)
+            else:
+                nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+                if handle in ("min", "xmin_ymax"):
+                    nx0 = x
+                else:
+                    nx1 = x
+                if handle in ("min", "xmax_ymin"):
+                    ny0 = y
+                else:
+                    ny1 = y
+                new = (min(nx0, nx1), min(ny0, ny1), max(nx0, nx1), max(ny0, ny1))
+                if new[2] - new[0] <= 0 or new[3] - new[1] <= 0:
+                    raise ValueError("the rectangle would be empty")
+            for k, i, v, old in (("min", 0, new[0], x0), ("min", 1, new[1], y0),
+                                 ("max", 0, new[2], x1), ("max", 1, new[3], y1)):
+                if abs(v - old) > 1e-15 * max(1.0, abs(old)):
+                    _set_number(model, path + (k, i), v, notes)
+        elif handle == "center":
+            for i, v in enumerate((x, y)):
+                if abs(v - r["center"][i]) > 1e-15 * max(1.0, abs(v)):
+                    _set_number(model, path + ("center", i), v, notes)
+        else:
+            rad = math.hypot(x - r["center"][0], y - r["center"][1])
+            if rad <= 0:
+                raise ValueError("the radius would be zero")
+            _set_number(model, path + ("radius",), rad, notes)
+    except ValueError:
+        model.clear()
+        model.update(before)
+        raise
+    return notes

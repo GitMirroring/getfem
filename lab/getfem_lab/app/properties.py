@@ -1,0 +1,1166 @@
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
+#
+# This file is a part of GetFEM
+#
+# GetFEM  is  free software;  you  can  redistribute  it  and/or modify it
+# under  the  terms  of the  GNU  Lesser General Public License as published
+# by  the  Free Software Foundation;  either version 3 of the License,  or
+# (at your option) any later version along with the GCC Runtime Library
+# Exception either version 3.1 or (at your option) any later version.
+# This program  is  distributed  in  the  hope  that it will be useful,  but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or  FITNESS  FOR  A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+# License and GCC Runtime Library Exception for more details.
+# You  should  have received a copy of the GNU Lesser General Public License
+# along  with  this program. If not, see https://www.gnu.org/licenses/.
+
+
+"""Properties panel: the form of the selected node, built from the field
+descriptions of `editing.fields`. Every change is reported through the
+`changed(field, value)` signal; the window applies it to the model."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QMenu, QDoubleSpinBox, QFileDialog, QFormLayout,
+                               QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
+
+from .. import editing as E, model as M, parameters as P
+
+ERROR_STYLE = "QLineEdit, QComboBox { background: #fde8e4; }"
+AXES = "xyz"
+
+
+def _mono() -> QFont:
+    f = QFont("monospace")
+    f.setStyleHint(QFont.StyleHint.Monospace)
+    return f
+
+
+def library_menu(parent, emit) -> QMenu:
+    """The materials of the libraries, by category (the user's last);
+    choosing one emits the action that copies it into the model."""
+    from .. import library
+    menu = QMenu(parent)
+    subs = {}
+    for src, mat in library.materials():
+        cat = "My library" if src == library.USER else mat.get("category", "other").capitalize()
+        if cat not in subs:                 # parented: owned by the menu, not by Python
+            subs[cat] = QMenu(cat, menu)
+            menu.addMenu(subs[cat])
+        props = ", ".join(f"{p} = {E.format_value(v)}" for p, v in mat.get("properties", {}).items())
+        act = subs[cat].addAction(mat["name"])
+        act.setToolTip(props)
+        act.triggered.connect(lambda _=False, o=f"{src}:{mat['name']}": emit(f"add_from_library:{o}"))
+    for sub in subs.values():
+        sub.setToolTipsVisible(True)
+    return menu
+
+
+def geometry_menu(parent, emit) -> QMenu:
+    """The kinds of geometry, by group; choosing one emits add_geometry:<kind>."""
+    menu = QMenu(parent)
+    menu.setToolTipsVisible(True)
+    group = None
+    for grp, kind, label, descr in E.GEOMETRY_KINDS:
+        if grp != group:
+            if group is not None:
+                menu.addSeparator()
+            menu.addSection(grp)
+            group = grp
+        act = menu.addAction(label)
+        act.setToolTip(descr)
+        act.setData(f"add_geometry:{kind}")
+        act.triggered.connect(lambda _=False, k=kind: emit(f"add_geometry:{k}"))
+    return menu
+
+
+def group_label(labels: list[str]) -> str:
+    """The words common to the labels of the variants of an action ("Add a
+    rectangle", "Add an ellipse" -> "Add"; "Put in a union"... -> "Put in")."""
+    words = [lab.split() for lab in labels]
+    common = []
+    for ws in zip(*words):
+        if len(set(ws)) != 1:
+            break
+        common.append(ws[0])
+    while common and common[-1] in ("a", "an", "the"):
+        common.pop()
+    return (" ".join(common) or labels[0].split()[0]).rstrip(":") + "…"
+
+
+def _piece_of(key) -> tuple | None:
+    """The path of the property piece (or the source) of a module that a
+    field edits."""
+    key = tuple(key)
+    if len(key) >= 7 and key[0] == "models" and key[2] == "modules" and key[4] == "properties":
+        return key[:7]
+    if len(key) >= 6 and key[0] == "models" and key[2] == "modules" and key[4] == "sources" \
+            and isinstance(key[5], int):
+        return key[:6]
+    return None
+
+
+class _FocusWatcher(QObject):
+    """Calls back when a widget (or a child) gets the focus or is clicked."""
+
+    def __init__(self, parent, callback):
+        super().__init__(parent)
+        self.callback = callback
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.MouseButtonPress):
+            self.callback()
+        return False
+
+
+class PropertiesPanel(QScrollArea):
+    changed = Signal(object, object)          # Field, value
+    action = Signal(str)                      # editing action identifier, or a window command
+    removeProperty = Signal(object)           # Field
+    pieceFocused = Signal(object)             # a property of a module per domain: its path, being edited
+    viewChanged = Signal(dict)                # settings of a result field display
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setMinimumWidth(280)
+        self._fields: dict[tuple, QWidget] = {}
+        self._open: dict[str, bool] = {}      # a section opened or closed by the user, by its label
+        self._build_empty()
+
+    def _build_empty(self):
+        # The old form is deleted later, not now: the change being applied may
+        # come from one of its widgets (a combo box whose signal is still
+        # running), and deleting it inside its own signal crashes Qt.
+        old = self.takeWidget()
+        if old is not None:
+            old.hide()
+            old.deleteLater()
+        self.body = QWidget()
+        self.layout_ = QVBoxLayout(self.body)
+        self.layout_.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.setWidget(self.body)
+        self._fields = {}
+
+    def _title(self, text: str):
+        t = QLabel(text)
+        f = t.font()
+        f.setBold(True)
+        f.setPointSize(f.pointSize() + 1)
+        t.setFont(f)
+        t.setWordWrap(True)
+        self.layout_.addWidget(t)
+
+    def _messages(self, errors: list[str]):
+        for e in errors:
+            lab = QLabel("⚠ " + e)
+            lab.setWordWrap(True)
+            lab.setStyleSheet("color: #b3261e;")
+            lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.layout_.addWidget(lab)
+
+    def _buttons(self, actions: list[tuple[str, str]]):
+        """The actions of the node as buttons; the variants of one action
+        ("add_shape:rectangle", "add_shape:ball"...) in the menu of one
+        button, so that the row stays short; the row wrapped on several
+        lines when the panel is narrow."""
+        if not actions:
+            return
+        from .flow import FlowLayout
+        row = FlowLayout()                        # wrapped on several lines when the panel is narrow
+        row.setContentsMargins(0, 8, 0, 0)
+        groups: dict[str, list[tuple[str, str]]] = {}
+        for ident, label in actions:
+            if ":" in ident and not ident.startswith("cmd:"):
+                groups.setdefault(ident.split(":", 1)[0], []).append((ident, label))
+        done = set()
+        for ident, label in actions:
+            prefix = ident.split(":", 1)[0]
+            if len(groups.get(prefix, [])) > 1:
+                if prefix in done:
+                    continue
+                done.add(prefix)
+                items = groups[prefix]
+                b = QPushButton(group_label([lab for _, lab in items]))
+                b.setObjectName(f"action:{prefix}")
+                menu = QMenu(b)
+                for i, lab in items:
+                    act = menu.addAction(lab)
+                    act.setData(i)
+                    act.triggered.connect(lambda _=False, i=i: self.action.emit(i))
+                b.setMenu(menu)
+                row.addWidget(b)
+                continue
+            b = QPushButton(label)
+            b.setObjectName(f"action:{ident}")
+            if ident == "add_from_library":            # the materials, in a menu on the button
+                b.setText(label.rstrip("…").rstrip("."))
+                b.setMenu(library_menu(b, self.action.emit))
+            elif ident == "add_geometry":              # the kinds of geometry, in a menu
+                b.setMenu(geometry_menu(b, self.action.emit))
+            else:
+                b.clicked.connect(lambda _=False, i=ident: self.action.emit(i))
+            row.addWidget(b)
+        w = QWidget()
+        w.setLayout(row)
+        self.layout_.addWidget(w)
+
+    # -------------------------------------------------------------- model nodes
+
+    def show_node(self, model: dict, title: str, path, fields: list[E.Field], errors: list[str],
+                  node_errors: list[str], actions: list[tuple[str, str]], base_dir: Path | None):
+        self._build_empty()
+        self._base_dir = base_dir
+        self._title(title)
+        in_section = False
+        form = None if fields and fields[0].kind == "section" else self._form()
+        for i, f in enumerate(fields):
+            if f.kind == "section":
+                rest = fields[i + 1:]
+                end = next((j for j, x in enumerate(rest) if x.kind == "section"), len(rest))
+                wrong = any(E.errors_at(errors, x.key) for x in rest[:end] if x.kind not in ("rich", "code"))
+                form = self._section(f, wrong)
+                in_section = True
+                continue
+            if f.kind == "info":
+                lab = QLabel(f.help)
+                lab.setWordWrap(True)
+                lab.setStyleSheet("color: #555;")
+                form.addRow(lab)
+                continue
+            if f.kind == "rich":                   # HTML text (an equation)
+                lab = QLabel(f.help)
+                lab.setObjectName("rich")
+                lab.setTextFormat(Qt.TextFormat.RichText)
+                lab.setWordWrap(True)
+                lab.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                if f.label and not in_section:     # (its section says what it is)
+                    form.addRow(QLabel(f"<b>{f.label}</b>"))
+                form.addRow(lab)
+                continue
+            if f.kind == "code":                   # read-only lines (GWFL terms)
+                box = QPlainTextEdit(f.help)
+                box.setObjectName("code")
+                box.setReadOnly(True)
+                box.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+                box.setStyleSheet("font-family: monospace; color: #333;")
+                box.setMaximumHeight(min(260, 22 + 16 * (f.help.count("\n") + 1)))
+                if not in_section:
+                    form.addRow(QLabel(f"<b>{f.label}</b>"))
+                form.addRow(box)
+                continue
+            if f.kind == "parameter_table":
+                form.addRow(self._parameter_table(model, f, errors))
+                continue
+            if f.kind == "material_table":
+                form.addRow(self._material_table(model, f, errors))
+                continue
+            if f.kind == "chain_table":
+                form.addRow(QLabel(f.label))
+                form.addRow(self._chain_table(model, f, errors))
+                continue
+            if f.kind == "vertex_table":
+                form.addRow(QLabel(f.label))
+                form.addRow(self._vertex_table(model, f, errors))
+                continue
+            widget = self._editor(model, f)
+            piece = _piece_of(f.key)
+            if piece is not None:                  # its domain shown (and picked) in the view
+                watcher = _FocusWatcher(widget, lambda p=piece: self.pieceFocused.emit(p))
+                for w in [widget] + widget.findChildren(QWidget):
+                    w.installEventFilter(watcher)
+            msgs = E.errors_at(errors, f.key) if f.op != "rename_selection" else []
+            if msgs:
+                widget.setStyleSheet(ERROR_STYLE)
+                widget.setToolTip("\n".join(msgs))
+            elif f.help:
+                widget.setToolTip(f.help)
+            if f.removable:
+                row = QHBoxLayout()
+                row.setContentsMargins(0, 0, 0, 0)
+                row.addWidget(widget, 1)
+                rm = QToolButton()
+                rm.setText("✕")
+                rm.setToolTip(f"Remove {f.label}")
+                rm.setObjectName(f"remove:{'.'.join(map(str, f.remove))}")
+                rm.clicked.connect(lambda _=False, fld=f: self.removeProperty.emit(fld))
+                row.addWidget(rm)
+                holder = QWidget()
+                holder.setLayout(row)
+                form.addRow(f.label, holder)
+            else:
+                form.addRow(f.label, widget)
+            self._fields[f.key] = widget
+        self._messages([e.partition(": ")[2] or e for e in node_errors])
+        self._buttons(actions)
+
+    def _form(self) -> QFormLayout:
+        """A new form (its holder added to the panel), for the next fields."""
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        holder = QWidget()
+        holder.setLayout(form)
+        self.layout_.addWidget(holder)
+        return form
+
+    def _section(self, f: E.Field, wrong: bool) -> QFormLayout:
+        """A section header, opened or closed by a click (as the user left it,
+        otherwise as the field says; open if one of its fields is wrong), and
+        the form of its fields."""
+        button = QToolButton()
+        button.setObjectName(f"section:{f.label}")
+        button.setText(f.label)
+        button.setCheckable(True)
+        button.setAutoRaise(True)
+        button.setStyleSheet("QToolButton { border: none; padding: 2px 0px; }")   # (not a pressed look)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        font = button.font()
+        font.setBold(True)
+        button.setFont(font)
+        self.layout_.addWidget(button)
+        form = self._form()
+        holder = form.parentWidget()
+        holder.setContentsMargins(12, 0, 0, 0)
+
+        def show(opened: bool, user: bool = False):
+            button.setArrowType(Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow)
+            holder.setVisible(opened)
+            if user:
+                self._open[f.label] = opened
+
+        opened = wrong or self._open.get(f.label, not f.closed)
+        button.setChecked(opened)
+        show(opened)
+        button.toggled.connect(lambda on: show(on, True))
+        return form
+
+    def _parameter_table(self, model, f: E.Field, errors) -> QWidget:
+        """All the parameters of a list in one table: name, value (number or
+        expression), its number, description; rows added, removed, moved."""
+        rows = E.parameter_rows(model, f.key)
+        table = QTableWidget(len(rows), 4)
+        table.setObjectName("parameters_table")
+        table.setHorizontalHeaderLabels(["Name", "Value", "=", "Description"])
+        table.verticalHeader().hide()
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        for i, r in enumerate(rows):
+            texts = (r["name"] or "", E.format_value(r["value"]),
+                     "" if r["number"] is None else P.format_value(r["number"]), r["description"] or "")
+            for j, t in enumerate(texts):
+                item = QTableWidgetItem(t)
+                if j == 1:
+                    item.setFont(_mono())
+                if j == 2:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setForeground(Qt.GlobalColor.darkGray)
+                    item.setToolTip("value of the expression")
+                if j != 2:
+                    fld = r["fields"][0 if j == 0 else 1 if j == 1 else 2]
+                    msgs = E.errors_at(errors, fld.key)
+                    if msgs:
+                        item.setBackground(Qt.GlobalColor.yellow)
+                        item.setToolTip("\n".join(msgs))
+                table.setItem(i, j, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column()
+            if j == 2 or i >= len(rows):
+                return
+            fld = rows[i]["fields"][0 if j == 0 else 1 if j == 1 else 2]
+            text = item.text().strip()
+            value = E.parse_parameter(text) if j == 1 else text
+            if value == (rows[i]["name"], rows[i]["value"], None, rows[i]["description"])[j]:
+                return
+            self._last_cell = (f.key, i, j)
+            self._commit(fld, value)
+        table.itemChanged.connect(edited)
+        # the cell edited last keeps the focus when the form is rebuilt
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        for ident, text, tip in (("remove_row", "Remove", "Remove the selected parameter"),
+                                 ("move_up", "Up", "Move up (a parameter may only use the ones above it)"),
+                                 ("move_down", "Down", "Move down")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"table:{ident}")
+            b.clicked.connect(lambda _=False, v=ident: table.currentRow() >= 0
+                              and self._row_action(f.key, v, table.currentRow()))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(table)
+        col.addLayout(bar)
+        table.setMinimumHeight(min(80 + 30 * len(rows), 420))
+        self._fields[f.key] = table
+        return holder
+
+    def _chain_table(self, model, f: E.Field, errors) -> QWidget:
+        """The points of a curve (or of the curve of a swept surface): their
+        coordinates, and the point an arc to the next one goes through."""
+        gi = f.key[1]
+        dim, rows = E.chain_rows(model, gi)
+        heads = ["x", "y", "z"][:dim] if model["geometries"][gi]["source"].get("type") == "curve" \
+            or model["geometries"][gi]["source"].get("sweep") != "revolution" else ["r", "z"]
+        table = QTableWidget(len(rows), dim + 1)
+        table.setObjectName("chain_table")
+        table.setHorizontalHeaderLabels(heads + ["arc to the next point through"])
+        table.setVerticalHeaderLabels([str(i + 1) for i in range(len(rows))])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        base = f.key[:-1]
+        for i, r in enumerate(rows):
+            for j in range(dim + 1):
+                item = QTableWidgetItem(E.format_value(r[j]) if j < dim else r[j])
+                item.setFont(_mono())
+                if 0 < j < dim and isinstance(r[0], str) and r[1] == "":   # the point is a vector parameter
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setToolTip(f"given by {r[0]}: type numbers in the first column to edit it")
+                key = base + (("points", i, j) if j < dim else ("through", i))
+                msgs = E.errors_at(errors, key) or (E.errors_at(errors, base + ("points", i)) if j < dim else [])
+                if msgs:
+                    item.setBackground(Qt.GlobalColor.yellow)
+                    item.setToolTip("\n".join(msgs))
+                table.setItem(i, j, item)
+        if E.errors_at(errors, base + ("points",)):
+            table.setToolTip("\n".join(E.errors_at(errors, base + ("points",))))
+            table.setStyleSheet(ERROR_STYLE)
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column()
+            if i >= len(rows):
+                return
+            self._last_cell = (f.key, i, j)
+            if j < dim:
+                value = E.parse_value(item.text().strip())
+                if value != rows[i][j]:
+                    self._commit(E.Field(base + ("points", i, j), f"point {i + 1}", "value", size=dim,
+                                         op="point_component"), value)
+            elif item.text().strip() != rows[i][dim]:
+                self._commit(E.Field(base + ("through", i), f"arc {i + 1}", "text", op="chain_through"),
+                             item.text().strip())
+        table.itemChanged.connect(edited)
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        for ident, text, tip in (("insert_point", "Insert", "Insert a point after the selected one"),
+                                 ("remove_point", "Remove", "Remove the selected point")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"table:{ident}")
+            b.clicked.connect(lambda _=False, v=ident: table.currentRow() >= 0
+                              and self._row_action(f.key, v, table.currentRow()))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(table)
+        col.addLayout(bar)
+        table.setMinimumHeight(min(60 + 30 * len(rows), 360))
+        self._fields[f.key] = table
+        return holder
+
+    def _vertex_table(self, model, f: E.Field, errors) -> QWidget:
+        """The vertices of a polygon: x, y (values or expressions) and the
+        radius of the fillet that rounds the vertex (empty: sharp), or, at
+        an end of a curved side, whether the boundary is smooth there; each
+        vertex is followed by the points of the spline of the side after it
+        (rows k.1, k.2...). A vertex is inserted in the middle of the side
+        after the selected one (a point, if the side is curved), or removed;
+        the side after the selected vertex is made curved or straight."""
+        poly = f.key[:-1]
+        rows = E.polygon_rows(model, poly)
+        radii = E.fillet_cells(model, poly)
+        smooth = set(E.get_at(model, poly, {}).get("smooth") or [])
+        sides = E.spline_sides(model, poly)
+        table = QTableWidget(len(rows), 3)
+        table.setObjectName("vertices_table")
+        prof = E.profile_root(f.key)
+        around = prof is not None and E.get_at(model, prof[:-1], {}).get("type") == "revolution"
+        table.setHorizontalHeaderLabels(["r", "z", "fillet"] if around else ["x", "y", "fillet"])
+        table.horizontalHeaderItem(2).setToolTip("Radius of the arc that rounds the vertex (empty: a sharp "
+                                                 "corner); a number or an expression. At an end of a curved "
+                                                 "side: smooth (the boundary tangent there) or not")
+        table.setVerticalHeaderLabels([str(e[1] + 1) if e[0] == "vertex" else f"{e[1]}.{e[2] + 1}" for e in rows])
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        for row, e in enumerate(rows):
+            r = e[-1]
+            key = f.key + (e[1],) if e[0] == "vertex" else poly + ("splines", sides[e[1]], "points", e[2])
+            whole = isinstance(r[0], str) and isinstance(r[1], str) and r[1] == ""   # a vector parameter
+            for j in range(2):
+                item = QTableWidgetItem(E.format_value(r[j]))
+                item.setFont(_mono())
+                msgs = E.errors_at(errors, key + (j,)) or E.errors_at(errors, key)
+                if j == 1 and whole:                             # the point is a vector parameter
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setText("")
+                if msgs:
+                    item.setBackground(Qt.GlobalColor.yellow)
+                    item.setToolTip("\n".join(msgs))
+                elif isinstance(r[j], str) and r[j + 2] is not None:
+                    tip = f"= {E.format_number(float(r[j + 2]))}" if j == 1 or not whole or \
+                        r[3] is None else f"= [{E.format_number(float(r[2]))}, {E.format_number(float(r[3]))}]"
+                    item.setToolTip(tip)
+                if e[0] == "spline":
+                    item.setForeground(Qt.GlobalColor.darkBlue)
+                table.setItem(row, j, item)
+            if e[0] == "spline":                  # a point of a spline: no third cell
+                item = QTableWidgetItem("")
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                table.setItem(row, 2, item)
+                continue
+            i = e[1]
+            if E.near_spline(model, poly, i + 1):     # the end of a curved side: smooth or not
+                item = QTableWidgetItem("smooth")
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                              | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked if i + 1 in smooth else Qt.CheckState.Unchecked)
+                item.setToolTip("The boundary tangent at this vertex (the curved side follows the side "
+                                "on the other side of the vertex)")
+            else:
+                item = QTableWidgetItem("" if radii[i] is None else E.format_value(radii[i]))
+                item.setFont(_mono())
+                fkey = poly + ("fillets",)
+                msgs = [m for m in E.errors_at(errors, fkey) if f"vertex {i + 1}" in m] + \
+                    [m for j2, fl in enumerate(E.get_at(model, fkey, []) or []) if isinstance(fl, dict)
+                     and fl.get("vertex") == i + 1 for m in E.errors_at(errors, fkey + (j2,))]
+                if msgs:
+                    item.setBackground(Qt.GlobalColor.yellow)
+                    item.setToolTip("\n".join(msgs))
+            table.setItem(row, 2, item)
+        msgs = E.errors_at(errors, f.key) + E.errors_at(errors, poly + ("splines",)) + \
+            E.errors_at(errors, poly + ("smooth",))
+        if msgs:
+            table.setToolTip("\n".join(msgs))
+            table.setStyleSheet(ERROR_STYLE)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)   # the three columns seen
+
+        def edited(item):
+            row, j = item.row(), item.column()
+            if row >= len(rows):
+                return
+            e = rows[row]
+            text = item.text().strip()
+            if j == 2 and e[0] == "vertex" and E.near_spline(model, poly, e[1] + 1):
+                on = item.checkState() == Qt.CheckState.Checked
+                if on != (e[1] + 1 in smooth):
+                    self._last_cell = (f.key, row, j)
+                    self.action.emit(f"smooth:{e[1] + 1}")
+                return
+            if j == 2 and e[0] == "vertex":         # the fillet of the vertex
+                i = e[1]
+                value = E.parse_value(text) if text else None
+                if value == radii[i]:
+                    return
+                self._last_cell = (f.key, row, j)
+                self._commit(E.Field(poly + ("fillets", i), f"fillet of vertex {i + 1}", "value",
+                                     op="vertex_fillet"), value)
+                return
+            if j == 2:
+                return
+            value = E.parse_value(text)
+            if value == e[-1][j]:
+                return
+            self._last_cell = (f.key, row, j)
+            if e[0] == "vertex":
+                self._commit(E.Field(f.key + (e[1], j), f"vertex {e[1] + 1}", "value", size=2,
+                                     op="point_component"), value)
+            else:
+                self._commit(E.Field(poly + ("splines", sides[e[1]], "points", e[2], j),
+                                     f"point {e[2] + 1} of side {e[1]}", "value", size=2, op="point_component"),
+                             value)
+        table.itemChanged.connect(edited)
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        add = QToolButton()
+        add.setText("Add")
+        add.setToolTip("Add a vertex after the last one")
+        add.setObjectName("table:add_vertex")
+
+        def add_vertex():
+            self._last_cell = (f.key, len(rows), 0)
+            self.action.emit("add_vertex")
+        add.clicked.connect(add_vertex)
+        bar.addWidget(add)
+
+        def row_action(verb):
+            row = table.currentRow()
+            if not 0 <= row < len(rows):
+                return
+            e = rows[row]
+            if e[0] == "spline":                  # a point of a spline
+                action = {"insert_vertex": f"spline:insert:{e[1]}:{e[2]}",
+                          "remove_vertex": f"spline:remove:{e[1]}:{e[2]}",
+                          "curve": f"spline:straight:{e[1]}"}[verb]
+                target = row + 1 if verb == "insert_vertex" else row
+            else:
+                k = e[1] + 1
+                action = {"insert_vertex": f"insert_vertex:{e[1]}", "remove_vertex": f"remove_vertex:{e[1]}",
+                          "curve": f"spline:straight:{k}" if k in sides else f"spline:side:{k}"}[verb]
+                target = row + 1 if verb == "insert_vertex" else row
+            self._last_cell = (f.key, target, 0)
+            self.action.emit(action)
+        for ident, text, tip in (("insert_vertex", "Insert", "Insert a vertex in the middle of the side after "
+                                                            "the selected vertex (a point, if that side is "
+                                                            "curved, or after the selected point)"),
+                                 ("remove_vertex", "Remove", "Remove the selected vertex or point"),
+                                 ("curve", "Curved", "Make the side after the selected vertex curved (a spline "
+                                                     "through points), or straight again")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setObjectName(f"table:{ident}")
+            b.clicked.connect(lambda _=False, v=ident: row_action(v))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        holder = QWidget()
+        col = QVBoxLayout(holder)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addWidget(table)
+        col.addLayout(bar)
+        table.setMinimumHeight(min(60 + 30 * len(rows), 360))
+        self._fields[f.key] = table
+        return holder
+
+    def _material_table(self, model, f: E.Field, errors) -> QWidget:
+        """Materials x the properties asked by the modules; a cell edited sets
+        (or adds) the property of the material."""
+        props, rows = E.material_rows(model)
+        table = QTableWidget(len(rows), len(props) + 1)
+        table.setObjectName("materials_table")
+        units = [M.PROPERTIES.get(p, (p, ""))[1] for p in props]
+        table.setHorizontalHeaderLabels(["Material"] + [f"{p} ({u})" if u and u != "1" else p
+                                                        for p, u in zip(props, units)])
+        table.verticalHeader().hide()
+        for i, r in enumerate(rows):
+            item = QTableWidgetItem(r["name"] or "")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            item.setToolTip(f"copied from the {r['from'].replace(':', ' ', 1)}" if r["from"] else "")
+            table.setItem(i, 0, item)
+            for j, v in enumerate(r["values"]):
+                cell = QTableWidgetItem("" if v is None else E.format_value(v))
+                msgs = E.errors_at(errors, r["fields"][j].key)
+                if msgs:
+                    cell.setBackground(Qt.GlobalColor.yellow)
+                    cell.setToolTip("\n".join(msgs))
+                table.setItem(i, j + 1, cell)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+
+        def edited(item):
+            i, j = item.row(), item.column() - 1
+            if j < 0 or i >= len(rows):
+                return
+            text = item.text().strip()
+            if not text or E.parse_value(text) == rows[i]["values"][j]:
+                return
+            self._last_cell = (f.key, i, j + 1)
+            self._commit(rows[i]["fields"][j], E.parse_value(text))
+        table.itemChanged.connect(edited)
+        last = getattr(self, "_last_cell", None)
+        if last and last[0] == f.key and last[1] < len(rows):
+            table.setCurrentCell(last[1], last[2])
+            QTimer.singleShot(0, table.setFocus)
+        table.setMinimumHeight(min(80 + 30 * len(rows), 420))
+        self._fields[f.key] = table
+        return table
+
+    def _row_action(self, key, verb, row):
+        target = {"move_up": row - 1, "move_down": row + 1}.get(verb, row)
+        self._last_cell = (key, max(target, 0), 0)
+        self.action.emit(f"{verb}:{row}")
+
+    def editor(self, key) -> QWidget | None:
+        """Editing widget of a field (for tests)."""
+        return self._fields.get(tuple(key))
+
+    def _commit(self, f: E.Field, value):
+        self.changed.emit(f, value)
+
+    def _line(self, text: str, f: E.Field, parse, mono=False) -> QLineEdit:
+        edit = QLineEdit(text)
+        if mono:
+            edit.setFont(_mono())
+
+        def done():
+            if edit.isModified():
+                edit.setModified(False)
+                try:
+                    value = parse(edit.text())
+                except ValueError as exc:
+                    edit.setStyleSheet(ERROR_STYLE)
+                    edit.setToolTip(str(exc))
+                    return
+                self._commit(f, value)
+        edit.editingFinished.connect(done)
+        return edit
+
+    def _components(self, values: list, f: E.Field, parse) -> QWidget:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        edits = []
+
+        def done():
+            if not any(e.isModified() for e in edits):
+                return
+            for e in edits:
+                e.setModified(False)
+            try:
+                value = [parse(e.text()) for e in edits]
+            except ValueError as exc:
+                holder.setStyleSheet(ERROR_STYLE)
+                holder.setToolTip(str(exc))
+                return
+            self._commit(f, value)
+        for i, v in enumerate(values):
+            e = QLineEdit(E.format_value(v))
+            e.setPlaceholderText(AXES[i] if i < 3 else str(i))
+            e.setToolTip(AXES[i] if i < 3 else str(i))
+            e.editingFinished.connect(done)
+            row.addWidget(e)
+            edits.append(e)
+        holder = QWidget()
+        holder.setLayout(row)
+        holder.edits = edits
+        return holder
+
+    def _editor(self, model: dict, f: E.Field) -> QWidget:
+        value = E.field_value(model, f)
+        k = f.kind
+        if f.op == "rename_selection":
+            value = f.key[-1]
+        if k in ("text", "ident"):
+            return self._line("" if value is None else str(value), f, lambda s: s.strip())
+        if k == "value":
+            return self._line(E.format_value(value), f, E.parse_value, mono=True)
+        if k == "number":
+            return self._line(E.format_value(value), f, E.parse_number)
+        if k == "int":
+            return self._line(E.format_value(value), f, lambda s: E.parse_number(s, True))
+        if k in ("numbers", "ints") and isinstance(value, str):      # a vector parameter: C
+            return self._line(value, f, lambda s: s.strip(), mono=True)
+        if k in ("numbers", "ints"):
+            vals = list(value) if isinstance(value, list) else []
+            vals = (vals + [0] * (f.size or len(vals)))[:f.size or len(vals)]
+            return self._components(vals, f, lambda s, i=(k == "ints"): E.parse_number(s, i))
+        if k == "vector":
+            parts = E.split_vector(value, f.size or 1)
+            if parts is None:
+                return self._line(E.format_value(value), f, E.parse_value, mono=True)
+            return self._components(parts, f, E.parse_value)
+        if k == "bool":
+            check = QCheckBox()
+            check.setChecked(bool(value))
+            check.toggled.connect(lambda on, fld=f: self._commit(fld, bool(on)))
+            return check
+        if k == "choice":
+            combo = QComboBox()
+            values = [c[0] for c in f.choices]
+            for v, label in f.choices:
+                combo.addItem(label, v)
+            if value not in values:
+                combo.addItem(f"{value} (invalid)" if value is not None else "", value)
+            combo.setCurrentIndex(values.index(value) if value in values else combo.count() - 1)
+            # the value it holds now: the form is not rebuilt after each change (the focus kept),
+            # so a second change compares with the first one, not with the value of the form
+            held = {"value": value}
+
+            def chosen(i, c=combo):
+                if c.itemData(i) != held["value"]:
+                    held["value"] = c.itemData(i)
+                    self._commit(f, c.itemData(i))
+            combo.activated.connect(chosen)
+            return combo
+        if k == "names":
+            lst = QListWidget()
+            chosen = list(value or [])
+            for v, label in f.choices:
+                it = QListWidgetItem(label)
+                it.setData(Qt.ItemDataRole.UserRole, v)
+                it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                it.setCheckState(Qt.CheckState.Checked if v in chosen else Qt.CheckState.Unchecked)
+                lst.addItem(it)
+            lst.setMaximumHeight(22 * max(3, min(len(f.choices), 8)))
+
+            def changed(_item):
+                self._commit(f, [lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(lst.count())
+                                 if lst.item(i).checkState() == Qt.CheckState.Checked])
+            lst.itemChanged.connect(changed)
+            return lst
+        if k == "file":
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            edit = self._line("" if value is None else str(value), f, lambda s: s.strip())
+            row.addWidget(edit, 1)
+            b = QToolButton()
+            b.setText("…")
+
+            def browse():
+                start = str(self._base_dir or Path.cwd())
+                name, _ = QFileDialog.getOpenFileName(self, "Choose a file", start)
+                if name:
+                    p = Path(name)
+                    if self._base_dir is not None:
+                        try:
+                            p = p.relative_to(self._base_dir)
+                        except ValueError:
+                            pass
+                    self._commit(f, str(p))
+            b.clicked.connect(browse)
+            row.addWidget(b)
+            holder = QWidget()
+            holder.setLayout(row)
+            return holder
+        return QLabel(E.format_value(value))
+
+    # -------------------------------------------------------------- results
+
+    def show_results(self, results: dict, stale: bool, actions):
+        self._build_empty()
+        self._title("Results" + (" (out of date)" if stale else ""))
+        rows = [(k, results[k]) for k in ("status", "time", "mode", "nb_dofs", "time_s", "relative_residual")
+                if k in results]
+        rows += [(k, v) for k, v in results.items()
+                 if (k.startswith("max_") or k.startswith("min_")) and isinstance(v, (int, float))]
+        rows += [(f"∫ {k}", v) for k, v in results.get("quantities", {}).items()]
+        table = QTableWidget(len(rows), 2)
+        table.setObjectName("results_table")
+        table.setHorizontalHeaderLabels(["Quantity", "Value"])
+        table.verticalHeader().hide()
+        for i, (k, v) in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(str(k)))
+            text = f"{v:.6g}" if isinstance(v, float) else str(v)
+            item = QTableWidgetItem(text)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            table.setItem(i, 1, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        self.layout_.addWidget(table)
+        if results.get("modes"):
+            self._modes(*results["modes"])
+        if results.get("curves"):
+            self._curves(results["curves"], "By mode:" if results.get("modes") else "In time:",
+                         "mode" if results.get("modes") else "t")
+        self._messages(results.get("warnings", []))
+        self._buttons(actions)
+
+    def _modes(self, columns: list, rows: list) -> None:
+        """The modes of a modal analysis, a row each."""
+        self.layout_.addWidget(QLabel("Modes:"))
+        table = QTableWidget(len(rows), len(columns))
+        table.setObjectName("modes_table")
+        table.setHorizontalHeaderLabels(columns)
+        table.verticalHeader().hide()
+        for i, row in enumerate(rows):
+            for j, v in enumerate(row):
+                item = QTableWidgetItem("" if v is None else f"{v:.6g}" if isinstance(v, float) else str(v))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                table.setItem(i, j, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        self.layout_.addWidget(table)
+
+    def _curves(self, curves: dict, title: str = "In time:", xlabel: str = "t") -> None:
+        """The scalar results in time (or by mode): one chosen, its curve."""
+        from .plot import LinePlot
+        row = QHBoxLayout()
+        row.addWidget(QLabel(title))
+        combo = QComboBox()
+        combo.setObjectName("curve")
+        for name in curves:
+            combo.addItem(name)
+        row.addWidget(combo, 1)
+        self.layout_.addLayout(row)
+        plot = LinePlot()
+        plot.setObjectName("curve_plot")
+        self.layout_.addWidget(plot)
+
+        def show(name):
+            if name in curves:
+                t, v = curves[name]
+                plot.set_data(t, v, xlabel, name)
+        combo.currentTextChanged.connect(show)
+        quantities = [n for n in curves if not n.split(".")[-1].startswith(("min_", "max_"))]
+        if quantities:
+            combo.setCurrentText(quantities[0])
+        show(combo.currentText())
+
+    def show_result_field(self, name: str, ncomp: int, settings: dict, can_warp: bool,
+                          vectors: tuple = (), planar: bool = True, graphic: dict | None = None,
+                          field_names: tuple = (), field_comps: dict | None = None):
+        """Display settings of a result field: component, deformed shape,
+        colors, isolines, arrows (of one of the vector fields), cut line.
+        graphic: a saved graphic, whose name and field are also edited."""
+        self._build_empty()
+        self._title(f"Graphic: {graphic.get('name')}" if graphic is not None else f"Result: {name}")
+        form = QFormLayout()
+        if graphic is not None:
+            gname = QLineEdit(graphic.get("name", ""))
+            gname.setObjectName("graphic_name")
+            gname.editingFinished.connect(
+                lambda: gname.text().strip() != graphic.get("name")
+                and self.viewChanged.emit({"name": gname.text().strip()}))
+            form.addRow("Name", gname)
+            fcombo = QComboBox()
+            fcombo.setObjectName("graphic_field")
+            for n in dict.fromkeys(list(field_names) + [graphic.get("field")]):
+                fcombo.addItem(n, n)
+            fcombo.setCurrentIndex(fcombo.findData(graphic.get("field")))
+            fcombo.activated.connect(lambda i: fcombo.itemData(i) != graphic.get("field")
+                                     and self.viewChanged.emit({"field": fcombo.itemData(i)}))
+            form.addRow("Field", fcombo)
+        if ncomp > 1:
+            combo = QComboBox()
+            combo.setObjectName("component")
+            combo.addItem("magnitude", None)
+            for i in range(ncomp):
+                combo.addItem(f"component {AXES[i] if i < 3 else i}", i)
+            combo.setCurrentIndex(combo.findData(settings.get("component")))
+            combo.activated.connect(lambda i: self.viewChanged.emit({"component": combo.itemData(i)}))
+            form.addRow("Show", combo)
+        if can_warp:
+            check = QCheckBox("deformed shape")
+            check.setObjectName("warp")
+            check.setChecked(settings.get("warp", True))
+            check.toggled.connect(lambda on: self.viewChanged.emit({"warp": on}))
+            form.addRow("", check)
+            spin = QDoubleSpinBox()
+            spin.setObjectName("scale")
+            spin.setDecimals(3)
+            spin.setRange(0.0, 1e12)
+            spin.setValue(settings.get("scale") or 1.0)
+            spin.setToolTip("Amplification of the displacement (the default makes the largest "
+                            "displacement 10% of the model size)")
+            spin.editingFinished.connect(lambda: self.viewChanged.emit({"scale": spin.value()}))
+            form.addRow("Scale factor", spin)
+        self._view_fields(form, settings, vectors, planar)
+        holder = QWidget()
+        holder.setLayout(form)
+        self.layout_.addWidget(holder)
+        self._layers(settings, field_comps if field_comps is not None else {n: 1 for n in field_names},
+                     name)
+        self.layout_.addWidget(self._hint(
+            ("Click on the field to read its value; the Cut line tool of the view (2D) "
+             "draws a segment along which the field is plotted. " if planar else "")
+            + ("These settings are saved in the graphic." if graphic is not None else
+               "Changing these settings saves them in a graphic of the model, named after the field.")))
+
+    def _layers(self, settings, comps: dict, shown: str):
+        """The layers drawn over the field (M.LAYER_TYPES): a row each (its
+        field, its number of arrows along the longest side or of isolines,
+        the length of the arrows, its color; Remove), Add arrows, Add isolines."""
+        layers = [dict(lay) for lay in settings.get("layers") or []]
+        vectors = [n for n, c in comps.items() if c > 1]
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 4, 0, 0)
+        col.addWidget(QLabel("<b>Layers</b> (over the field)"))
+
+        def emit(new):
+            self.viewChanged.emit({"layers": new})
+
+        def setter(i, key, cast=lambda v: v):
+            def apply(value):
+                new = [dict(lay) for lay in layers]
+                new[i][key] = cast(value)
+                if new != layers:
+                    emit(new)
+            return apply
+        for i, lay in enumerate(layers):
+            kind = lay.get("type")
+            spec = M.LAYER_TYPES.get(kind, {})
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Arrows" if kind == "arrows" else "Isolines"))
+            fc = QComboBox()
+            fc.setObjectName(f"layer{i}_field")
+            for n in (vectors if kind == "arrows" else list(comps)) + [lay.get("field")]:
+                if n and fc.findData(n) < 0:
+                    fc.addItem(n, n)
+            fc.setCurrentIndex(max(fc.findData(lay.get("field")), 0))
+            fc.activated.connect(lambda k, fc=fc, i=i: setter(i, "field")(fc.itemData(k)))
+            row.addWidget(fc, 1)
+            if kind == "isolines" and comps.get(lay.get("field"), 1) > 1:
+                cc = QComboBox()
+                cc.setObjectName(f"layer{i}_component")
+                cc.addItem("magnitude", None)
+                for j in range(comps[lay["field"]]):
+                    cc.addItem(AXES[j] if j < 3 else str(j), j)
+                cc.setCurrentIndex(max(cc.findData(lay.get("component")), 0))
+                cc.activated.connect(lambda k, cc=cc, i=i: setter(i, "component")(cc.itemData(k)))
+                row.addWidget(cc)
+            rm = QToolButton()
+            rm.setObjectName(f"layer{i}_remove")
+            rm.setText("×")
+            rm.setToolTip("Remove this layer")
+            rm.clicked.connect(lambda _=False, i=i: emit([lay for j, lay in enumerate(layers) if j != i]))
+            row.addWidget(rm)
+            holder = QWidget()
+            row.setContentsMargins(0, 0, 0, 0)
+            holder.setLayout(row)
+            col.addWidget(holder)
+            row = QHBoxLayout()                        # (its settings, on a second line)
+            row.addSpacing(16)
+            row.addWidget(QLabel("arrows" if kind == "arrows" else "lines"))
+            sp = QSpinBox()
+            sp.setObjectName(f"layer{i}_count")
+            sp.setRange(1, 200)
+            sp.setValue(int(lay.get("count", spec.get("count", 10))))
+            sp.setToolTip("Arrows along the longest side" if kind == "arrows" else "Number of isolines")
+            sp.editingFinished.connect(lambda sp=sp, i=i: setter(i, "count", int)(sp.value()))
+            row.addWidget(sp)
+            if kind == "arrows":
+                ls = QDoubleSpinBox()
+                ls.setObjectName(f"layer{i}_scale")
+                ls.setRange(0.05, 100.0)
+                ls.setDecimals(2)
+                ls.setSingleStep(0.25)
+                ls.setValue(float(lay.get("scale", 1.0)))
+                ls.setToolTip("Length of the arrows (1: the longest one about the spacing of the arrows)")
+                ls.editingFinished.connect(lambda ls=ls, i=i: setter(i, "scale", float)(ls.value()))
+                row.addWidget(QLabel("length"))
+                row.addWidget(ls)
+            col_c = QComboBox()
+            col_c.setObjectName(f"layer{i}_color")
+            for c in M.LAYER_COLORS:
+                col_c.addItem(c, c)
+            col_c.setCurrentIndex(max(col_c.findData(lay.get("color", "black")), 0))
+            col_c.activated.connect(lambda k, cb=col_c, i=i: setter(i, "color")(cb.itemData(k)))
+            row.addWidget(col_c)
+            row.addStretch(1)
+            holder = QWidget()
+            row.setContentsMargins(0, 0, 0, 0)
+            holder.setLayout(row)
+            col.addWidget(holder)
+        buttons = QHBoxLayout()
+        if vectors:
+            add_a = QPushButton("Add arrows")
+            add_a.setObjectName("add_arrows")
+            add_a.clicked.connect(lambda: emit(layers + [{"type": "arrows", "field": vectors[0]}]))
+            buttons.addWidget(add_a)
+        if comps:
+            other = next((n for n in comps if n != shown), next(iter(comps)))
+            add_i = QPushButton("Add isolines")
+            add_i.setObjectName("add_isolines")
+            add_i.clicked.connect(lambda: emit(layers + [{"type": "isolines", "field": other}]))
+            buttons.addWidget(add_i)
+        buttons.addStretch(1)
+        col.addLayout(buttons)
+        self.layout_.addWidget(box)
+
+    def _hint(self, text):
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet("color: #666;")
+        return label
+
+    def _view_fields(self, form, settings, vectors, planar):
+        cmap = QComboBox()
+        cmap.setObjectName("cmap")
+        for c in M.COLORMAPS:
+            cmap.addItem(c, c)
+        cmap.setCurrentIndex(max(cmap.findData(settings.get("cmap") or M.COLORMAPS[0]), 0))
+        cmap.activated.connect(lambda i: self.viewChanged.emit({"cmap": cmap.itemData(i)}))
+        form.addRow("Colormap", cmap)
+        rng = settings.get("range") or [None, None]
+        row = QHBoxLayout()
+        edits = []
+        for j, tip in enumerate(("minimum", "maximum")):
+            e = QLineEdit("" if rng[j] is None else f"{rng[j]:.6g}")
+            e.setObjectName(f"range_{tip[:3]}")
+            e.setPlaceholderText("auto")
+            e.setToolTip(f"Color range {tip} (empty: the {tip} of the values)")
+            row.addWidget(e)
+            edits.append(e)
+
+        def range_changed():
+            vals = []
+            for e in edits:
+                try:
+                    vals.append(float(e.text()) if e.text().strip() else None)
+                except ValueError:
+                    e.setText("")
+                    vals.append(None)
+            self.viewChanged.emit({"range": None if vals == [None, None] else vals})
+        for e in edits:
+            e.editingFinished.connect(range_changed)
+        holder = QWidget()
+        holder.setLayout(row)
+        row.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Range", holder)
+        iso = QSpinBox()
+        iso.setObjectName("isolines")
+        iso.setRange(0, 100)
+        iso.setValue(int(settings.get("isolines") or 0))
+        iso.setSpecialValueText("none")
+        iso.valueChanged.connect(lambda v: self.viewChanged.emit({"isolines": v}))
+        form.addRow("Isolines", iso)
+        bands = QCheckBox("color bands")
+        bands.setObjectName("bands")
+        bands.setChecked(bool(settings.get("bands")))
+        bands.toggled.connect(lambda on: self.viewChanged.emit({"bands": on}))
+        form.addRow("", bands)
+        edges = QCheckBox("mesh edges")
+        edges.setObjectName("edges")
+        edges.setToolTip("The edges of the elements over the field (also the Edges button of the view)")
+        edges.setChecked(bool(settings.get("edges")))
+        edges.toggled.connect(lambda on: self.viewChanged.emit({"edges": on}))
+        form.addRow("", edges)
+        if vectors:
+            arrows = QComboBox()
+            arrows.setObjectName("arrows")
+            arrows.addItem("none", None)
+            for v in vectors:
+                arrows.addItem(v, v)
+            arrows.setCurrentIndex(max(arrows.findData(settings.get("arrows")), 0))
+            arrows.activated.connect(lambda i: self.viewChanged.emit({"arrows": arrows.itemData(i)}))
+            form.addRow("Arrows", arrows)
+        if planar:
+            cut = settings.get("cut")
+            line = QLineEdit("; ".join(", ".join(f"{c:.6g}" for c in p) for p in cut) if cut else "")
+            line.setObjectName("cut")
+            line.setPlaceholderText("xA, yA; xB, yB")
+            line.setToolTip("Segment along which the field is plotted (or draw it with the "
+                            "Cut line tool of the view); empty: none")
+
+            def cut_changed():
+                text = line.text().strip()
+                if not text:
+                    self.viewChanged.emit({"cut": None})
+                    return
+                try:
+                    pts = [[float(c) for c in part.split(",")] for part in text.split(";")]
+                    if len(pts) != 2 or any(len(p) != 2 for p in pts) or pts[0] == pts[1]:
+                        raise ValueError
+                except ValueError:
+                    line.setStyleSheet("background: #fde2e1;")
+                    return
+                line.setStyleSheet("")
+                self.viewChanged.emit({"cut": pts})
+            line.editingFinished.connect(cut_changed)
+            form.addRow("Cut line", line)

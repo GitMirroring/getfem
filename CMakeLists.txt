@@ -39,6 +39,8 @@ option(ENABLE_QHULL "Enable Qhull support" ON)
 # Configure options for enabling/disabling linear solvers (at least one is required)
 option(ENABLE_SUPERLU "Enable SuperLU support" ON) # might be turned off by cmake if SuperLU is not found
 option(ENABLE_MUMPS "Enable MUMPS support" ON)     # might be turned off by cmake if MUMPS is not found
+# Configure option for the ARPACK-ng eigensolver (gmm_arpack_interface.h)
+option(ENABLE_ARPACK "Enable ARPACK-ng support" ON) # might be turned off by cmake if ARPACK-ng is not found
 # Configure option for forcing single threaded BLAS at runtime (requires the dl library)
 option(ENABLE_FORCE_SINGLETHREAD_BLAS "Enable switching to singlethreaded blas at runtime" ON)
 option(GENERATE_GETFEM_IM_LIST_H "Run perl script that (re-)generates header file with integration methods" ON)
@@ -216,6 +218,27 @@ else()
   message("Building with MUMPS explicitly disabled")
 endif()
 
+if(ENABLE_ARPACK)
+  # ARPACK-ng, its ISO C binding (dsaupd_c): ARPACK_LIB_DIR helps finding it
+  find_library(ARPACK_LIBS NAMES arpack PATHS ${ARPACK_LIB_DIR})
+  if(ARPACK_LIBS)
+    set(CMAKE_REQUIRED_LIBRARIES ${ARPACK_LIBS})
+    check_function_exists(dsaupd_c HAVE_ARPACK_ICB)
+    set(CMAKE_REQUIRED_LIBRARIES)
+  endif()
+  if(ARPACK_LIBS AND HAVE_ARPACK_ICB)
+    set(GMM_USES_ARPACK 1)
+    message(STATUS "ARPACK_LIBS = ${ARPACK_LIBS}")
+    message(STATUS "Building with ARPACK-ng support")
+  else()
+    set(ENABLE_ARPACK OFF)
+    message(WARNING "ARPACK-ng (with its ISO C binding) NOT found: building without it; "
+                    "you can define ARPACK_LIB_DIR to help cmake find it")
+  endif()
+else()
+  message("Building with ARPACK-ng explicitly disabled")
+endif()
+
 if(NOT ENABLE_MUMPS AND NOT ENABLE_SUPERLU)
   message(FATAL_ERROR
           "Neither MUMPS nor SuperLU activated."
@@ -330,6 +353,7 @@ set(HEADERS
     src/gmm/gmm_matrix.h
     src/gmm/gmm_modified_gram_schmidt.h
     src/gmm/gmm_MUMPS_interface.h
+    src/gmm/gmm_arpack_interface.h
     src/gmm/gmm_opt.h
     src/gmm/gmm_precond_diagonal.h
     src/gmm/gmm_precond.h
@@ -480,6 +504,9 @@ endif()
 if(ENABLE_MUMPS)
   target_include_directories(libgetfem PRIVATE ${MUMPS_INCLUDE_PATH})
   target_link_libraries(libgetfem PUBLIC "${MUMPS_LIBS}")
+endif()
+if(ENABLE_ARPACK)
+  target_link_libraries(libgetfem PUBLIC ${ARPACK_LIBS})
 endif()
 
 if(NOT GETFEM_PARA_LEVEL MATCHES "^(0|1|2)$")

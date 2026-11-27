@@ -17,7 +17,7 @@
 
 ACLOCAL_AMFLAGS = -I m4
 
-SUBDIRS = m4 cubature src tests interface contrib bin doc gui
+SUBDIRS = m4 cubature src tests interface contrib bin doc lab
 
 EXTRA_DIST = GNU_LGPL_V3 GNU_GPL_V3 GNU_GCC_RUNTIME_EXCEPTION GNU_FDL_V3 CMakeLists.txt
 

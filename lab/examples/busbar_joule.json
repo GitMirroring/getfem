@@ -1,0 +1,267 @@
+{
+  "format_version": 3,
+  "name": "Copper busbar with a bolt hole: the current, its Joule heat, the temperature (electric currents and heat conduction in one model, the conductivity depending on the temperature)",
+  "parameters": [
+    {
+      "name": "L",
+      "value": 0.1,
+      "description": "length of the bar (m)"
+    },
+    {
+      "name": "H",
+      "value": 0.02,
+      "description": "width of the bar (m)"
+    },
+    {
+      "name": "r",
+      "value": 0.005,
+      "description": "radius of the bolt hole (m)"
+    },
+    {
+      "name": "V0",
+      "value": 0.03,
+      "description": "voltage across the bar (V)"
+    },
+    {
+      "name": "sigma0",
+      "value": 58000000.0,
+      "description": "electrical conductivity of copper at 20 °C (S/m)"
+    },
+    {
+      "name": "alpha_R",
+      "value": 0.00393,
+      "description": "temperature coefficient of the resistivity (1/K)"
+    },
+    {
+      "name": "h_conv",
+      "value": 10.0,
+      "description": "convection coefficient on the long sides (W/(m²·K))"
+    },
+    {
+      "name": "T0",
+      "value": 20.0,
+      "description": "temperature of the ends and of the air (°C)"
+    },
+    {
+      "name": "hs",
+      "value": 0.002,
+      "description": "element size (m)"
+    }
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "bar",
+      "source": {
+        "type": "csg",
+        "dim": 2,
+        "shape": {
+          "type": "difference",
+          "of": [
+            {
+              "type": "rectangle",
+              "min": [
+                0,
+                0
+              ],
+              "max": [
+                "L",
+                "H"
+              ]
+            },
+            {
+              "type": "ball",
+              "center": [
+                "L/2",
+                "H/2"
+              ],
+              "radius": "r"
+            }
+          ]
+        }
+      },
+      "selections": {
+        "left": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              0,
+              0
+            ],
+            "normal": [
+              1,
+              0
+            ]
+          }
+        },
+        "right": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "plane",
+            "point": [
+              "L",
+              0
+            ],
+            "normal": [
+              1,
+              0
+            ]
+          }
+        },
+        "sides": {
+          "kind": "boundary",
+          "criteria": {
+            "type": "edges",
+            "edges": [
+              {
+                "shape": [
+                  0
+                ],
+                "side": "ymin"
+              },
+              {
+                "shape": [
+                  0
+                ],
+                "side": "ymax"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "mesh",
+      "geometry": "bar",
+      "mesher": "getfem",
+      "h": "hs",
+      "order": 2
+    }
+  ],
+  "fields": [],
+  "models": [
+    {
+      "name": "busbar",
+      "variables": [
+        {
+          "name": "T",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 2
+        },
+        {
+          "name": "V",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 2
+        }
+      ],
+      "modules": [
+        {
+          "type": "heat_conduction",
+          "variable": "T",
+          "conductivity": "isotropic",
+          "properties": {
+            "k": [
+              {
+                "selection": "all",
+                "value": 401.0
+              }
+            ],
+            "rho": [
+              {
+                "selection": "all",
+                "value": 1.0
+              }
+            ],
+            "cp": [
+              {
+                "selection": "all",
+                "value": 1.0
+              }
+            ]
+          },
+          "sources": [],
+          "conditions": [
+            {
+              "type": "temperature",
+              "selection": "left",
+              "value": "T0"
+            },
+            {
+              "type": "temperature",
+              "selection": "right",
+              "value": "T0"
+            },
+            {
+              "type": "convection",
+              "selection": "sides",
+              "h": "h_conv",
+              "T_ext": "T0"
+            }
+          ]
+        },
+        {
+          "type": "electric_currents",
+          "variable": "V",
+          "conductivity": "isotropic",
+          "joule_heating": "heat_conduction",
+          "properties": {
+            "sigma_e": [
+              {
+                "selection": "all",
+                "value": "sigma0/(1 + alpha_R*(T - T0))"
+              }
+            ]
+          },
+          "sources": [],
+          "conditions": [
+            {
+              "type": "ground",
+              "selection": "left"
+            },
+            {
+              "type": "potential",
+              "selection": "right",
+              "value": "V0"
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "heat_to_air",
+          "expr": "h_conv*(T - T0)",
+          "selection": "sides"
+        }
+      ],
+      "plots": [
+        {"name": "temperature", "type": "line", "title": "Temperature along the bar", "curves": [
+          {"label": "axis (through the hole)", "expr": "T", "from": [0, "H/2"], "to": ["L", "H/2"], "points": 201},
+          {"label": "edge", "expr": "T", "from": [0, 0], "to": ["L", 0], "points": 201}
+        ]},
+        {"name": "current", "type": "line", "title": "Current density across the bar through the hole", "curves": [
+          {"label": "|J| (A/m²)", "expr": "Norm(J_field)", "from": ["L/2", 0], "to": ["L/2", "H"], "points": 201}
+        ]}
+      ],
+      "vtu": "busbar.vtu",
+      "graphics": [
+        {"name": "T", "field": "T", "layers": [
+          {"type": "arrows", "field": "current_density", "count": 25, "scale": 1.5, "color": "black"},
+          {"type": "isolines", "field": "V", "count": 12, "color": "white"}
+        ]}
+      ]
+    }
+  ],
+  "solvers": [],
+  "outputs": [],
+  "graphics": []
+}

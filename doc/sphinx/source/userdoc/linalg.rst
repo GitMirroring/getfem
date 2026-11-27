@@ -43,3 +43,14 @@ where ``...F90libs...`` are the libraries of the fortran compiler used to compil
 90 compiler on your machine and display it -- for example, with the intel
 ``ifort`` compiler, it is ``-L/opt/icc8.0/lib -lifport -lifcoremt -limf -lm
 -lcxa -lunwind -lpthread``)
+
+An interface to the eigensolver of |arpack| (ARPACK-ng, see `ARPACK-ng
+<https://github.com/opencollab/arpack-ng>`_) is also provided, see the file
+:file:`gmm/gmm_arpack_interface.h` and :ref:`gmm-arpack`: the eigenvalues of
+a large sparse symmetric generalized eigenproblem nearest to a shift (the
+eigenmodes of a structure, for instance). It is used if ARPACK-ng (with
+its ISO C binding) is found by the ``./configure`` script (``--enable-arpack``
+to require it, ``--with-arpack=<lib>`` to give the library, ``--disable-arpack``
+to build without it) or by cmake (``-DENABLE_ARPACK=ON``, the default, and
+``-DARPACK_LIB_DIR=<dir>`` to help finding it). The scripting interfaces
+then provide ``gf_linsolve('eigsh', ...)`` (``getfem.eigsh`` in Python).

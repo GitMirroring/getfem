@@ -31,6 +31,12 @@ using namespace getfemint;
   #define MUMPS_LINKED ((int)0)
 #endif
 
+#ifdef GMM_USES_ARPACK
+  #define ARPACK_LINKED ((int)1)
+#else
+  #define ARPACK_LINKED ((int)0)
+#endif
+
 /*@GFDOC
   Performs various operations which do not fit elsewhere.
 @*/
@@ -160,6 +166,15 @@ build_sub_command_table(std::map<std::string, psub_command> &subc_tab) {
   sub_command
     ("mumps linked", 0, 0, 0, 1,
          out.pop().from_integer(MUMPS_LINKED);
+     );
+
+  /*@FUNC tl = ('arpack linked')
+    Returns 1 if ARPACK-ng is linked in GetFEM (the eigensolver of
+    ::LINSOLVE('eigsh', ...)) and 0 otherwise.
+  @*/
+  sub_command
+    ("arpack linked", 0, 0, 0, 1,
+         out.pop().from_integer(ARPACK_LINKED);
      );
 
 } // build_sub_command_table

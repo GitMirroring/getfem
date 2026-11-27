@@ -18,6 +18,7 @@
 .. |gmm| replace:: *Gmm++*
 .. |sLU| replace:: *SuperLU*
 .. |mumps| replace:: *MUMPS*
+.. |arpack| replace:: *ARPACK*
 .. |sphinx| replace:: *Sphinx*
 .. |version| replace:: 5.5
 .. |licyears| replace:: 2004-2026

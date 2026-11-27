@@ -1004,6 +1004,48 @@ if test "x$found_superlu" != "xyes" -a "x$found_mumps" != "xyes"; then
 fi
 
 
+dnl ------------------------------ARPACK TEST-----------------------------
+dnl ARPACK-ng (its ISO C binding, dsaupd_c): the eigensolver of
+dnl gmm_arpack_interface.h (gmm::ARPACK_eigsh)
+require_arpack="auto"
+AC_ARG_ENABLE(arpack,
+  [AS_HELP_STRING([--enable-arpack], [Enable ARPACK-ng support (eigensolver)])],
+  [require_arpack=$enableval],
+  [require_arpack="auto"])
+ARPACK_LIBS="-larpack"
+AC_ARG_WITH(arpack,
+ [AS_HELP_STRING([--with-arpack=<lib>],[use ARPACK-ng library <lib>])],
+ [case $with_arpack in
+   yes | "") ;;
+   no) require_arpack="no";;
+   -* | */* | *.a | *.so | *.so.* | *.o) ARPACK_LIBS="$with_arpack";;
+   *) ARPACK_LIBS="-l$with_arpack";;
+  esac]
+)
+found_arpack="no"
+if test "x$require_arpack" = "xno"; then
+  ARPACK_LIBS=""
+  echo "Building with ARPACK explicitly disabled";
+else
+  save_LIBS="$LIBS"
+  LIBS="$ARPACK_LIBS $LIBS"
+  AC_CHECK_FUNC(dsaupd_c, [found_arpack="yes"],
+    [if test "x$require_arpack" = "xyes"; then
+       AC_MSG_ERROR([The function dsaupd_c (ARPACK-ng's ISO C binding) couldn't be found in $ARPACK_LIBS.]);
+     fi])
+  LIBS="$save_LIBS"
+  if test "x$found_arpack" = "xyes"; then
+    AC_DEFINE(GMM_USES_ARPACK,,[defined if GMM is linked to the ARPACK-ng library])
+    LIBS="$ARPACK_LIBS $LIBS"
+  else
+    ARPACK_LIBS=""
+  fi
+fi
+AM_CONDITIONAL(ARPACK, test x$found_arpack = xyes)
+AC_SUBST([ARPACK_LIBS])
+dnl ---------------------------END OF ARPACK TEST--------------------------
+
+
 
 dnl ----------------EXPERIMENTAL PARTS OF THE LIBRARY---------------------
 EXPER=""
@@ -1254,7 +1296,7 @@ interface/tests/meshes/Makefile                                         \
 interface/tests/matlab-octave/Makefile                                  \
 interface/tests/matlab-octave/private/Makefile                          \
 interface/tests/python/Makefile                                         \
-gui/Makefile                                                            \
+lab/Makefile                                                            \
 getfem-config                                                           \
 getfem-config-notinstalled                                              \
 gmm-config)
@@ -1310,6 +1352,12 @@ else
   else
     echo "- SuperLU not found. Not using the SuperLU library for large sparse linear systems."
   fi
+fi;
+
+if test "x$found_arpack" = "xyes"; then
+  echo "- ARPACK-ng found. An eigensolver for large sparse symmetric problems."
+else
+  echo "- ARPACK-ng not found (or disabled). No sparse eigensolver (gmm::ARPACK_eigsh)."
 fi;
 
 if test "x$found_mumps" = "xyes"; then

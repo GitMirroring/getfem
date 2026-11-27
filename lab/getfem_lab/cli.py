@@ -1,0 +1,203 @@
+# Copyright (C) 2026 Yves Renard, Konstantinos Poulios.
+#
+# This file is a part of GetFEM
+#
+# GetFEM  is  free software;  you  can  redistribute  it  and/or modify it
+# under  the  terms  of the  GNU  Lesser General Public License as published
+# by  the  Free Software Foundation;  either version 3 of the License,  or
+# (at your option) any later version along with the GCC Runtime Library
+# Exception either version 3.1 or (at your option) any later version.
+# This program  is  distributed  in  the  hope  that it will be useful,  but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or  FITNESS  FOR  A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+# License and GCC Runtime Library Exception for more details.
+# You  should  have received a copy of the GNU Lesser General Public License
+# along  with  this program. If not, see https://www.gnu.org/licenses/.
+
+"""Command line interface.
+
+    getfem_lab [model.json]                   # the window (also: python -m getfem_lab)
+    python -m getfem_lab new model.json
+    python -m getfem_lab validate model.json
+    python -m getfem_lab mesh model.json [-m fine] [-w dir]   # all meshes by default
+    python -m getfem_lab generate model.json [-w dir] [-o solve.py]
+    python -m getfem_lab run model.json [-w dir]
+    getfem_lab install-desktop [--uninstall]  # Linux: among the applications, with its icon
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from . import codegen, gwfl, mesher, model as M, runner
+
+
+def _workdir(args) -> Path:
+    return Path(args.workdir or Path(args.model).with_suffix("").name + "_run")
+
+
+def parser() -> argparse.ArgumentParser:
+    """The parser of the command line (also used to document it)."""
+    p = argparse.ArgumentParser(prog="getfem_lab",
+                                description="Without a command (no argument, or a model file): "
+                                            "the graphical interface.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def cmd(name, help_):
+        sp = sub.add_parser(name, help=help_)
+        sp.add_argument("model")
+        return sp
+
+    cmd("new", "create a starting model")
+    pv = cmd("validate", "check a model, including its GWFL expressions")
+    pv.add_argument("--python", help="Python interpreter that provides GetFEM")
+    pm = cmd("mesh", "build the meshes (cached)")
+    pm.add_argument("-m", "--mesh", action="append", help="mesh name (repeatable)")
+    pm.add_argument("--force", action="store_true", help="ignore the cache")
+    pg = cmd("generate", "write the GetFEM solve script")
+    pg.add_argument("-o", "--output", help="output file (default: standard output)")
+    cmd("run", "mesh then solve")
+    pe = cmd("export", "write a standalone Python script (meshing and solving)")
+    pe.add_argument("-o", "--output", help="output file (default: standard output)")
+    pxg = cmd("export-geometry", "write a geometry as SVG, DXF (2D), STL, OBJ, PLY, VTP (3D), STEP, IGES, BREP")
+    pxg.add_argument("geometry", help="geometry name")
+    pxg.add_argument("output", help="output file; its suffix gives the format")
+    pxm = cmd("export-mesh", "write a mesh as GetFEM (.mesh), VTK (.vtu, .vtk), Gmsh (.msh), Abaqus (.inp)")
+    pxm.add_argument("mesh", help="mesh name")
+    pxm.add_argument("output", help="output file; its suffix gives the format")
+    for sp in (pm, pg, sub.choices["run"], pxm, pxg):
+        sp.add_argument("-w", "--workdir", help="working directory (default: <model>_run/)")
+        sp.add_argument("--python", help="Python interpreter that provides GetFEM")
+
+    pgui = sub.add_parser("gui", help="open the graphical interface (requires PySide6)")
+    pgui.add_argument("model", nargs="?")
+    pgui.add_argument("--python", help="Python interpreter that provides GetFEM")
+    pgui.add_argument("--no-splash", action="store_true", help="no start-up window (also: environment variable GETFEM_LAB_NO_SPLASH)")
+    pdk = sub.add_parser("install-desktop", help="Linux: install the desktop file and the icon of the interface "
+                                                 "(~/.local/share), which opens it as now (interpreter, PYTHONPATH)")
+    pdk.add_argument("--python", help="Python interpreter that provides GetFEM (given to the interface)")
+    pdk.add_argument("--uninstall", action="store_true", help="remove them")
+    return p
+
+
+def with_command(argv: list[str]) -> list[str]:
+    """The arguments with the command "gui" added when none is given: no
+    argument, or a model file (and the options of the window), opens the
+    window."""
+    commands = parser()._subparsers._group_actions[0].choices      # noqa: SLF001
+    if any(a in ("-h", "--help") for a in argv[:1]):
+        return argv
+    if not argv or argv[0] not in commands:
+        return ["gui"] + argv
+    return argv
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(with_command(list(sys.argv[1:] if argv is None else argv)))
+
+    if args.cmd == "gui":
+        from .app import main as gui_main
+        return gui_main([args.model] if args.model else [], python=args.python,
+                        splash=not args.no_splash)
+
+    if args.cmd == "install-desktop":
+        from .app import icon
+        files = icon.install_desktop(python=args.python, uninstall=args.uninstall)
+        for f in files:
+            print(("removed: " if args.uninstall else "written: ") + str(f))
+        return 0
+
+    if args.cmd == "new":
+        M.save(M.default_model(), args.model)
+        print(f"model created: {args.model}")
+        return 0
+
+    try:
+        model = M.load(args.model)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    errors = M.solve_errors(model) if args.cmd in ("run", "export") else M.validate(model)
+    if not errors and args.cmd in ("validate", "run"):
+        try:
+            errors = gwfl.check(model, python=getattr(args, "python", None))
+        except RuntimeError as exc:
+            print(f"warning: {exc}", file=sys.stderr)
+    for e in errors:
+        print(f"error: {e}", file=sys.stderr)
+    if errors:
+        return 1
+    if args.cmd == "validate":
+        print("model is valid")
+        return 0
+
+    if args.cmd == "export":
+        script = runner.export_script(model)
+        if args.output:
+            Path(args.output).write_text(script, encoding="utf-8")
+            print(f"script written to {args.output}")
+        else:
+            sys.stdout.write(script)
+        return 0
+
+    workdir = _workdir(args)
+
+    if args.cmd in ("export-geometry", "export-mesh"):
+        from . import export
+        try:
+            if args.cmd == "export-geometry":
+                out = export.export_geometry(model, args.geometry, args.output, python=args.python)
+            else:
+                out = export.export_mesh(model, args.mesh, workdir, args.output, python=args.python, build=True)
+        except export.ExportError as exc:
+            print(f"export failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"written to {out}")
+        return 0
+
+    if args.cmd == "mesh":
+        names = args.mesh or [m["name"] for m, _ in M.all_meshes(model)]
+        status = 0
+        for name in names:
+            res = mesher.ensure_mesh(model, name, workdir, python=args.python, force=args.force)
+            if res.ok:
+                i = res.info
+                tag = " (cached)" if res.cached else ""
+                print(f"{name}{tag}: {i['nb_elements']} elements, {i['nb_points']} nodes, "
+                      f"dim {i['dim']} -> {res.path}")
+                for sel, size in i["sizes"].items():
+                    print(f"    {sel:<20} {i['kinds'][sel]:<9} {size}")
+            else:
+                status = 1
+                print(f"{name}: meshing failed: {res.error}", file=sys.stderr)
+        return status
+
+    if args.cmd == "generate":
+        meshes = {}
+        for name in runner.meshes_needed(model):
+            res = mesher.ensure_mesh(model, name, workdir, python=args.python)
+            if not res.ok:
+                print(f"meshing of {name!r} failed: {res.error}", file=sys.stderr)
+                return 1
+            meshes[name] = (res.path, res.info)
+        script = codegen.generate(model, meshes)
+        if args.output:
+            Path(args.output).write_text(script, encoding="utf-8")
+        else:
+            sys.stdout.write(script)
+        return 0
+
+    res = runner.run(model, workdir, python=args.python, check_gwfl=False)  # checked above
+    if not res.ok:
+        print(f"failed: {res.error}", file=sys.stderr)
+        if res.script:
+            print(f"script: {res.script}", file=sys.stderr)
+        return 1
+    for warning in res.results.get("warnings", []):
+        print(f"warning: {warning}", file=sys.stderr)
+    print(json.dumps(res.results, indent=2, ensure_ascii=False))
+    return 0

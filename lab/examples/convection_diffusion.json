@@ -1,0 +1,141 @@
+{
+  "format_version": 3,
+  "name": "Convection-diffusion: a dominant convection, boundary layers at the outflow (PDE module, SUPG)",
+  "parameters": [
+    {
+      "name": "kappa",
+      "value": 0.002,
+      "description": "diffusion coefficient"
+    },
+    {
+      "name": "theta",
+      "value": 0.4,
+      "description": "angle of the convection (rad)"
+    }
+  ],
+  "materials": [],
+  "geometries": [
+    {
+      "name": "square",
+      "source": {
+        "type": "box",
+        "origin": [
+          0.0,
+          0.0
+        ],
+        "size": [
+          1.0,
+          1.0
+        ]
+      },
+      "selections": {}
+    }
+  ],
+  "meshes": [
+    {
+      "name": "mesh",
+      "geometry": "square",
+      "mesher": "structured",
+      "divisions": [
+        32,
+        32
+      ],
+      "element": "simplex"
+    }
+  ],
+  "fields": [],
+  "models": [
+    {
+      "name": "transport",
+      "variables": [
+        {
+          "name": "u",
+          "mesh": "mesh",
+          "fem": "lagrange",
+          "degree": 1
+        }
+      ],
+      "modules": [
+        {
+          "type": "pde",
+          "variable": "u",
+          "form": "coefficients",
+          "unknown": "scalar",
+          "time_order": "0",
+          "diffusion": "isotropic",
+          "stabilization": "supg",
+          "properties": {
+            "K": [
+              {
+                "selection": "all",
+                "value": "kappa"
+              }
+            ],
+            "b": [
+              {
+                "selection": "all",
+                "value": [
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "j": [
+              {
+                "selection": "all",
+                "value": [
+                  0.0,
+                  0.0
+                ]
+              }
+            ],
+            "v": [
+              {
+                "selection": "all",
+                "value": [
+                  "cos(theta)",
+                  "sin(theta)"
+                ]
+              }
+            ],
+            "r": [
+              {
+                "selection": "all",
+                "value": 0.0
+              }
+            ]
+          },
+          "sources": [
+            {
+              "selection": "all",
+              "value": 1.0
+            }
+          ],
+          "conditions": [
+            {
+              "type": "imposed_value",
+              "selection": "boundary",
+              "value": 0.0
+            }
+          ]
+        }
+      ],
+      "terms": [],
+      "conditions": [],
+      "solver": {
+        "type": "auto"
+      },
+      "outputs": [
+        {
+          "name": "mean",
+          "expr": "u",
+          "selection": "all"
+        }
+      ],
+      "vtu": "transport.vtu"
+    }
+  ],
+  "solvers": [],
+  "outputs": [],
+  "graphics": []
+}
