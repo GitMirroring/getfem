@@ -113,6 +113,11 @@ class Ctx:
         return {u: sc for u, sc in self.schemes.items() if M.is_explicit(sc)}
 
     @property
+    def runge_kutta(self) -> dict:
+        """The variables of an explicit Runge-Kutta scheme: their schemes."""
+        return {u: sc for u, sc in self.schemes.items() if M.is_runge_kutta(sc)}
+
+    @property
     def m(self) -> str:
         return f"m_{ident(self.mesh)}"
 
@@ -933,6 +938,7 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
             inertia = M.spec_of(mod).get("inertia")
             if inertia and mod.get(inertia["variable"]) == u:
                 mass = inertia["expr"].replace("{u}", u).replace(f"{u}__inertia", u)
+                mass = re.sub(rf"\bDot_{re.escape(u)}\b", u, mass)       # (first order: Runge-Kutta)
         timed = {n: e for n, _mf, e in c.timed}
         bcs = [(rg, d, timed.get(d)) for rg, d in c.dirichlet.get(u, [])]
         info[u] = (sc, M.explicit_parameters(sc), sc.get("mass", "consistent") == "lumped", mass, bcs)
@@ -967,7 +973,8 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
     w("dt = (T_END - T_START) / N_STEPS")
     for u, (sc, (am, b, g), lumped, mass, bcs) in info.items():
         mf = c.mfs[u]
-        limit = M.explicit_limit(sc)
+        order = M.variable_order(c.md, u)
+        limit = M.rk_limit(sc, order) if M.is_runge_kutta(sc) else M.explicit_limit(sc)
         w(f"i0, n = {md}.interval_of_variable({u!r})")
         w(f"Mfull = gf.asm_generic({c.mim}, 2, {mass!r}, -1, {md})   # (the inertia term: its mass)")
         w("D = np.unique(np.concatenate([np.zeros(0, dtype=int)] + ["
@@ -977,17 +984,23 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
         w(f"solve_M, M_ID = mass_solver(Muu, I, D, {lumped!r}, {u!r})")
         w(f"EXPLICIT_{name}[{u!r}] = (i0, n, I, D, solve_M, M_ID)")
         w("KII = gf.Spmat('copy', gf.Spmat('copy', K, range(i0, i0 + n), range(i0, i0 + n)), list(I), list(I))")
-        w("omega = np.sqrt(max(power_iteration(lambda x: solve_M(np.asarray(KII.mult(x))), len(I)), 0.0))")
-        w(f"limit = {limit!r} / omega if omega > 0 else np.inf   # (dt omega_max <= {limit:.4g})")
+        if order == 1:        # (dt lambda_max of M^-1 K)
+            w("omega = max(power_iteration(lambda x: solve_M(np.asarray(KII.mult(x))), len(I)), 0.0)")
+            w(f"limit = {limit!r} / omega if omega > 0 else np.inf   # (dt lambda_max <= {limit:.4g})")
+        else:
+            w("omega = np.sqrt(max(power_iteration(lambda x: solve_M(np.asarray(KII.mult(x))), len(I)), 0.0))")
+            w(f"limit = {limit!r} / omega if omega > 0 else np.inf   # (dt omega_max <= {limit:.4g})")
         w(f"results['models'][{c.md['name']!r}].setdefault('stable_time_step', {{}})[{u!r}] = float(limit)")
         w("if dt > limit:")
         w(f"    raise RuntimeError(f'explicit scheme of {u}: the time step {{dt:.4g}} exceeds its stability "
-          f"limit {{limit:.4g}} (dt omega_max <= {limit:.4g}): at least "
+          f"limit {{limit:.4g}} (dt {'lambda' if order == 1 else 'omega'}_max <= {limit:.4g}): at least "
           "{int(np.ceil((T_END - T_START) / limit))} time steps')")
         w("if dt > 0.9 * limit:")
         w(f"    results.setdefault('warnings', []).append(f'explicit scheme of {u}: the time step {{dt:.4g}} "
           "close to its stability limit {limit:.4g}')")
     w.indent = ""
+    if c.runge_kutta:
+        return                      # (its stages: _runge_kutta_code)
     w("")
     w(f"def explicit_predict_{name}(predict=True):")
     w('    """The explicit variables at the new time (known before the step: from the previous values;')
@@ -1070,6 +1083,142 @@ def _explicit_code(c: Ctx, w: ScriptWriter) -> None:
     w.indent = ""
 
 
+def _runge_kutta_code(c: Ctx, w: ScriptWriter, args: str, linear: str) -> None:
+    """The explicit Runge-Kutta schemes of a model (its variables in time,
+    all of the same scheme): runge_kutta_rates_<model>(t), the derivatives
+    at the time t of the current values (the other variables, stationary,
+    solved; the mass systems M a = -G, M u' = -G at first order, G all the
+    terms but the inertia; on the Dirichlet dofs, the derivatives of the
+    imposed values); runge_kutta_step_<model>(), a time step, its stages
+    from the Butcher tableau (at second order, on the system u' = v, v' =
+    a), the first one the derivatives at the start of the step (kept from
+    the end of the previous one), the last evaluation that of the end of
+    the step (its derivatives, and the other variables, at the new time);
+    runge_kutta_start_<model>(), the derivatives at the start."""
+    md, name = c.py, ident(c.md["name"])
+    rk = c.runge_kutta
+    kind = next(iter(rk.values()))["type"]
+    a, b, cc = M.RK_TABLEAUX[kind]
+    order = {u: M.variable_order(c.md, u) for u in rk}
+    bcs = {u: bool(c.dirichlet.get(u)) for u in rk}
+    rest = [v["name"] for v in c.md["variables"] if v["name"] not in rk]
+    w("")
+    w(f"def runge_kutta_rates_{name}(t):")
+    w(f'    """The derivatives at t of the current values of {", ".join(rk)} ({M.scheme_label(next(iter(rk.values())))}):')
+    w('    the other variables solved, M a = -G (first order: M u\' = -G) on the free dofs."""')
+    w.indent = "    "
+    w(f"dt = float({md}.variable('timestep')[0])")
+    w("set_time(t, dt)")
+    if rest:
+        w(f"for v in {list(rk)!r}:")
+        w(f"    {md}.disable_variable(v)")
+        w("try:")
+        w(f"    solve({md}, results['models'][{c.md['name']!r}]{args}, check_linear={linear})")
+        w("finally:")
+        w(f"    for v in {list(rk)!r}:")
+        w(f"        {md}.enable_variable(v)")
+    w(f"{md}.assembly('build_all')")
+    w(f"r = np.array({md}.rhs())")
+    w(f"if LINEAR[{c.md['name']!r}]:      # (a linear model: its right-hand side F, not its residual)")
+    w(f"    r = r - {md}.tangent_matrix().mult({md}.from_variables())")
+    w("out = {}")
+    for u in rk:
+        w(f"i0, n, I, D, solve_M, M_ID = EXPLICIT_{name}[{u!r}]")
+        if bcs[u]:
+            w(f"x = np.array(bc_{name}_{ident(u)}(t, dt)[{order[u]}])   # (on D: the derivative imposed)")
+        else:
+            w("x = np.zeros(n)")
+        w("rI = r[i0:i0 + n][I]")
+        w("if M_ID is not None and len(D):")
+        w("    rI = rI - np.asarray(M_ID.mult(x[D]))")
+        w("x[I] = solve_M(rI)")
+        w(f"out[{u!r}] = x")
+    w("return out")
+    w.indent = ""
+    w("")
+    w(f"def runge_kutta_set_{name}(t, values):")
+    w('    """The variables (and velocities) of the stage at t, the imposed values on the Dirichlet dofs."""')
+    w.indent = "    "
+    w(f"dt = float({md}.variable('timestep')[0])")
+    for u in rk:
+        w(f"x = np.array(values[{u!r}][0])")
+        if order[u] == 2:
+            w(f"v = np.array(values[{u!r}][1])")
+        if bcs[u]:
+            w(f"D = EXPLICIT_{name}[{u!r}][3]")
+            w(f"g = bc_{name}_{ident(u)}(t, dt)")
+            w("x[D] = g[0][D]")
+            if order[u] == 2:
+                w("v[D] = g[1][D]")
+        w(f"{md}.set_variable({u!r}, x)")
+        if order[u] == 2:
+            w(f"{md}.set_variable('{u}__v', v)")
+    w.indent = ""
+    w("")
+    w(f"def runge_kutta_step_{name}():")
+    w(f'    """A time step of {M.scheme_label(next(iter(rk.values())))}: the stages (a, b, c) = {a!r},')
+    w(f'    {b!r}, {cc!r}; at the end, the derivatives and the other variables at the new time."""')
+    w.indent = "    "
+    w(f"dt = float({md}.variable('timestep')[0])")
+    w("t1 = T_NOW[0]")
+    w("t0 = t1 - dt")
+    w(f"A, B, C = {a!r}, {b!r}, {cc!r}")
+    w("Y0, K = {}, [{}]          # the values at t0; the derivatives of the stages (the first: at t0)")
+    for u in rk:
+        if order[u] == 2:
+            w(f"Y0[{u!r}] = (np.array({md}.variable('{u}__prev')), np.array({md}.variable('{u}__rate')))")
+            w(f"K[0][{u!r}] = (Y0[{u!r}][1], np.array({md}.variable('{u}__rate2')))")
+        else:
+            w(f"Y0[{u!r}] = (np.array({md}.variable('{u}__prev')),)")
+            w(f"K[0][{u!r}] = (np.array({md}.variable('{u}__rate')),)")
+    w("")
+    w("def combine(coefs):")
+    w("    return {u: tuple(y + dt * sum(cf * k[u][j] for cf, k in zip(coefs, K) if cf)")
+    w("                      for j, y in enumerate(Y0[u])) for u in Y0}")
+    w("")
+    w("for i in range(1, len(B)):")
+    w("    Y = combine(A[i])")
+    w(f"    runge_kutta_set_{name}(t0 + C[i] * dt, Y)")
+    for u in rk:
+        if order[u] == 1:       # (Dot_u in the other terms: the last derivative)
+            w(f"    {md}.set_variable('{u}__v', K[-1][{u!r}][0])")
+    w(f"    rates = runge_kutta_rates_{name}(t0 + C[i] * dt)")
+    w("    K.append({u: ((Y[u][1], rates[u]) if len(Y[u]) == 2 else (rates[u],)) for u in Y0})")
+    w("Y = combine(B)")
+    w(f"runge_kutta_set_{name}(t1, Y)")
+    for u in rk:
+        if order[u] == 1:
+            w(f"{md}.set_variable('{u}__v', K[-1][{u!r}][0])")
+    w(f"rates = runge_kutta_rates_{name}(t1)      # (the derivatives at t1: the first stage of the next step)")
+    for u in rk:
+        w(f"{md}.set_variable('{u}__{'a' if order[u] == 2 else 'v'}', rates[{u!r}])")
+    w.indent = ""
+    w("")
+    w(f"def runge_kutta_start_{name}():")
+    w('    """The derivatives at the start (and the other variables there): the first stage."""')
+    w.indent = "    "
+    for u in rk:
+        if order[u] == 2:
+            w(f"{md}.set_variable('{u}__v', {md}.variable('{u}__rate'))")
+    w("values = {}")
+    for u in rk:
+        vel = f", {md}.variable('{u}__v')" if order[u] == 2 else ","
+        w(f"values[{u!r}] = ({md}.variable({u!r}){vel})")
+    w(f"runge_kutta_set_{name}(T_NOW[0], values)")
+    w(f"rates = runge_kutta_rates_{name}(T_NOW[0])")
+    for u in rk:
+        if order[u] == 2:
+            w(f"{md}.set_variable('{u}__a', rates[{u!r}])")
+            w(f"{md}.set_variable('{u}__rate2', rates[{u!r}])")
+            w(f"{md}.set_variable('{u}__prev', {md}.variable({u!r}))")
+            w(f"{md}.set_variable('{u}__rate', {md}.variable('{u}__v'))")
+        else:
+            w(f"{md}.set_variable('{u}__v', rates[{u!r}])")
+            w(f"{md}.set_variable('{u}__rate', rates[{u!r}])")
+            w(f"{md}.set_variable('{u}__prev', {md}.variable({u!r}))")
+    w.indent = ""
+
+
 def _is_zero(pieces) -> bool:
     """A property zero everywhere (its values all the number 0)."""
     def zero(v):
@@ -1123,8 +1272,11 @@ def setup_model(c: Ctx, w: ScriptWriter) -> None:
         if inertia and c.transient and M.in_time(c.model, c.md, mod):
             u = mod[inertia["variable"]]
             expr = inertia["expr"].replace("{u}", u)
-            w(f"# Time derivative: {expr}")
-            w(f"LINEAR[{c.md['name']!r}] &= add_term({c.py}, {c.mim}, {expr!r})")
+            if u in c.runge_kutta and inertia["order"] == 1:
+                w(f"# Time derivative: {expr}, its mass system solved apart (Runge-Kutta)")
+            else:
+                w(f"# Time derivative: {expr}")
+                w(f"LINEAR[{c.md['name']!r}] &= add_term({c.py}, {c.mim}, {expr!r})")
             for prop, dexpr in inertia.get("damping", {}).items():
                 if not _is_zero(mod.get("properties", {}).get(prop)):
                     dexpr = dexpr.replace("{u}", u)
@@ -1357,6 +1509,11 @@ def _solver_code(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool =
         linear = "True" if s["type"] == "linear" else "False" if s["type"] == "newton" else f"LINEAR[{c.md['name']!r}]"
         if c.transient:                  # (the linear system checked at the first time step only)
             linear = f"{linear} and first_solve({c.md['name']!r})"
+        if c.transient and c.runge_kutta:      # the stages of Runge-Kutta (the others solved at each one)
+            w(f"runge_kutta_step_{ident(c.md['name'])}()")
+            w.indent = ""
+            _runge_kutta_code(c, w, args, linear)
+            continue
         if exp:                          # the explicit variables: their step, then given to the others
             if not c.partial:
                 w("given = []")
@@ -1630,7 +1787,7 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
     if post:
         w("# at a saved time (after shift), Dot_u (Dot2_u) are the derivatives kept: Previous_Dot_u...")
         w("AT_SAVE = [" + ", ".join(f"({py}, {n!r}, {v!r})" for py, n, v in post) + "]")
-    mems = [(c.py, u) for c in cs for u, sc in c.explicit.items() if sc["type"] != "explicit_newmark"]
+    mems = [(c.py, u) for c in cs for u, sc in c.explicit.items() if sc["type"] == "explicit_generalized_alpha"]
     if mems:     # (the acceleration of the scheme: at first order; its memory, M^-1 G: at second order)
         w("# at a saved time, Dot2_u of an explicit generalized-alpha: its memory (the acceleration at t)")
         w("MEMORIES = [" + ", ".join(f"({py}, {u!r})" for py, u in mems) + "]")
@@ -1678,18 +1835,18 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
                 w(f"{c.py}.set_variable('{u}__prev', {c.py}.variable({u!r}))")
                 if c.schemes[u].get("type") == "bdf2":
                     w(f"{c.py}.set_variable('{u}__prev2', {c.py}.variable({u!r}))")
-                if M.SCHEME_ORDER[c.schemes[u]["type"]] == 2 and previous:   # its velocity, if in time before
+                if M.variable_order(c.md, u) == 2 and previous:   # its velocity, if in time before
                     vel = c.value(v.get("initial_velocity", zero), kind)
                     w(f"{c.py}.set_variable('{u}__rate', state[{c.md['name']!r}].get('{u}__rate', "
                       f"{c.py}.interpolation({vel!r}, {mf})))")
-                elif M.SCHEME_ORDER[c.schemes[u]["type"]] == 2:
+                elif M.variable_order(c.md, u) == 2:
                     vel = c.value(v.get("initial_velocity", zero), kind)
                     w(f"{c.py}.set_variable('{u}__rate', {c.py}.interpolation({vel!r}, {mf}))  # initial velocity")
     w("set_time(T_START, (T_END - T_START) / N_STEPS)")
     for c in cs:
         _initial_accelerations(c, by, w)
     for c in cs:
-        tv = [u for u, sc in c.schemes.items() if M.SCHEME_ORDER[sc["type"]] == 1]
+        tv = [u for u, sc in c.schemes.items() if M.SCHEME_ORDER[sc["type"]] == 1 and not M.is_explicit(sc)]
         if any(M.scheme_needs_rate(c.schemes[u]) for u in tv):
             w(f"# The initial time derivative of {', '.join(tv)} (needed by the first step of "
               + ", ".join(sorted({M.scheme_label(c.schemes[u]) for u in tv if M.scheme_needs_rate(c.schemes[u])}))
@@ -1748,6 +1905,9 @@ def _initial_accelerations(c: Ctx, by: dict, w: ScriptWriter) -> None:
         for im in c.md["imports"]:
             w(f"{c.py}.set_variable({im['name']!r}, {by[im['model']].py}.variable({im['variable']!r}))")
         w(f"explicit_setup_{name}()")
+        if c.runge_kutta:        # (the derivatives at the start: those of the first stage of the first step)
+            w(f"runge_kutta_start_{name}()")
+            return
         w(f"explicit_predict_{name}(predict=False)")
         w(f"explicit_solve_{name}(predict=False)")
         for u, sc in c.explicit.items():

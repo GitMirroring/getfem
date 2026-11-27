@@ -417,6 +417,9 @@ parameters of the scheme):
     its first step by implicit Euler (the default: monotone) or by
     Crank-Nicolson (``"crank_nicolson"``: a smaller error, but it may
     overshoot when the initial values do not satisfy the conditions);
+  - ``{"type": "rk2"}``, ``{"type": "rk4"}``: the explicit Runge-Kutta
+    schemes RK2 (Heun) and RK4 (the classical one), second and fourth order
+    (:ref:`see below <lab-runge-kutta>`);
 
 - second order (the elastodynamics):
 
@@ -450,6 +453,11 @@ parameters of the scheme):
     the spectral radius at the bifurcation: second order, explicit, a
     numerical damping of the high frequencies as :math:`\rho_b` decreases
     (:math:`\rho_b = 1`: none);
+  - ``{"type": "rk4"}``: the explicit Runge-Kutta scheme RK4, on the first
+    order system of the displacement and its velocity, fourth order
+    (:ref:`see below <lab-runge-kutta>`; RK2 is not offered there: its
+    stability region does not contain the imaginary axis, it amplifies the
+    undamped oscillations);
   - each with ``"initial_acceleration"``: ``"equation"`` (the default:
     from the equation at the start time, :math:`M a_0 = -G(u_0, v_0,
     t_0)`) or ``"zero"`` (at rest).
@@ -686,6 +694,34 @@ with an error giving the number of time steps needed if the time step is
 larger, and warns when it is close. A Dirichlet condition of an explicit
 variable is by simplification (or by penalization, which stiffens: a much
 smaller stable time step), not by a multiplier nor on a normal component.
+
+.. _lab-runge-kutta:
+
+**The explicit Runge-Kutta schemes** (``rk2``: Heun's, the explicit
+trapezoidal rule; ``rk4``: the classical one) integrate :math:`M \dot U =
+-G(U, t)` at first order, :math:`\dot U = V`, :math:`M \dot V = -G(U, V,
+t)` at second order (:math:`G`: all the terms but the time derivative,
+the damping included), stage by stage from their Butcher tableau: each
+stage sets the variables (and velocities) at its time :math:`t_n + c_i
+\Delta t`, solves the other variables of the model, which must be
+stationary (a displacement quasi-static with an RK temperature), and solves
+the system of the mass matrix for the derivatives, as the explicit schemes
+above (consistent or lumped mass, the Dirichlet values and their
+derivatives on their dofs; the conditions by simplification or
+penalization). The variables in time of a model of an RK scheme all have
+the same one (a wave and a diffusion coupled in one model: both RK4), and
+the model is solved as a whole (not by partial steps). The first stage is
+the derivative at the start of the step, kept from the end of the previous
+one: an RK2 step costs two evaluations, an RK4 step four (each one an
+assembly, the solve of the other variables, the mass systems).
+``runge_kutta_step_<model>()`` and ``runge_kutta_rates_<model>(t)`` in the
+script. The stability limit of the time step is :math:`\Delta t\,
+\lambda_{max} \le 2` (RK2) or 2.785 (RK4) at first order, :math:`\lambda_{max}` the
+largest eigenvalue of :math:`M^{-1}K` (a diffusion: it grows as
+:math:`1/h^2`, the explicit schemes suit slow diffusions or small meshes),
+:math:`\Delta t\, \omega_{max} \le 2\sqrt{2}` (RK4) at second order; it is
+estimated and checked at the start as above. In the outputs, ``Dot_u`` and
+``Dot2_u`` are the derivatives at the saved time (from the equation).
 
 **The implementation.** The scheme is written in the script with GWFL macros
 and data of the model, updated by the time loop (they can be read in the

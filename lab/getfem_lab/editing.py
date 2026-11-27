@@ -1701,8 +1701,10 @@ def fields(model: dict, path: Path) -> list[Field]:
                                      tuple((k, M.SCHEMES[k]) for k in M.schemes_for(order)), op="scheme_type",
                                      help="The time scheme of the variable: stationary (no time derivative, "
                                           "the equation solved at each time), or a scheme of the order of its "
-                                          "time derivative" + (" (theta-method, BDF2)" if order == 1 else
-                                                               " (Newmark, HHT-alpha, generalized-alpha)")))
+                                          "time derivative" + (" (theta-method, BDF2; explicit: RK2, RK4)"
+                                                               if order == 1 else
+                                                               " (Newmark, HHT-alpha, generalized-alpha; explicit: "
+                                                               "Newmark, generalized-alpha, RK4)")))
                     for prm, (_d, lo, hi, open_lo) in M.SCHEME_PARAMETERS.get(sc.get("type"), {}).items():
                         out.append(Field(path + ("schemes", key, prm), f"{M.PARAMETER_LABELS[prm]} of {u}",
                                          "number", op="scheme_param", help=_SCHEME_HELP[sc["type"]][prm]
@@ -1717,7 +1719,8 @@ def fields(model: dict, path: Path) -> list[Field]:
                     if M.is_explicit(sc):
                         out.append(Field(path + ("schemes", key, "mass"), f"Mass matrix of {u}", "choice",
                                          tuple(M.MASS_MATRICES.items()), op="scheme_param",
-                                         help="Explicit: M a = -G at each time step. The consistent mass "
+                                         help="Explicit: M a = -G at each time step (each stage of "
+                                              "Runge-Kutta). The consistent mass "
                                               "matrix, factorized once; or lumped (diagonal: the sums of its "
                                               "rows), a larger stable time step, for P1 or Q1 elements (with "
                                               "P2 on simplices some sums are not positive)"))

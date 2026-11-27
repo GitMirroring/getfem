@@ -58,7 +58,8 @@ def _time(model: dict, md: dict, mod: dict) -> str:
         sc = M.scheme_of(model, md, M.inertia_variable(mod))
         return (f"<p><b>In time</b>, by the solver {html.escape(s['name'])}: from t = {_v(t.get('start', 0))} "
                 f"to {_v(t.get('end'))}, step {_v(t.get('step'))}, {html.escape(M.scheme_label(sc))}; "
-                f"from the initial value{' and velocity' if M.SCHEME_ORDER.get(sc['type']) == 2 else ''} "
+                f"from the initial value"
+                f"{' and velocity' if M.variable_order(md, M.inertia_variable(mod)) == 2 else ''} "
                 f"of the variable{where}.</p>")
     if M.is_modal(model, md) and M.inertia_variable(mod) not in M.modal_variables(md):
         return (f"<p><b>Stationary</b> for the eigenmodes of the solver {html.escape(s['name'])} "

@@ -88,7 +88,7 @@ def test_validation_and_editing():
     assert m["solvers"][0]["schemes"]["beam/u"]["mass"] == "lumped" and M.validate(m) == []
     f = next(x for x in E.fields(m, ("solvers", 0)) if x.key[-1] == "type" and "schemes" in x.key)
     assert [k for k, _ in f.choices] == ["stationary", "newmark", "hht", "generalized_alpha",
-                                         "explicit_newmark", "explicit_generalized_alpha"]
+                                         "explicit_newmark", "explicit_generalized_alpha", "rk4"]
     E.apply(m, f, "newmark")
     assert "mass" not in m["solvers"][0]["schemes"]["beam/u"]
     assert not any(x.key[-1] == "mass" for x in E.fields(m, ("solvers", 0)))

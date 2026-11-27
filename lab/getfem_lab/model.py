@@ -331,9 +331,19 @@ SCHEMES = {
     # explicit (conditionally stable: the acceleration solved with the mass matrix only, no Newton)
     "explicit_newmark": "explicit Newmark (beta = 0; gamma = 1/2: central difference)",
     "explicit_generalized_alpha": "explicit generalized-alpha (Hulbert-Chung, numerical damping)",
+    # explicit Runge-Kutta (the variable and its velocity at second order: a first order system)
+    "rk2": "explicit Runge-Kutta 2 (Heun)",
+    "rk4": "explicit Runge-Kutta 4 (classical)",
 }
+# the order of the time derivative of the variables of a scheme (0: both; RK2 at first order only,
+# its stability region not containing the imaginary axis: it amplifies the undamped oscillations)
 SCHEME_ORDER = {"theta": 1, "bdf2": 1, "newmark": 2, "hht": 2, "generalized_alpha": 2,
-                "explicit_newmark": 2, "explicit_generalized_alpha": 2}
+                "explicit_newmark": 2, "explicit_generalized_alpha": 2, "rk2": 1, "rk4": 0}
+# the Butcher tableaux of the explicit Runge-Kutta schemes: (a, b, c)
+RK_TABLEAUX = {
+    "rk2": ([[], [1.0]], [0.5, 0.5], [0.0, 1.0]),
+    "rk4": ([[], [0.5], [0.0, 0.5], [0.0, 0.0, 1.0]], [1 / 6, 1 / 3, 1 / 3, 1 / 6], [0.0, 0.5, 0.5, 1.0]),
+}
 # the parameters of the schemes: (default, lower bound, upper bound, lower bound excluded)
 SCHEME_PARAMETERS = {
     "theta": {"theta": (1.0, 0.0, 1.0, True)},
@@ -368,7 +378,7 @@ def default_scheme(order: int) -> dict:
 
 def schemes_for(order: int) -> list[str]:
     """The schemes offered to a variable whose time derivative has this order."""
-    return ["stationary"] + [k for k, o in SCHEME_ORDER.items() if o == order]
+    return ["stationary"] + [k for k, o in SCHEME_ORDER.items() if o in (order, 0)]
 
 
 def scheme_with_defaults(sc: dict) -> dict:
@@ -1226,7 +1236,33 @@ def is_explicit(sc: dict | None) -> bool:
     before the step, from u_n, v_n, a_n; the unknown of the step: the
     acceleration, M a_n+1 = -G(u_n+1, ...)), or the explicit
     generalized-alpha."""
-    return bool(sc) and sc.get("type") in ("explicit_newmark", "explicit_generalized_alpha")
+    return bool(sc) and sc.get("type") in ("explicit_newmark", "explicit_generalized_alpha", "rk2", "rk4")
+
+
+def is_runge_kutta(sc: dict | None) -> bool:
+    """Whether a scheme is an explicit Runge-Kutta scheme (RK2, RK4): at
+    second order, on the first order system of the variable and its
+    velocity; its stages evaluate M a = -G (M u' = -G at first order)."""
+    return bool(sc) and sc.get("type") in RK_TABLEAUX
+
+
+def rk_limit(sc: dict, order: int) -> float:
+    """The stability limit of an explicit Runge-Kutta scheme: dt lambda_max
+    (first order: lambda the eigenvalues of M^-1 K, the real negative axis
+    of its stability region, |R(-x)| <= 1) or dt omega_max (second order:
+    the imaginary axis, |R(i x)| <= 1; RK4: 2 sqrt(2)), R(z) = 1 + z + ...
+    + z^s/s! (s = 2, 4), by bisection."""
+    import math
+    s = len(RK_TABLEAUX[sc["type"]][1])
+
+    def radius(x):
+        z = complex(0.0, x) if order == 2 else complex(-x, 0.0)
+        return abs(sum(z ** k / math.factorial(k) for k in range(s + 1)))
+    lo, hi = 0.01, 10.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if radius(mid) <= 1 + 1e-12 else (lo, mid)
+    return lo
 
 
 def explicit_parameters(sc: dict) -> tuple[float, float, float]:
@@ -1245,6 +1281,8 @@ def explicit_parameters(sc: dict) -> tuple[float, float, float]:
         r = float(sc["rho_b"])
         am = (2 * r - 1) / (1 + r)
         return am, (5 - 3 * r) / ((1 + r) ** 2 * (2 - r)), 1.5 - am
+    if is_runge_kutta(sc):
+        return 0.0, 0.0, 0.0                       # (not a Newmark scheme)
     return 0.0, 0.0, float(sc["gamma"])
 
 
@@ -1288,6 +1326,9 @@ def scheme_label(sc: dict | None) -> str:
     """A short name of a time scheme."""
     if sc is None or sc.get("type") == "stationary":
         return "stationary"
+    if is_runge_kutta(sc):
+        return {"rk2": "RK2 (Heun)", "rk4": "RK4"}[sc["type"]] + \
+            (", lumped mass" if sc.get("mass") == "lumped" else "")
     if sc.get("type") == "bdf2":
         return "BDF2" + (" (first step: Crank-Nicolson)" if sc.get("start") == "crank_nicolson" else "")
     if SCHEME_ORDER.get(sc.get("type")) == 2:
@@ -2612,6 +2653,17 @@ def _validate_transient(model, s, where, steps, errors) -> None:
             errors.append(f"{w}.initial_acceleration: {', '.join(INITIAL_ACCELERATIONS)} expected")
         if sc["type"] == "bdf2" and sc.get("start", "implicit_euler") not in BDF2_STARTS:
             errors.append(f"{w}.start: {', '.join(BDF2_STARTS)} expected")
+        if is_runge_kutta(sc):
+            if name in partial_models(s):
+                errors.append(f"{w}: Runge-Kutta, the model {name!r} solved as a whole (not by partial "
+                              "steps: its stages solve its other variables)")
+            others = {v: schemes.get(scheme_key(name, v), {}).get("type") for v in timeable_variables(md)
+                      if v != u and isinstance(schemes.get(scheme_key(name, v)), dict)}
+            bad = [v for v, t in others.items() if t not in (sc["type"], "stationary")]
+            if bad:
+                errors.append(f"{w}: Runge-Kutta, the other variables in time of {name!r} ({', '.join(bad)}) "
+                              f"with the same scheme ({sc['type']}) or stationary (they are solved at each "
+                              "stage)")
         if is_explicit(sc):
             if sc.get("mass", "consistent") not in MASS_MATRICES:
                 errors.append(f"{w}.mass: {', '.join(MASS_MATRICES)} expected")

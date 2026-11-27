@@ -71,7 +71,7 @@ def test_validation():
                         ({"coupling": "monolithic"}, "sequence, staggered expected"),
                         ({"save": {"every": 0}}, "save.every"),
                         ({"schemes": {"heat/T": {"theta": 0}}}, "number in ]0, 1] expected"),
-                        ({"schemes": {"heat/T": {"type": "bdf"}}}, "stationary, theta, bdf2 expected")]:
+                        ({"schemes": {"heat/T": {"type": "bdf"}}}, "stationary, theta, bdf2, rk2, rk4 expected")]:
         m2 = bar()
         m2["solvers"][0].update(change)
         assert any(msg in e for e in M.validate(m2)), (msg, M.validate(m2))

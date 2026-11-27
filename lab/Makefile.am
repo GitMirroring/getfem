@@ -60,6 +60,7 @@ LAB_TESTS =                                     \
     tests/test_transient.py                     \
     tests/test_elastodynamics.py                \
     tests/test_explicit.py                      \
+    tests/test_runge_kutta.py                   \
     tests/test_partial_steps.py                 \
     tests/test_pde.py                           \
     tests/test_solvers.py                       \
