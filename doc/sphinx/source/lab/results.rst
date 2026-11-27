@@ -40,6 +40,41 @@ last saved time first; a **time bar** under the view chooses another one
 The table of the *Results* node then gives the values at that time, and
 *In time* plots a scalar result (an output, an extremum) against the time.
 
+.. _lab-plots:
+
+Plots
+^^^^^
+
+A model may have **plots** (its *Plots* node: *Add a plot*, then *Add a
+curve*): 1D graphs of curves computed with the solution, each curve a scalar
+GWFL expression (a variable, a macro of the modules, ``von_mises``,
+``Norm(J_field)``, ``u(2)``, ``T - 20``, its gradient...). The abscissa of a
+plot is
+
+* **along a line**: each curve along a segment from A to B (its *Number of
+  points*, 101 by default), against the distance from A; outside the domain
+  (a hole, the segment going out) the curve has a gap. In time, its *Times*
+  are ``last`` (the end, the default), ``all`` (each saved time) or a list of
+  times (``10, 20, 60``: the nearest saved ones), a curve each (labeled with
+  its time);
+* **in time**: each curve the value at a point, the integral or the average
+  of the expression on a selection, at each saved time (a stationary solver:
+  one value).
+
+The curves are computed by the script at each saved time (the GWFL
+expression interpolated at the points of the mesh with
+``md.interpolation(expr, points, mesh)``), and stored in the results
+(``plots`` of the model in ``results.json``); a change of a plot makes the
+results out of date. In the *Results*, each plot of a model is a node
+(*profile (plot)*): selecting it shows the plot in place of the view, its
+curves of different colors with their legend (in the corner the curves
+leave free), its form being that of the plot (selecting the plot in the
+model shows it too); **CSV…** saves the values of the curves (curve, abscissa,
+value; empty outside the domain). The examples ``plate_heating.json`` (the
+temperature across the plate at four times, and in time at three places) and
+``busbar_joule.json`` (the temperature along the axis, interrupted by the
+hole, and along the edge; the current density across the bar) have plots.
+
 The fields are also in the |vtu| files of the working folder, to be opened
 with ParaView, for instance; in time, one per saved time, gathered by a
 ``.pvd`` collection.

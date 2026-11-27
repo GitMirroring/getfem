@@ -101,6 +101,12 @@ def expressions(model: dict) -> list[dict]:
         for i, q in enumerate(md["outputs"]):
             on = table.get(q.get("selection", M.ALL), {}).get("kind", M.DOMAIN)
             add(k, f"{w}.outputs[{i}].expr", q.get("expr"), SCALAR, on)
+        for i, p in enumerate(md.get("plots", [])):
+            for j, cv in enumerate(p.get("curves", []) if isinstance(p, dict) else []):
+                if isinstance(cv, dict):
+                    on = table.get(cv.get("selection", M.ALL), {}).get("kind", M.DOMAIN) \
+                        if cv.get("at", "point") != "point" and p.get("type") == "time" else M.DOMAIN
+                    add(k, f"{w}.plots[{i}].curves[{j}].expr", cv.get("expr"), SCALAR, on)
     for i, f in enumerate(model["fields"]):
         for j, v in enumerate(f.get("values", [])):
             add(users.get(f"fields[{i}]", 0), f"fields[{i}].values[{j}].value", v.get("value"),

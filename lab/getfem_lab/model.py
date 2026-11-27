@@ -52,6 +52,9 @@ each of them becoming one `gf.Model`, then global solvers chaining them.
     "conditions": [{"type": "dirichlet", "variable": "T", "selection": "hot", "value": 80}],
     "solver": {"type": "auto"},
     "outputs": [{"name": "heat_flow", "expr": "-k*Grad_T.Normal", "selection": "cold"}],
+    "plots": [{"name": "profile", "type": "line", "title": "",      # 1D graphs (or "type": "time")
+               "curves": [{"label": "", "expr": "T", "from": [0, 0], "to": ["L", 0], "points": 101,
+                           "times": "last"}]}],
     "vtu": "thermal.vtu"
   }],
   "solvers": [{"name": "main", "type": "sequence", "steps": ["thermal"]}],
@@ -317,6 +320,11 @@ LINEAR_SOLVERS = {
     "gmres/ilutp": "GMRES, ILUTP preconditioner (iterative)",
 }
 GLOBAL_SOLVERS = ("sequence", "staggered", "transient", "modal")
+# The plots of a model (1D graphs of curves): along a segment (the distance from its start), or in time
+PLOT_TYPES = {"line": "along a line (the distance from its start)", "time": "in time"}
+PLOT_AT = {"point": "the value at a point", "integral": "the integral on a selection",
+           "average": "the average on a selection"}
+PLOT_POINTS = 101
 MODAL_MAX_MODES = 500
 COUPLINGS = ("sequence", "staggered")         # of the models at each time step
 # The time schemes of a variable with a time derivative: first order (Dot_u,
@@ -839,7 +847,7 @@ def upgrade_schemes(model: dict) -> bool:
 _TOP_ORDER = ("format_version", "name", "parameters", "materials", "geometries", "meshes", "fields",
               "models", "solvers", "outputs", "graphics")
 _MODEL_ORDER = ("name", "description", "parameters", "geometries", "meshes", "fields", "imports",
-                "variables", "modules", "terms", "conditions", "solver", "outputs", "vtu", "graphics")
+                "variables", "modules", "terms", "conditions", "solver", "outputs", "plots", "vtu", "graphics")
 
 
 def _ordered(d: dict, order) -> dict:
@@ -2888,6 +2896,76 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     if vtu is not None and (not isinstance(vtu, str) or not vtu.endswith(".vtu") or "/" in vtu):
         errors.append(f"{w}.vtu: file name ending with .vtu expected (or null)")
     _validate_graphics(md.get("graphics", []), f"{w}.graphics", errors)
+    _validate_plots(model, md, table, f"{w}.plots", errors)
+
+
+def _validate_plots(model, md, table, where, errors) -> None:
+    plots = md.get("plots", [])
+    if not isinstance(plots, list):
+        errors.append(f"{where}: list expected")
+        return
+    dim = model_dim(model, md) or 2
+    vals, _ = P.values(model)
+    names = [p.get("name") for p in plots if isinstance(p, dict)]
+    for i, p in enumerate(plots):
+        w = f"{where}[{i}]"
+        if not isinstance(p, dict):
+            errors.append(f"{w}: object expected")
+            continue
+        if not _IDENT.match(str(p.get("name", ""))):
+            errors.append(f"{w}.name: identifier expected")
+        elif names.count(p["name"]) > 1:
+            errors.append(f"{w}.name: name {p['name']!r} used more than once")
+        kind = p.get("type", "line")
+        if kind not in PLOT_TYPES:
+            errors.append(f"{w}.type: {', '.join(PLOT_TYPES)} expected")
+            continue
+        curves = p.get("curves", [])
+        if not isinstance(curves, list):
+            errors.append(f"{w}.curves: list expected")
+            continue
+        for j, c in enumerate(curves):
+            cw = f"{w}.curves[{j}]"
+            if not isinstance(c, dict):
+                errors.append(f"{cw}: object expected")
+                continue
+            _check_value(c.get("expr"), f"{cw}.expr", errors)
+            if not isinstance(c.get("label", ""), str):
+                errors.append(f"{cw}.label: text expected")
+            if kind == "line":
+                ends = []
+                for key in ("from", "to"):
+                    pt = _plot_point(c.get(key), dim, vals)
+                    if pt is None:
+                        errors.append(f"{cw}.{key}: a point of {dim} coordinates expected")
+                    ends.append(pt)
+                if None not in ends and ends[0] == ends[1]:
+                    errors.append(f"{cw}.to: a point other than its start expected")
+                _check_int(c.get("points", PLOT_POINTS), 2, 100000, f"{cw}.points", errors)
+                times = c.get("times", "last")
+                if times not in ("last", "all") and not (
+                        isinstance(times, list) and times and all(
+                            isinstance(t, (int, float)) and not isinstance(t, bool) for t in times)):
+                    errors.append(f"{cw}.times: 'last', 'all' or a list of times expected")
+            else:
+                at = c.get("at", "point")
+                if at not in PLOT_AT:
+                    errors.append(f"{cw}.at: {', '.join(PLOT_AT)} expected")
+                elif at == "point":
+                    if _plot_point(c.get("point"), dim, vals) is None:
+                        errors.append(f"{cw}.point: a point of {dim} coordinates expected")
+                else:
+                    _check_selection(table, c.get("selection", ALL), None, f"{cw}.selection", errors)
+
+
+def _plot_point(v, dim, vals) -> list[float] | None:
+    """A point of a plot (numbers or expressions of the parameters), or None."""
+    if not isinstance(v, list) or len(v) != dim:
+        return None
+    try:
+        return [P.scalar(x, vals) for x in v]
+    except (ValueError, TypeError, P.ParameterError):
+        return None
 
 
 def _validate_graphics(graphics, where, errors) -> None:
@@ -3064,8 +3142,21 @@ def with_defaults(model: dict) -> dict:
             v.setdefault("selection", ALL)
     for md in m["models"]:
         for key in ("parameters", "geometries", "meshes", "fields", "imports", "variables",
-                    "modules", "terms", "conditions", "outputs", "graphics"):
+                    "modules", "terms", "conditions", "outputs", "plots", "graphics"):
             md.setdefault(key, [])
+        for p in md["plots"]:
+            if isinstance(p, dict):
+                p.setdefault("type", "line")
+                for c in p.setdefault("curves", []):
+                    if not isinstance(c, dict):
+                        continue
+                    if p["type"] == "line":
+                        c.setdefault("points", PLOT_POINTS)
+                        c.setdefault("times", "last")
+                    else:
+                        c.setdefault("at", "point")
+                        if c["at"] != "point":
+                            c.setdefault("selection", ALL)
         md.setdefault("solver", {"type": "auto"})
         md["solver"].setdefault("type", "auto")
         md.setdefault("vtu", f"{md.get('name')}.vtu")

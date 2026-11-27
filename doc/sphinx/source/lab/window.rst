@@ -14,7 +14,7 @@ The window has four parts:
 * the **model tree** (left) shows every part of the model, in the order of
   the file: Parameters, Materials, Geometries (with their shapes and
   selections), Meshes, Fields, Models (with their Variables, Modules, Terms,
-  Conditions, Solver, Outputs, Graphics), Solvers, then Results. A node with a
+  Conditions, Solver, Outputs, Plots, Graphics), Solvers, then Results. A node with a
   problem carries a warning icon; its message is in the tooltip and in the
   *Problems* tab;
 * the **properties** form (middle) of the selected node. It is built from the

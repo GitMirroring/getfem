@@ -241,6 +241,80 @@ Output
      - ``selection``
      - one of ``all``, ``boundary``, ``xmin``, ``xmax``, ``ymin``, ``ymax``
 
+Plot
+--------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Name
+     - ``name``
+     - name
+   * - Abscissa
+     - ``type``
+     - one of ``line`` (along a line (the distance from its start)), ``time`` (in time). Along a segment (the distance from its start A), or in time (a transient solver: the saved times)
+   * - Title
+     - ``title``
+     - text
+
+Its curves: Add a curve. Each one a GWFL expression (scalar: Norm(u), u(1) for a vector), evaluated with the solution.
+
+Curve along a line
+------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Label
+     - ``label``
+     - text. In the legend (empty: the expression)
+   * - Expression (GWFL)
+     - ``expr``
+     - number or GWFL expression. A scalar GWFL expression: T, von\_mises, Norm(Grad\_T), u(2), T - 20...
+   * - From A
+     - ``from``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - To B
+     - ``to``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+   * - Number of points
+     - ``points``
+     - integer
+   * - Times
+     - ``times``
+     - text. In time: last (the end), all (each saved time), or a list of times (0.5, 1: the nearest saved ones), a curve each; stationary: the solution
+
+Curve in time
+-------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Field
+     - Key
+     - Value
+   * - Label
+     - ``label``
+     - text. In the legend (empty: the expression)
+   * - Expression (GWFL)
+     - ``expr``
+     - number or GWFL expression. A scalar GWFL expression: T, von\_mises, Norm(Grad\_T), u(2), T - 20...
+   * - Value
+     - ``at``
+     - one of ``point`` (the value at a point), ``integral`` (the integral on a selection), ``average`` (the average on a selection)
+   * - Point
+     - ``point``
+     - numbers or expressions of parameters, one per coordinate, or a vector parameter
+
 Parameter
 ---------
 

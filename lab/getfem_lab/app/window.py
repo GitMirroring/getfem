@@ -33,11 +33,13 @@ from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QInputDialog, QLabel,
                                QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-                               QPlainTextEdit, QProgressBar, QSplitter, QStyle, QTabWidget,
+                               QPlainTextEdit, QProgressBar, QSplitter, QStackedWidget, QStyle,
+                               QTabWidget,
                                QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import editing as E, geometry2d as G, mesher, model as M, parameters as P
 from .jobs import GwflChecker, JobRunner
+from .plot import PlotPanel
 from .properties import PropertiesPanel
 from .viewer import Viewer
 
@@ -140,7 +142,12 @@ class MainWindow(QMainWindow):
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(tree_box)
         split.addWidget(self.props)
-        split.addWidget(self.viewer)
+        self.plot_panel = PlotPanel()          # a plot of the results, in place of the view
+        self.plot_panel.setObjectName("plot_panel")
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.viewer)
+        self.view_stack.addWidget(self.plot_panel)
+        split.addWidget(self.view_stack)
         split.setStretchFactor(2, 1)
         split.setSizes([250, 340, 800])
         self.setCentralWidget(split)
@@ -409,7 +416,7 @@ class MainWindow(QMainWindow):
                 expanded.add(item.data(0, PATH_ROLE))
         self.errors = self._all_errors()
         root = E.tree(self.model, {m: list(f) for m, f in self.result_fields.items()},
-                      has_results=self.results is not None)
+                      has_results=self.results is not None, result_plots=self.result_plots())
         if self.results is not None and self.results_stale:
             res = E.find_node(root, (E.RESULTS,))
             res.label += " (out of date)"
@@ -539,6 +546,10 @@ class MainWindow(QMainWindow):
             return
         if getattr(self, "_focus_piece", None) is not None and self._focus_piece[:len(path)] != path:
             self._focus_piece = None
+        if path[:1] == (E.RESULTS,) and len(path) == 4 and path[2] == "plots":
+            self._show_result_plot(path[1], path[3])
+            return
+        self._show_view()
         if path[:1] == (E.RESULTS,):
             self._show_result_node(path)
             return
@@ -552,7 +563,46 @@ class MainWindow(QMainWindow):
         self.props.show_node(self.model, title, path, self._panel_fields, self.errors,
                              self.node_errors.get(path, []), actions,
                              Path(self.model.get("_source_dir", ".")))
+        if path[:1] == ("models",) and len(path) >= 4 and path[2] == "plots":
+            md, p = E.get_at(self.model, path[:2]), E.get_at(self.model, path[:4])
+            if (self.results or {}).get("models", {}).get(md["name"], {}).get("plots", {}).get(p.get("name")):
+                self._show_plot(md["name"], p["name"])         # (its results, if computed)
+                return
         self.update_view()
+
+    def result_plots(self) -> dict:
+        """The plots of the results: {model: [plot names]}."""
+        return {m: list(mr.get("plots") or {}) for m, mr in (self.results or {}).get("models", {}).items()
+                if isinstance(mr, dict) and mr.get("plots")}
+
+    def _show_plot(self, mname, pname) -> bool:
+        """A plot of the results in place of the view (False: not computed)."""
+        data = (self.results or {}).get("models", {}).get(mname, {}).get("plots", {}).get(pname)
+        if not data:
+            return False
+        self.plot_panel.show_plot(pname, data)
+        self.view_stack.setCurrentWidget(self.plot_panel)
+        return True
+
+    def _show_view(self) -> None:
+        """The view back (a plot was shown)."""
+        if self.view_stack.currentWidget() is not self.viewer:
+            self.view_stack.setCurrentWidget(self.viewer)
+
+    def _show_result_plot(self, mname, pname):
+        """A plot of the results: its curves; the form: its definition, to edit."""
+        md = M.model_by_name(self.model, mname)
+        k = self.model["models"].index(md) if md else None
+        i = next((j for j, p in enumerate((md or {}).get("plots", [])) if p.get("name") == pname), None)
+        if i is not None:
+            path = ("models", k, "plots", i)
+            self.props.show_node(self.model, f"Plot {pname}", path, E.fields(self.model, path), self.errors,
+                                 self.node_errors.get(path, []), self._node_actions(path),
+                                 Path(self.model.get("_source_dir", ".")))
+            self._panel_fields = E.fields(self.model, path)
+        if not self._show_plot(mname, pname):
+            self._show_view()
+            self.viewer.show_message(f"Plot {pname!r}: no curve computed")
 
     def _show_result_node(self, path):
         """A result node: the summary of all the models or of one, or a field,

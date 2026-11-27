@@ -570,6 +570,17 @@ def _model_node(model: dict, k: int, md: dict) -> Node:
     for i, q in enumerate(md.get("outputs", [])):
         outs.children.append(Node(path + ("outputs", i), q.get("name", "?"), "quantity"))
     node.children.append(outs)
+    plots = Node(path + ("plots",), "Plots", "plots")
+    for i, p in enumerate(md.get("plots", [])):
+        if not isinstance(p, dict):
+            continue
+        pn = Node(path + ("plots", i), f"{p.get('name', '?')} ({'in time' if p.get('type') == 'time' else 'along a line'})",
+                  "plot")
+        for j, cv in enumerate(p.get("curves", [])):
+            if isinstance(cv, dict):
+                pn.children.append(Node(path + ("plots", i, "curves", j), curve_label(p, cv), "plot_curve"))
+        plots.children.append(pn)
+    node.children.append(plots)
     graphics = Node(path + ("graphics",), "Graphics", "graphics")
     for i, g in enumerate(md.get("graphics", [])):
         label = g.get("name", "?") + ("" if g.get("name") == g.get("field") else f" ({g.get('field')})")
@@ -578,8 +589,19 @@ def _model_node(model: dict, k: int, md: dict) -> Node:
     return node
 
 
-def tree(model: dict, result_fields: dict | None = None, has_results: bool = False) -> Node:
-    """result_fields: {model name: [field names]} of the results, if any."""
+def curve_label(plot: dict, cv: dict) -> str:
+    """The label of a curve of a plot in the tree."""
+    label = cv.get("label") or str(cv.get("expr", "?"))
+    if plot.get("type") == "time":
+        at = cv.get("at", "point")
+        return label + (f" at {cv.get('point')}" if at == "point" else f" ({at} on {cv.get('selection', M.ALL)})")
+    return label
+
+
+def tree(model: dict, result_fields: dict | None = None, has_results: bool = False,
+         result_plots: dict | None = None) -> Node:
+    """result_fields: {model name: [field names]} of the results, if any;
+    result_plots: {model name: [plot names]}."""
     root = Node((), model.get("name", "Model"), "file")
     vals, _ = P.values(model)
     root.children.append(_params_node(("parameters",), model.get("parameters", []), vals))
@@ -657,6 +679,8 @@ def tree(model: dict, result_fields: dict | None = None, has_results: bool = Fal
             mn = Node((RESULTS, mname), mname, "result_model")
             for name in names:
                 mn.children.append(Node((RESULTS, mname, name), name, "result_field"))
+            for name in (result_plots or {}).get(mname, []):
+                mn.children.append(Node((RESULTS, mname, "plots", name), f"{name} (plot)", "result_plot"))
             res.children.append(mn)
         root.children.append(res)
     return root
@@ -1392,6 +1416,8 @@ def _model_fields(model, path) -> list[Field]:
         return [Field(path, "", "info", help="Saved views of the result fields, with their "
                       "display settings (changing the display of a result field saves it here).")] \
             if n == 1 else []
+    if head == "plots":
+        return _plot_fields(model, md, path, dim, anywhere)
     if head == "outputs":
         if n == 1:
             return [Field(base + ("vtu",), "VTU file", "text")]
@@ -1399,6 +1425,84 @@ def _model_fields(model, path) -> list[Field]:
                 Field(path + ("expr",), "Integrand (GWFL)", "value"),
                 Field(path + ("selection",), "Integrated on", "choice", anywhere)]
     return []
+
+
+def _plot_line(model: dict, md_path: Path) -> tuple[list, list, list]:
+    """A default segment of a plot: across the bounding box of the geometry
+    of the model at mid-height (A, B, its middle); [0..] to [1, 0..] if unknown."""
+    md = get_at(model, md_path)
+    geom = M.model_geometry(model, md) if md else None
+    dim = (M.model_dim(model, md) if md else None) or 2
+    b = None
+    if geom is not None:
+        gi = model["geometries"].index(geom)
+        src = P.resolved(model)["geometries"][gi].get("source", {})
+        try:
+            if src.get("type") == "box":
+                lo = np.asarray(src["origin"], float)
+                b = (lo, lo + np.asarray(src["size"], float))
+            elif src.get("type") in ("csg", "surface") and isinstance(src.get("shape"), dict):
+                b = _shape_bounds(model, ("geometries", gi, "source", "shape"))
+        except (KeyError, TypeError, ValueError):
+            b = None
+    if b is None or len(b[0]) != dim or not (np.all(np.isfinite(b[0])) and np.all(np.isfinite(b[1]))):
+        b = (np.zeros(dim), np.r_[1.0, np.zeros(dim - 1)])
+    r = lambda v: 0.0 if abs(v) < 1e-12 else float(f"{v:.6g}")          # noqa: E731
+    mid = [(x + y) / 2 for x, y in zip(b[0], b[1])]
+    a = [r(b[0][0])] + [r(x) for x in mid[1:]]
+    bb = [r(b[1][0])] + [r(x) for x in mid[1:]]
+    return a, bb, [r(x) for x in mid]
+
+
+def _default_curve(model: dict, plot_path: Path, kind: str, like: dict | None = None) -> dict:
+    """A new curve of a plot (as the curve like: its expression, its segment)."""
+    md = get_at(model, plot_path[:2])
+    var = (md.get("variables") or [None])[0]
+    expr = (like or {}).get("expr") or (
+        "1" if var is None else var["name"] if M.variable_kind(var) == M.SCALAR else f"Norm({var['name']})")
+    a, b, mid = _plot_line(model, plot_path[:2])
+    if kind == "line":
+        out = {"label": "", "expr": expr, "from": (like or {}).get("from", a), "to": (like or {}).get("to", b),
+               "points": M.PLOT_POINTS, "times": "last"}
+    else:
+        out = {"label": "", "expr": expr, "at": "point", "point": (like or {}).get("point", mid)}
+    return out
+
+
+def _plot_fields(model, md, path, dim, anywhere) -> list[Field]:
+    """A plot (1D: curves along a line, or in time) or one of its curves."""
+    rest = path[2:]
+    if len(rest) == 1:
+        return [Field(path, "", "info", help="Plots: curves computed with the solution (GWFL "
+                      "expressions of the variables, the fields, the macros: von_mises, T...), along a "
+                      "segment or in time, shown in the Results; a change computes them again.")]
+    p = get_at(model, path[:4])
+    if len(rest) == 2:
+        return [Field(path + ("name",), "Name", "ident"),
+                Field(path + ("type",), "Abscissa", "choice", tuple(M.PLOT_TYPES.items()), op="plot_type",
+                      help="Along a segment (the distance from its start A), or in time (a transient "
+                           "solver: the saved times)"),
+                Field(path + ("title",), "Title", "text"),
+                Field(path, "", "info", help="Its curves: Add a curve. Each one a GWFL expression (scalar: "
+                      "Norm(u), u(1) for a vector), evaluated with the solution.")]
+    out = [Field(path + ("label",), "Label", "text", help="In the legend (empty: the expression)"),
+           Field(path + ("expr",), "Expression (GWFL)", "value",
+                 help="A scalar GWFL expression: T, von_mises, Norm(Grad_T), u(2), T - 20...")]
+    if p.get("type") == "line":
+        out += [_vec_field(path + ("from",), "From A", "numbers", dim),
+                _vec_field(path + ("to",), "To B", "numbers", dim),
+                Field(path + ("points",), "Number of points", "int"),
+                Field(path + ("times",), "Times", "text", op="plot_times",
+                      help="In time: last (the end), all (each saved time), or a list of times "
+                           "(0.5, 1: the nearest saved ones), a curve each; stationary: the solution")]
+    else:
+        cv = get_at(model, path)
+        out.append(Field(path + ("at",), "Value", "choice", tuple(M.PLOT_AT.items()), op="plot_at"))
+        if cv.get("at", "point") == "point":
+            out.append(_vec_field(path + ("point",), "Point", "numbers", dim))
+        else:
+            out.append(Field(path + ("selection",), "Selection", "choice", anywhere))
+    return out
 
 
 def fields(model: dict, path: Path) -> list[Field]:
@@ -2461,6 +2565,9 @@ def field_value(model: dict, f: Field):
         return get_at(model, f.key, "initial")
     if f.op == "linear_solver":
         return get_at(model, f.key, "auto")
+    if f.op == "plot_times":
+        t = get_at(model, f.key, "last")
+        return ", ".join(format_number(x) for x in t) if isinstance(t, list) else str(t)
     if f.op in ("scheme_type", "scheme_param"):     # (the default scheme of the variable if not given)
         return M.scheme_with_defaults(get_at(model, f.key[:-1]) or _default_of(model, f.key[:-1])).get(f.key[-1])
     return get_at(model, f.key)
@@ -2744,6 +2851,32 @@ def _apply(model: dict, f: Field, value) -> Path | None:
         return None
     if f.op == "numbers":
         set_at(model, key, vector_entry(model, key, value, f.size, f.kind == "ints"))
+        return None
+    if f.op == "plot_times":
+        text = str(value).strip().lower()
+        if text in ("last", "all", ""):
+            set_at(model, key, text or "last")
+        else:
+            try:
+                set_at(model, key, [float(x) for x in text.replace(";", ",").split(",") if x.strip()])
+            except ValueError:
+                raise ValueError("last, all, or a list of times (0.5, 1) expected") from None
+        return None
+    if f.op == "plot_type":
+        p = get_at(model, key[:-1])
+        if p.get("type", "line") != value:
+            p["type"] = value
+            p["curves"] = [_default_curve(model, key[:-1], value, cv) for cv in p.get("curves", [])]
+        return None
+    if f.op == "plot_at":
+        cv = get_at(model, key[:-1])
+        cv["at"] = value
+        if value == "point":
+            cv.pop("selection", None)
+            cv.setdefault("point", _plot_line(model, key[:2])[2])
+        else:
+            cv.pop("point", None)
+            cv.setdefault("selection", M.ALL)
         return None
     if f.op == "field_kind":
         f_ = get_at(model, key[:-1])
@@ -3213,6 +3346,12 @@ def actions(model: dict, path: Path) -> list[tuple[str, str]]:
         out.append(("add_quantity", "Add an integrated quantity"))
     elif rest == ("graphics",):
         out.append(("add_graphic", "Add a graphic"))
+    elif rest == ("plots",):
+        out.append(("add_plot", "Add a plot"))
+    elif rest[:1] == ("plots",) and len(rest) == 2:
+        out += [("add_curve", "Add a curve"), ("remove", "Remove")]
+    elif rest[:1] == ("plots",) and len(rest) == 4:
+        out += [("duplicate_curve", "Duplicate"), ("remove", "Remove")]
     elif rest[:1] == ("modules",) and len(rest) == 2:
         spec = M.spec_of(get_at(model, path))
         out += [(f"add_piece:{p}", f"Add a domain for {p}") for p in shown_properties(model, get_at(model, path))]
@@ -3701,6 +3840,20 @@ def do_action(model: dict, path: Path, action: str, name: str | None = None) -> 
         return base + ("outputs", len(qs) - 1)
     if action == "add_graphic":
         return add_graphic(md, None, path[:2])
+    if action == "add_plot":
+        plots = md.setdefault("plots", [])
+        plots.append({"name": unique_name(name or "plot", [p.get("name") for p in plots]), "type": "line",
+                      "title": "", "curves": [_default_curve(model, path[:2] + ("plots", len(plots)), "line")]})
+        return path[:2] + ("plots", len(plots) - 1)
+    if action == "add_curve":
+        p = get_at(model, path[:4])
+        last = p["curves"][-1] if p.get("curves") else None
+        p.setdefault("curves", []).append(_default_curve(model, path[:4], p.get("type", "line"), last))
+        return path[:4] + ("curves", len(p["curves"]) - 1)
+    if action == "duplicate_curve":
+        curves = get_at(model, path[:5])
+        curves.insert(path[5] + 1, copy.deepcopy(curves[path[5]]))
+        return path[:5] + (path[5] + 1,)
     if action == "unfold":
         return unfold_module(model, path)
     raise ValueError(f"unknown action {action!r}")

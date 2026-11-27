@@ -1417,6 +1417,32 @@ def time_derivatives(md, expr, mf, t, dt):
     return g[1], (g[2] - g[0]) / (2 * h), (g[2] - 2 * g[1] + g[0]) / h**2
 
 
+def line_curve(md, mesh, expr, a, b, n, label):
+    """A curve of a plot: expr at n points of the segment a b (None outside
+    the domain), against the distance from a."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    s = np.linspace(0.0, 1.0, n)
+    pts = a[:, None] + np.outer(b - a, s)
+    inside = np.asarray(md.interpolation('1', pts, mesh)) > 0.5
+    y = np.asarray(md.interpolation(expr, pts, mesh), float)
+    if y.size != n:
+        raise RuntimeError(f'plot: the expression {expr!r} is not scalar (its norm: Norm(...), a '
+                           'component: (...)(1))')
+    return {'label': label, 'x': [float(x) for x in s * np.linalg.norm(b - a)],
+            'y': [float(v) if ok else None for v, ok in zip(y, inside)]}
+
+
+def point_value(md, mesh, expr, p):
+    """expr at the point p (None outside the domain)."""
+    pts = np.asarray(p, float)[:, None]
+    if np.asarray(md.interpolation('1', pts, mesh))[0] < 0.5:
+        return None
+    y = np.asarray(md.interpolation(expr, pts, mesh), float)
+    if y.size != 1:
+        raise RuntimeError(f'plot: the expression {expr!r} is not scalar')
+    return float(y[0])
+
+
 def first_solve(name):
     """Whether a model is solved for the first time."""
     first = name not in SOLVED
@@ -1806,6 +1832,8 @@ def _transient_code(model: dict, solver: dict, ctxs: list[Ctx], w: ScriptWriter,
         stem = Path(c.md["vtu"]).stem if c.md.get("vtu") else None
         vtu = f"f'{stem}_{{k:05d}}.vtu'" if stem else "None"
         w(f"    post_{ident(name)}({vtu})")
+        if c.md.get("plots"):     # (a time listed: the nearest saved one, within half the saving interval)
+            w(f"    plot_{ident(name)}(t, k == N_STEPS, {0.5 * every * (t1 - t0) / n!r})")
         w(f"    R, S = results['models'][{name!r}], SERIES[{name!r}]")
         w("    S['t'].append(t)")
         if stem:
@@ -1950,6 +1978,62 @@ def _initial_accelerations(c: Ctx, by: dict, w: ScriptWriter) -> None:
         w("set_time(T_START, (T_END - T_START) / N_STEPS)")
     for u in mems:
         w(f"{md}.set_variable('{u}__mem', {md}.variable('{u}__rate2'))  # the memory: G_0 = -M a0")
+
+
+def _plots(c: Ctx, w: ScriptWriter) -> None:
+    """plot_<model>(t, last, tol): the curves of its plots at a saved time
+    t (None: a stationary solver), in results['models'][name]['plots']
+    ({plot: {'type', 'title', 'xlabel', 'curves': [{'label', 'x', 'y'}]}}):
+    along a segment (the distance from its start; None outside the domain)
+    at the times asked ("last", "all", a list: within tol), or a value at a
+    point, an integral or an average on a selection, appended at each
+    saved time."""
+    plots = c.md.get("plots") or []
+    if not plots:
+        return
+    md, name = c.py, c.md["name"]
+    vals, _ = P.values(c.model)
+    w(f"def plot_{ident(name)}(t, last, tol):")
+    w.indent = "    "
+    w(f"P = results['models'][{name!r}].setdefault('plots', {{}})")
+    for p in plots:
+        kind = p.get("type", "line")
+        xlabel = "distance from A" if kind == "line" else "t"
+        w(f"# plot {p['name']!r} ({M.PLOT_TYPES[kind]})")
+        w(f"Q = P.setdefault({p['name']!r}, {{'type': {kind!r}, 'title': {p.get('title', '')!r}, "
+          f"'xlabel': {xlabel!r}, 'curves': []}})")
+        for j, cv in enumerate(p.get("curves", [])):
+            expr = str(cv.get("expr"))
+            label = cv.get("label") or expr
+            if kind == "line":
+                a = [P.scalar(x, vals) for x in cv["from"]]
+                b = [P.scalar(x, vals) for x in cv["to"]]
+                times = cv.get("times", "last")
+                when = {"last": "last", "all": "True"}.get(times) if not isinstance(times, list) else \
+                    f"t is None or any(abs(t - s) <= tol for s in {[float(x) for x in times]!r})"
+                many = times == "all" or isinstance(times, list)
+                w(f"if {when}:       # curve {j + 1}: {expr} from {a} to {b}")
+                w(f"    Q['curves'].append(line_curve({md}, {c.m}, {expr!r}, {a!r}, {b!r}, "
+                  f"{int(cv.get('points', M.PLOT_POINTS))}, "
+                  f"{label!r} + (f', t = {{t:g}}' if t is not None and {many} else '')))")
+            else:
+                at = cv.get("at", "point")
+                w(f"while len(Q['curves']) <= {j}:")
+                w("    Q['curves'].append(None)")
+                w(f"if Q['curves'][{j}] is None:")
+                w(f"    Q['curves'][{j}] = {{'label': {label!r}, 'x': [], 'y': []}}")
+                if at == "point":
+                    pt = [P.scalar(x, vals) for x in cv["point"]]
+                    w(f"v = point_value({md}, {c.m}, {expr!r}, {pt!r})")
+                else:
+                    rg = c.rg(cv.get("selection", M.ALL))
+                    w(f"v = float(gf.asm_generic({c.mim}, 0, {expr!r}, {rg}, {md}))")
+                    if at == "average":
+                        w(f"v /= float(gf.asm_generic({c.mim}, 0, '1', {rg}, {md}))")
+                w(f"Q['curves'][{j}]['x'].append(0.0 if t is None else float(t))")
+                w(f"Q['curves'][{j}]['y'].append(v)")
+    w.indent = ""
+    w("")
 
 
 def _post(c: Ctx, w: ScriptWriter) -> None:
@@ -2151,6 +2235,7 @@ def _body(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool = False)
     for c in ctxs:
         _post(c, w)
         w("")
+        _plots(c, w)
 
     w.section("Solve")
     if previous and not M.main_solver(model).get("type") == "transient":
@@ -2163,5 +2248,7 @@ def _body(model: dict, ctxs: list[Ctx], w: ScriptWriter, previous: bool = False)
     for c in ctxs:
         if not c.transient and not M.is_modal(model, c.md):
             w(f"post_{ident(c.md['name'])}({c.md.get('vtu')!r})")
+            if c.md.get("plots"):
+                w(f"plot_{ident(c.md['name'])}(None, True, 0.0)")
     w("results['status'] = 'ok'")
     w("results['time_s'] = time.perf_counter() - t0")

@@ -243,6 +243,15 @@
           "selection": "sides"
         }
       ],
+      "plots": [
+        {"name": "temperature", "type": "line", "title": "Temperature along the bar", "curves": [
+          {"label": "axis (through the hole)", "expr": "T", "from": [0, "H/2"], "to": ["L", "H/2"], "points": 201},
+          {"label": "edge", "expr": "T", "from": [0, 0], "to": ["L", 0], "points": 201}
+        ]},
+        {"name": "current", "type": "line", "title": "Current density across the bar through the hole", "curves": [
+          {"label": "|J| (A/m²)", "expr": "Norm(J_field)", "from": ["L/2", 0], "to": ["L/2", "H"], "points": 201}
+        ]}
+      ],
       "vtu": "busbar.vtu"
     }
   ],

@@ -362,6 +362,10 @@ def _sample_model() -> dict:
     md["conditions"] = [{"type": "dirichlet", "variable": "T", "selection": "xmin", "value": 0,
                          "method": "penalization", "penalty": 1e8}]
     md["outputs"] = [{"name": "flux", "expr": "-Grad_T.Normal", "selection": "xmax"}]
+    md["plots"] = [{"name": "profile", "type": "line", "title": "", "curves": [
+                        {"label": "", "expr": "T", "from": [0, 0.5], "to": [1, 0.5], "points": 101, "times": "last"}]},
+                   {"name": "probe", "type": "time", "title": "", "curves": [
+                        {"label": "", "expr": "T", "at": "point", "point": [0.5, 0.5]}]}]
     md["modules"][0]["sources"] = [{"selection": "all", "value": 1}]
     m["materials"] = [{"name": "steel", "properties": {"k": 50}}]
     m["parameters"] = [{"name": "L", "value": 1, "description": "length"}]
@@ -396,6 +400,9 @@ def model_nodes() -> str:
         ("Generic condition", ("models", 0, "conditions", 0)),
         ("Solver of a model", ("models", 0, "solver")),
         ("Output", ("models", 0, "outputs", 0)),
+        ("Plot", ("models", 0, "plots", 0)),
+        ("Curve along a line", ("models", 0, "plots", 0, "curves", 0)),
+        ("Curve in time", ("models", 0, "plots", 1, "curves", 0)),
         ("Parameter", ("parameters", 0)),
         ("Material", ("materials", 0)),
         ("Field", ("fields", 0)),

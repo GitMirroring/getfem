@@ -134,7 +134,10 @@ brought to 100 °C (``20 + 80*(1 - exp(-t/tau))``, a function of the time),
 the other edges cooled by the air (convection). The ``transient`` solver
 goes from 0 to 60 s by steps of 1 s (BDF2, second order), saving every 5 steps:
 ``mean_T``, the mean temperature, rises to nearly 100 °C; ``heat_in``, the
-heat entering by the edge, peaks then decreases.
+heat entering by the edge, peaks then decreases. Its plots
+(:ref:`lab-plots`): ``profiles``, the temperature across the plate at 10,
+20, 30 and 60 s; ``history``, the temperature at the center, at the far edge
+and its mean, in time.
 
 .. _lab-example-beam_vibration:
 
@@ -309,7 +312,10 @@ temperature is about 35.7 °C (36.2 °C with :math:`\alpha_R` = 0, a larger
 current); the resistance per unit depth, ``V0`` over the current
 (``currents``), is some 15 % above that of the bar without hole, cold,
 :math:`L/(\sigma_0 H)`; nearly all the heat leaves through the ends (the
-output ``heat_to_air``, about 20 W/m of 9.1 kW/m).
+output ``heat_to_air``, about 20 W/m of 9.1 kW/m). Its plots
+(:ref:`lab-plots`): the temperature along the axis of the bar, interrupted
+by the hole, and along its edge; the current density across the bar through
+the hole, concentrated at its rim.
 
 .. _lab-example-tuning_fork:
 

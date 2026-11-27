@@ -320,6 +320,7 @@ itself (`app/qtplotter.py`) needs a real display.
 | `tests/test_geometry2d.py` | boundary pieces, `edges` selections on the mesh, evaluation of selections |
 | `tests/test_parameters.py` | parameters (evaluation, remeshing, physics) and user fields |
 | `tests/test_explicit.py` | the explicit schemes (Newmark beta = 0, explicit generalized-alpha): stability limit, lumped mass, second order, with implicit variables |
+| `tests/test_plots.py` | the plots: along a segment (outside the domain, several times), in time (a point, an integral, an average), editing, the examples, the plot panel |
 | `tests/test_runge_kutta.py` | the explicit Runge-Kutta schemes (RK2, RK4): stability limits, orders of convergence at first and second order, a wave and a diffusion coupled, a quasi-static displacement |
 | `tests/test_pde.py` | the PDE module: manufactured solutions (both forms, scalar and vector), SUPG, orders in time |
 | `tests/test_coupling.py` | thermal expansion (monolithic, sequence), staggered two-way coupling, user terms and generic conditions |

@@ -44,6 +44,16 @@
         {"name": "mean_T", "expr": "T/sqr(L)", "selection": "all"},
         {"name": "heat_in", "expr": "k*Grad_T.Normal", "selection": "xmin"}
       ],
+      "plots": [
+        {"name": "profiles", "type": "line", "title": "Temperature across the plate (y = L/2)", "curves": [
+          {"label": "T", "expr": "T", "from": [0, "L/2"], "to": ["L", "L/2"], "points": 101, "times": [10, 20, 30, 60]}
+        ]},
+        {"name": "history", "type": "time", "title": "Temperatures in time", "curves": [
+          {"label": "center", "expr": "T", "at": "point", "point": ["L/2", "L/2"]},
+          {"label": "far edge", "expr": "T", "at": "point", "point": ["L", "L/2"]},
+          {"label": "mean", "expr": "T", "at": "average", "selection": "all"}
+        ]}
+      ],
       "vtu": "heat.vtu"
     }
   ],
