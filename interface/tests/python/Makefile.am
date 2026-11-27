@@ -50,6 +50,7 @@ EXTRA_DIST=                                       \
     check_disabled_variable.py                    \
     check_asm.py                                  \
     check_mumps_ctx.py          		  \
+    check_eigsh.py                                \
     check_bspline_mesh_fem.py                     \
     check_import_gmsh_high_order.py               \
     check_secondary_domain.py                     \
@@ -101,6 +102,7 @@ TESTS =                         \
     check_mixed_mesh.py         \
     check_plot.py               \
     check_mumps_ctx.py          \
+    check_eigsh.py                                \
     demo_truss.py               \
     demo_wave.py                \
     demo_wave_equation.py       \

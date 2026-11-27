@@ -72,6 +72,7 @@ nobase_include_HEADERS =                                   \
   gmm/gmm_except.h                                         \
   gmm/gmm_feedback_management.h                            \
   gmm/gmm_MUMPS_interface.h                                \
+  gmm/gmm_arpack_interface.h                               \
   getfem/dal_config.h                                      \
   getfem/dal_singleton.h                                   \
   getfem/dal_basic.h                                       \
@@ -247,7 +248,7 @@ SRC =                                                      \
 lib_LTLIBRARIES = libgetfem.la
 libgetfem_la_SOURCES = $(SRC)
 libgetfem_la_LDFLAGS = ${LIBTOOL_VERSION_INFO}
-libgetfem_la_LIBADD = @SUPERLU_LIBS@ @MUMPS_LIBS@
+libgetfem_la_LIBADD = @SUPERLU_LIBS@ @MUMPS_LIBS@ @ARPACK_LIBS@
 AM_CPPFLAGS = -I$(top_srcdir)/src -I../src -I$(top_srcdir)
 
 CLEANFILES = ii_files/* *.o.d getfem/getfem_im_list.h

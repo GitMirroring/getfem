@@ -28,6 +28,7 @@ Gmm++ Library
    catch
    blas_interface
    superlu
+   arpack
    qd
    first-step
    inside

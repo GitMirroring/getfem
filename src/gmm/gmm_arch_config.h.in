@@ -18,6 +18,9 @@
 /* defined if GMM is linked to the mumps library */
 #undef GMM_USES_MUMPS
 
+/* defined if GMM is linked to the ARPACK-ng library */
+#undef GMM_USES_ARPACK
+
 /* defined if GMM is linked to the superlu library */
 #undef GMM_USES_SUPERLU
 
