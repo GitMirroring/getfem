@@ -684,9 +684,11 @@ def isoline_levels(lo: float, hi: float, n: int) -> np.ndarray:
     return np.linspace(lo, hi, n + 2)[1:-1]
 
 
-def _arrows(shown: pv.DataSet, ds: pv.DataSet, field: str, count: int = 24) -> pv.PolyData | None:
+def _arrows(shown: pv.DataSet, ds: pv.DataSet, field: str, count: int = 24,
+            length: float = 1.0) -> pv.PolyData | None:
     """Arrows of a vector field at the points of a regular grid (about `count`
-    along the longest side) inside the shown domain."""
+    along the longest side) inside the shown domain; the longest one 0.9
+    times the step of the grid times `length`."""
     if field not in ds.point_data and field not in ds.cell_data:
         return None
     src = shown.copy()
@@ -711,7 +713,7 @@ def _arrows(shown: pv.DataSet, ds: pv.DataSet, field: str, count: int = 24) -> p
     if not len(v) or vmax <= 0:
         return None
     pts.point_data["_vec"] = v
-    return pts.glyph(orient="_vec", scale="_vec", factor=0.9 * step / vmax,
+    return pts.glyph(orient="_vec", scale="_vec", factor=0.9 * length * step / vmax,
                      geom=pv.Arrow(tip_length=0.3, tip_radius=0.12, shaft_radius=0.04))
 
 
@@ -719,7 +721,7 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
                warp: str | None = None, scale: float = 1.0, edges: bool = False,
                title: str = "", reset: bool = True, isolines: int = 0, bands: bool = False,
                cmap: str | None = None, clim=None, arrows: str | None = None, cut=None,
-               level: int = CURVED) -> None:
+               level: int = CURVED, layers=()) -> None:
     """A result field, possibly on the shape deformed by the field `warp`.
 
     isolines: number of isolines (black, evenly spaced in the range); bands:
@@ -727,7 +729,8 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
     colormap name (CMAPS); clim: (min, max) of the color range (None: the
     range of the values); arrows: a vector field drawn with arrows; cut: a
     segment (two points) drawn on the view (see line_values); level: the
-    subdivisions of quadratic elements (see surface)."""
+    subdivisions of quadratic elements (see surface); layers: drawn over
+    the field (see add_layers)."""
     clear(plotter)
     shown, label = _with_values(ds, name, component, warp, scale)
     curved = is_curved(shown)
@@ -774,6 +777,7 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
         glyphs = _arrows(shown, ds, arrows)
         if glyphs is not None:
             plotter.add_mesh(glyphs, color="#222222", lighting=not planar, name="arrows")
+    add_layers(plotter, shown, ds, layers, level, planar)
     if cut is not None:
         a, b = (np.pad(np.asarray(p, float)[:3], (0, 3 - len(p[:3]))) for p in cut)
         plotter.add_mesh(pv.Line(a, b), color=CUT, line_width=3, lighting=False, name="cut")
@@ -783,6 +787,47 @@ def show_field(plotter, ds: pv.DataSet, name: str, component: int | None = None,
     if title:
         plotter.add_text(title, position="upper_left", font_size=10, color="#444444", name="title")
     _camera(plotter, ds, reset)
+
+
+def add_layers(plotter, shown: pv.DataSet, ds: pv.DataSet, layers, level: int = CURVED,
+               planar: bool = True) -> list[str]:
+    """The layers of a graphic over its field (M.LAYER_TYPES): arrows of a
+    vector field (count along the longest side, their length scaled), the
+    isolines of a field (count levels evenly spaced in its range; on the
+    boundary surface in 3D), in their color; on the shape shown (deformed
+    with it). A field missing from the results: no layer. The names of
+    the actors drawn."""
+    from .. import model as M
+    names = []
+    for k, lay in enumerate(layers or ()):
+        spec = M.LAYER_TYPES.get(lay.get("type"))
+        field = lay.get("field")
+        if spec is None or not field or (field not in ds.point_data and field not in ds.cell_data):
+            continue
+        color = M.LAYER_COLORS.get(lay.get("color", "black"), "#1a1a1a")
+        count = int(lay.get("count", spec["count"]))
+        name = f"layer{k}"
+        if lay["type"] == "arrows":
+            glyphs = _arrows(shown, ds, field, count, float(lay.get("scale", 1.0)))
+            if glyphs is None:
+                continue
+            plotter.add_mesh(glyphs, color=color, lighting=not planar, name=name)
+        else:
+            src = shown.copy()
+            src.point_data["_layer"], _ = values(ds, field, lay.get("component"))
+            surf = extract_surface(surface(src, level) if is_curved(src) else src, nonlinear_subdivision=0)
+            data = np.asarray(surf.point_data["_layer"])
+            if not data.size:
+                continue
+            levels = isoline_levels(float(data.min()), float(data.max()), count)
+            if not levels.size:
+                continue
+            lines = surf.contour(isosurfaces=levels, scalars="_layer")
+            if not lines.n_points:
+                continue
+            plotter.add_mesh(lines, color=color, line_width=2, lighting=False, name=name)
+        names.append(name)
+    return names
 
 
 def line_values(ds: pv.DataSet, name: str, component: int | None, a, b,

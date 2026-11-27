@@ -913,7 +913,7 @@ class PropertiesPanel(QScrollArea):
 
     def show_result_field(self, name: str, ncomp: int, settings: dict, can_warp: bool,
                           vectors: tuple = (), planar: bool = True, graphic: dict | None = None,
-                          field_names: tuple = ()):
+                          field_names: tuple = (), field_comps: dict | None = None):
         """Display settings of a result field: component, deformed shape,
         colors, isolines, arrows (of one of the vector fields), cut line.
         graphic: a saved graphic, whose name and field are also edited."""
@@ -963,11 +963,115 @@ class PropertiesPanel(QScrollArea):
         holder = QWidget()
         holder.setLayout(form)
         self.layout_.addWidget(holder)
+        self._layers(settings, field_comps if field_comps is not None else {n: 1 for n in field_names},
+                     name)
         self.layout_.addWidget(self._hint(
             ("Click on the field to read its value; the Cut line tool of the view (2D) "
              "draws a segment along which the field is plotted. " if planar else "")
             + ("These settings are saved in the graphic." if graphic is not None else
                "Changing these settings saves them in a graphic of the model, named after the field.")))
+
+    def _layers(self, settings, comps: dict, shown: str):
+        """The layers drawn over the field (M.LAYER_TYPES): a row each (its
+        field, its number of arrows along the longest side or of isolines,
+        the length of the arrows, its color; Remove), Add arrows, Add isolines."""
+        layers = [dict(lay) for lay in settings.get("layers") or []]
+        vectors = [n for n, c in comps.items() if c > 1]
+        box = QWidget()
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 4, 0, 0)
+        col.addWidget(QLabel("<b>Layers</b> (over the field)"))
+
+        def emit(new):
+            self.viewChanged.emit({"layers": new})
+
+        def setter(i, key, cast=lambda v: v):
+            def apply(value):
+                new = [dict(lay) for lay in layers]
+                new[i][key] = cast(value)
+                if new != layers:
+                    emit(new)
+            return apply
+        for i, lay in enumerate(layers):
+            kind = lay.get("type")
+            spec = M.LAYER_TYPES.get(kind, {})
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Arrows" if kind == "arrows" else "Isolines"))
+            fc = QComboBox()
+            fc.setObjectName(f"layer{i}_field")
+            for n in (vectors if kind == "arrows" else list(comps)) + [lay.get("field")]:
+                if n and fc.findData(n) < 0:
+                    fc.addItem(n, n)
+            fc.setCurrentIndex(max(fc.findData(lay.get("field")), 0))
+            fc.activated.connect(lambda k, fc=fc, i=i: setter(i, "field")(fc.itemData(k)))
+            row.addWidget(fc, 1)
+            if kind == "isolines" and comps.get(lay.get("field"), 1) > 1:
+                cc = QComboBox()
+                cc.setObjectName(f"layer{i}_component")
+                cc.addItem("magnitude", None)
+                for j in range(comps[lay["field"]]):
+                    cc.addItem(AXES[j] if j < 3 else str(j), j)
+                cc.setCurrentIndex(max(cc.findData(lay.get("component")), 0))
+                cc.activated.connect(lambda k, cc=cc, i=i: setter(i, "component")(cc.itemData(k)))
+                row.addWidget(cc)
+            rm = QToolButton()
+            rm.setObjectName(f"layer{i}_remove")
+            rm.setText("×")
+            rm.setToolTip("Remove this layer")
+            rm.clicked.connect(lambda _=False, i=i: emit([lay for j, lay in enumerate(layers) if j != i]))
+            row.addWidget(rm)
+            holder = QWidget()
+            row.setContentsMargins(0, 0, 0, 0)
+            holder.setLayout(row)
+            col.addWidget(holder)
+            row = QHBoxLayout()                        # (its settings, on a second line)
+            row.addSpacing(16)
+            row.addWidget(QLabel("arrows" if kind == "arrows" else "lines"))
+            sp = QSpinBox()
+            sp.setObjectName(f"layer{i}_count")
+            sp.setRange(1, 200)
+            sp.setValue(int(lay.get("count", spec.get("count", 10))))
+            sp.setToolTip("Arrows along the longest side" if kind == "arrows" else "Number of isolines")
+            sp.editingFinished.connect(lambda sp=sp, i=i: setter(i, "count", int)(sp.value()))
+            row.addWidget(sp)
+            if kind == "arrows":
+                ls = QDoubleSpinBox()
+                ls.setObjectName(f"layer{i}_scale")
+                ls.setRange(0.05, 100.0)
+                ls.setDecimals(2)
+                ls.setSingleStep(0.25)
+                ls.setValue(float(lay.get("scale", 1.0)))
+                ls.setToolTip("Length of the arrows (1: the longest one about the spacing of the arrows)")
+                ls.editingFinished.connect(lambda ls=ls, i=i: setter(i, "scale", float)(ls.value()))
+                row.addWidget(QLabel("length"))
+                row.addWidget(ls)
+            col_c = QComboBox()
+            col_c.setObjectName(f"layer{i}_color")
+            for c in M.LAYER_COLORS:
+                col_c.addItem(c, c)
+            col_c.setCurrentIndex(max(col_c.findData(lay.get("color", "black")), 0))
+            col_c.activated.connect(lambda k, cb=col_c, i=i: setter(i, "color")(cb.itemData(k)))
+            row.addWidget(col_c)
+            row.addStretch(1)
+            holder = QWidget()
+            row.setContentsMargins(0, 0, 0, 0)
+            holder.setLayout(row)
+            col.addWidget(holder)
+        buttons = QHBoxLayout()
+        if vectors:
+            add_a = QPushButton("Add arrows")
+            add_a.setObjectName("add_arrows")
+            add_a.clicked.connect(lambda: emit(layers + [{"type": "arrows", "field": vectors[0]}]))
+            buttons.addWidget(add_a)
+        if comps:
+            other = next((n for n in comps if n != shown), next(iter(comps)))
+            add_i = QPushButton("Add isolines")
+            add_i.setObjectName("add_isolines")
+            add_i.clicked.connect(lambda: emit(layers + [{"type": "isolines", "field": other}]))
+            buttons.addWidget(add_i)
+        buttons.addStretch(1)
+        col.addLayout(buttons)
+        self.layout_.addWidget(box)
 
     def _hint(self, text):
         label = QLabel(text)

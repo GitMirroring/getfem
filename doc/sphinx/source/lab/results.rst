@@ -21,7 +21,18 @@ result field selected, its form sets:
   button of the view);
 * arrows of a vector field, on a regular grid, of a length proportional to
   the magnitude;
-* a cut line.
+* a cut line;
+* **layers** drawn over the field, as many as wanted (*Add arrows*, *Add
+  isolines*; × removes one): arrows of a vector field (their number along
+  the longest side, their length), isolines of any field (a component or the
+  magnitude of a vector, the number of levels evenly spaced in its range; on
+  the boundary in 3D), each in its color (black, white, gray, red, blue,
+  green, magenta). The temperature of ``busbar_joule.json``, for instance,
+  is shown with the arrows of the current density and the equipotentials
+  (the isolines of ``V``) around the hole. In the file, a graphic has
+  ``"layers": [{"type": "arrows", "field": "current_density", "count": 25,
+  "scale": 1.5, "color": "black"}, {"type": "isolines", "field": "V",
+  "component": null, "count": 12, "color": "white"}]``.
 
 A click on a 2D field shows its value under the toolbar of the view. The
 **Cut line** tool draws a segment A → B (it can also be typed in the form):

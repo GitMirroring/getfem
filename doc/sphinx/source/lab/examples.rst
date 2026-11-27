@@ -315,7 +315,9 @@ current); the resistance per unit depth, ``V0`` over the current
 output ``heat_to_air``, about 20 W/m of 9.1 kW/m). Its plots
 (:ref:`lab-plots`): the temperature along the axis of the bar, interrupted
 by the hole, and along its edge; the current density across the bar through
-the hole, concentrated at its rim.
+the hole, concentrated at its rim. Its graphic ``T`` shows the temperature
+with two layers: the arrows of the current density, going round the hole, and
+the equipotentials (isolines of ``V``) bent by it.
 
 .. _lab-example-tuning_fork:
 

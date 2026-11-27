@@ -252,7 +252,13 @@
           {"label": "|J| (A/m²)", "expr": "Norm(J_field)", "from": ["L/2", 0], "to": ["L/2", "H"], "points": 201}
         ]}
       ],
-      "vtu": "busbar.vtu"
+      "vtu": "busbar.vtu",
+      "graphics": [
+        {"name": "T", "field": "T", "layers": [
+          {"type": "arrows", "field": "current_density", "count": 25, "scale": 1.5, "color": "black"},
+          {"type": "isolines", "field": "V", "count": 12, "color": "white"}
+        ]}
+      ]
     }
   ],
   "solvers": [],

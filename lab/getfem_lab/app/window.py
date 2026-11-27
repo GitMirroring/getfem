@@ -646,7 +646,7 @@ class MainWindow(QMainWindow):
                                      vectors=tuple(n for n, c in fields.items() if c > 1),
                                      planar=planar,
                                      graphic=graphic if graphic_path is not None else None,
-                                     field_names=tuple(known))
+                                     field_names=tuple(known), field_comps=dict(fields))
 
     def _results_actions(self) -> list[tuple[str, str]]:
         """The actions of the results: Compute again (out of date); several
@@ -836,6 +836,7 @@ class MainWindow(QMainWindow):
                 self.state.setText(f"Not applied: the name {name!r} is empty or already used")
                 return
             change["name"] = name
+        self._layers_before = len(graphic.get("layers", []))
         E.set_graphic(graphic, change)
         if self.model == before:
             return
@@ -847,7 +848,8 @@ class MainWindow(QMainWindow):
         self._update_title()
         path = self.current_path()
         rebuild = bool({"name", "field"} & set(change)) or len(E.get_at(before, gpath[:3], [])) != \
-            len(E.get_at(self.model, gpath[:3], []))
+            len(E.get_at(self.model, gpath[:3], [])) or "layers" in change and \
+            len(change["layers"]) != self._layers_before
         self.refresh(select=path, rebuild_panel=False)
         if rebuild or path[0] != E.RESULTS:
             self._node_selected()
@@ -880,7 +882,8 @@ class MainWindow(QMainWindow):
         try:
             view = {"isolines": s.get("isolines", 0), "bands": s.get("bands", False),
                     "cmap": s.get("cmap"), "clim": s.get("range"), "arrows": s.get("arrows"),
-                    "cut": s.get("cut"), "edges": bool(s.get("edges", False))}
+                    "cut": s.get("cut"), "edges": bool(s.get("edges", False)),
+                    "layers": s.get("layers") or []}
             times = self.result_times(mname)
             labels = self.result_labels.get(mname)
             if times:

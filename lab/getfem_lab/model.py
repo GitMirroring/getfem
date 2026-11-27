@@ -420,7 +420,13 @@ PROPERTIES = {
 # Saved views of a result field (models[k].graphics): their display settings;
 # a missing key takes the default value.
 GRAPHIC_DEFAULTS = {"component": None, "warp": True, "scale": None, "isolines": 0, "bands": False,
-                    "cmap": None, "range": None, "arrows": None, "cut": None, "edges": False}
+                    "cmap": None, "range": None, "arrows": None, "cut": None, "edges": False, "layers": []}
+# The layers of a graphic, drawn over its field: arrows of a vector field, isolines of a field (a
+# component or the magnitude of a vector); their settings and defaults
+LAYER_TYPES = {"arrows": {"field": None, "count": 24, "scale": 1.0, "color": "black"},
+               "isolines": {"field": None, "component": None, "count": 10, "color": "black"}}
+LAYER_COLORS = {"black": "#1a1a1a", "white": "#ffffff", "gray": "#7f7f7f", "red": "#d62728",
+                "blue": "#1f77b4", "green": "#2ca02c", "magenta": "#e377c2"}
 
 # Generic conditions on a variable: their values ("var": the kind of the
 # variable, scalar or vector)
@@ -2899,6 +2905,33 @@ def _validate_model(model: dict, md: dict, k: int, errors: list[str], gtaken: di
     _validate_plots(model, md, table, f"{w}.plots", errors)
 
 
+def _validate_layers(layers, where, errors) -> None:
+    """The layers of a graphic (LAYER_TYPES)."""
+    if not isinstance(layers, list):
+        errors.append(f"{where}: list expected")
+        return
+    for i, lay in enumerate(layers):
+        w = f"{where}[{i}]"
+        if not isinstance(lay, dict) or lay.get("type") not in LAYER_TYPES:
+            errors.append(f"{w}: a layer of type {', '.join(LAYER_TYPES)} expected")
+            continue
+        spec = LAYER_TYPES[lay["type"]]
+        for key in lay:
+            if key != "type" and key not in spec:
+                errors.append(f"{w}.{key}: unknown setting of {lay['type']}")
+        if not isinstance(lay.get("field"), str) or not lay["field"]:
+            errors.append(f"{w}.field: name of a result field expected")
+        _check_int(lay.get("count", spec["count"]), 1, 200, f"{w}.count", errors)
+        if lay.get("color", "black") not in LAYER_COLORS:
+            errors.append(f"{w}.color: {', '.join(LAYER_COLORS)} expected")
+        sc = lay.get("scale", 1.0)
+        if "scale" in spec and (isinstance(sc, bool) or not isinstance(sc, (int, float)) or not sc > 0):
+            errors.append(f"{w}.scale: positive number expected")
+        c = lay.get("component")
+        if c is not None and (isinstance(c, bool) or not isinstance(c, int) or c < 0):
+            errors.append(f"{w}.component: component number or null expected")
+
+
 def _validate_plots(model, md, table, where, errors) -> None:
     plots = md.get("plots", [])
     if not isinstance(plots, list):
@@ -3003,6 +3036,7 @@ def _validate_graphics(graphics, where, errors) -> None:
             errors.append(f"{w}.range: [min, max] expected (null for a bound taken from the values)")
         if g.get("arrows") is not None and not isinstance(g["arrows"], str):
             errors.append(f"{w}.arrows: name of a vector field or null expected")
+        _validate_layers(g.get("layers", []), f"{w}.layers", errors)
         cut = g.get("cut")
         if cut is not None and (not isinstance(cut, list) or len(cut) != 2 or any(
                 not isinstance(p, list) or not 2 <= len(p) <= 3 or any(
