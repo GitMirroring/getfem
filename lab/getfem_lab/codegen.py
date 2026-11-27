@@ -1208,16 +1208,17 @@ def eigen_modes(K, Mm, free, k, sigma, native=None):
     """The k eigenvalues of K x = lambda M x nearest to sigma, on the free
     dofs (K, M: SciPy matrices), sorted, their vectors (M-normalized when M
     is positive on them), the eigensolver used: ARPACK in shift-invert mode,
-    a factorization of K - sigma M; GetFEM's gf.eigsh if it has one (that of
-    getfem-rs: ARPACK-ng and MUMPS; native: K and M as GetFEM matrices) for
-    a symmetric problem, SciPy's otherwise (eigsh; eigs if nonsymmetric,
-    the real parts); a small system: dense (SciPy's LAPACK)."""
+    a factorization of K - sigma M; GetFEM's gf.eigsh if it is built with
+    ARPACK-ng (as getfem-rs; native: K and M as GetFEM matrices) for a
+    symmetric problem, SciPy's otherwise (eigsh; eigs if nonsymmetric, the
+    real parts); a small system: dense (SciPy's LAPACK)."""
     import scipy.linalg
     import scipy.sparse.linalg as sla
     K, Mm = K[free][:, free].tocsc(), Mm[free][:, free].tocsc()
     n = len(free)
     symmetric = abs(K - K.T).max() <= 1e-10 * max(abs(K).max(), 1e-300)
-    if symmetric and native is not None and hasattr(gf, 'eigsh') and n > max(4 * k, 200):
+    linked = getattr(gf, 'util_arpack_linked', lambda: True)
+    if symmetric and native is not None and hasattr(gf, 'eigsh') and n > max(4 * k, 200) and linked():
         f = [int(i) for i in free]
         vals, modes = gf.eigsh(gf.Spmat('copy', native[0], f, f), gf.Spmat('copy', native[1], f, f),
                                nev=k, sigma=sigma)
