@@ -197,9 +197,6 @@ namespace getfem {
     virtual void give_transformation(const mesh_fem &mf, const mesh_fem &mf2,
                                      size_type cv, base_matrix &M) const{
 
-      THREAD_SAFE_STATIC base_matrix M_old;
-      THREAD_SAFE_STATIC pfem pf_old = nullptr;
-
       GMM_ASSERT1(&mf == &mf2,
                   "This transformation works on identical fems only");
 
@@ -220,17 +217,15 @@ namespace getfem {
         GMM_ASSERT1(false, "Cannot adapt the method for such an element.");
       }
 
-      if (pf1 == pf_old && pf1->is_equivalent() && M.size() == M_old.size()) {
-        gmm::copy(M_old, M);
-        return;
-      }
-
       std::stringstream fem_desc;
       fem_desc << "FEM_RT0" << (simplex ? "":"Q") << "(" << N << ")";
       pfem pf2 = fem_descriptor(fem_desc.str());
 
       // Obtaining a convenient integration method
       size_type degree = pf1->estimated_degree() + pf2->estimated_degree();
+      if (simplex)
+        degree = std::max(degree, size_type(2 * std::max(pf1->estimated_degree(),
+                                                         pf2->estimated_degree())));
       bgeot::pgeometric_trans pgt = mf.linked_mesh().trans_of_convex(cv);
       papprox_integration pim
         = classical_approx_im(pgt, dim_type(degree))->approx_method();
@@ -280,7 +275,6 @@ namespace getfem {
                   "Element not convenient for projection");
       gmm::mult(aux2, gmm::transposed(B), M);
       gmm::clean(M, 1E-15);
-      M_old = M; pf_old = pf1;
     }
   };
 
@@ -335,6 +329,9 @@ namespace getfem {
 
       // Obtaining a convenient integration method
       size_type degree = pf1->estimated_degree() + pf2->estimated_degree();
+      if (simplex)
+        degree = std::max(degree, size_type(2 * std::max(pf1->estimated_degree(),
+                                                         pf2->estimated_degree())));
       bgeot::pgeometric_trans pgt = mf.linked_mesh().trans_of_convex(cv);
       papprox_integration pim
         = classical_approx_im(pgt, dim_type(degree))->approx_method();

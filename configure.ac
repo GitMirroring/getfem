@@ -26,9 +26,9 @@ dnl thus, updating cache ./config.cache avoided.
 define([AC_CACHE_LOAD], )dnl
 define([AC_CACHE_SAVE], )dnl
 
-AC_INIT([getfem],[5.5])
+AC_INIT([getfem],[5.6])
 MAJOR_VERSION="5"
-MINOR_VERSION="5"
+MINOR_VERSION="6"
 PATCH_VERSION="0"
 AC_DEFINE_UNQUOTED(GETFEM_PACKAGE_NAME,"${PACKAGE_NAME}",[GetFEM package name])
 AC_DEFINE_UNQUOTED(GETFEM_PACKAGE_STRING,"${PACKAGE_STRING}",[GetFEM package string])
@@ -566,6 +566,15 @@ if test x"$FC" = "x"; then
 else
   AC_FC_FUNC(sgemm)
   AC_FC_FUNC(dgemm)
+  # The name mangling cannot be determined when the Fortran and C/C++
+  # compilers are not compatible (e.g. different architectures or
+  # versions on macOS). Fall back to the most common convention instead
+  # of looking for a function called "unknown" in the BLAS libraries.
+  if test "x$sgemm" = xunknown || test "x$dgemm" = xunknown; then
+    AC_MSG_WARN([could not determine the Fortran name mangling with $FC, assuming sgemm_ and dgemm_ for the BLAS. Check that $FC and $CXX are compatible.])
+    sgemm=sgemm_
+    dgemm=dgemm_
+  fi
 fi
 acx_blas_save_LIBS="$LIBS"
 LIBS="$LIBS $FLIBS"
@@ -714,6 +723,32 @@ int main() {
 if test x$acx_blas_fortan_abi = xIntel; then
   echo "BLAS found to have the Intel fortran ABI, i.e. returning complex function value by argument";
   AC_DEFINE(GMM_BLAS_RETURN_COMPLEX_AS_ARGUMENT,,[defined if the BLAS fortran ABI does not return complex values directly (e.g. Intel's MKL)])
+fi
+
+# check fortran ABI with regard to single precision real functions in BLAS
+# (f2c/g77 ABI, e.g. Apple Accelerate: sdot, snrm2, scnrm2 return a double)
+  AC_RUN_IFELSE([AC_LANG_SOURCE([[
+#include <cmath>
+#if defined(GMM_USE_BLAS64_INTERFACE)
+  #define INT long
+#else
+  #define INT int
+#endif
+extern "C" {
+double sdot_(const INT*, const float*, const INT*, const float*, const INT*);
+double snrm2_(const INT*, const float*, const INT*);
+}
+int main() {
+    const INT two=2, one=1;
+    float x[2] = {1., 2.}, y[2] = {3., 2.}, z[2] = {3., 4.};
+    double d = sdot_(&two, x, &one, y, &one), n = snrm2_(&two, z, &one);
+    return (std::fabs(d-7.) < 1e-5 && std::fabs(n-5.) < 1e-5) ? 0 : 1;
+}
+  ]])],[ acx_blas_real_as_double=yes ], [ acx_blas_real_as_double=no ], [ acx_blas_real_as_double=no ])
+
+if test x$acx_blas_real_as_double = xyes; then
+  echo "BLAS found to return single precision real function values as double (f2c ABI, e.g. Apple Accelerate)";
+  AC_DEFINE(GMM_BLAS_RETURN_REAL_AS_DOUBLE,,[defined if the BLAS returns single precision real function values as double (f2c ABI, e.g. Apple Accelerate)])
 fi
 
 dnl ------------------------------LAPACK TEST--------------------------------

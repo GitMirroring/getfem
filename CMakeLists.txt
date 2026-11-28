@@ -2,20 +2,21 @@ cmake_minimum_required(VERSION 3.23)
 include(CheckIncludeFile)
 include(CheckIncludeFileCXX)
 include(CheckCXXSourceCompiles)
+include(CheckCXXSourceRuns)
 include(CheckLibraryExists)
 include(CheckFunctionExists)
 
 string(ASCII 27 ESC)
 message("${ESC}[33m"
         "The cmake build system for GetFEM is an alternative to the "
-        "autotools build. It is a work in progress and it does not "
-        "support all options supported by the autotools system."
+        "autotools build. It does not support all options supported "
+        "by the autotools system."
         "${ESC}[0m")
 project(GetFEM)
 
 # Set the project version
 set(VERSION_MAJOR 5)
-set(VERSION_MINOR 5)
+set(VERSION_MINOR 6)
 set(VERSION_PATCH 0)
 # applies to both GetFEM and GMM
 set(GETFEM_VERSION "${VERSION_MAJOR}.${VERSION_MINOR}")
@@ -526,7 +527,7 @@ else()
 endif()
 
 
-if(BUILD_SHARED_LIBS)
+if(BUILD_SHARED_LIBS OR ENABLE_PYTHON)
   set_property(TARGET libgetfem PROPERTY POSITION_INDEPENDENT_CODE ON)
 endif()
 
@@ -623,7 +624,7 @@ if(ENABLE_PYTHON)
       target_include_directories(libgetfemint PRIVATE ${MUMPS_INCLUDE_PATH})
     endif()
 
-    find_package(Python3 COMPONENTS Interpreter Development NumPy REQUIRED)
+    find_package(Python3 COMPONENTS Interpreter Development.Module NumPy REQUIRED)
 
     # create a folder to build the python extension from
     set(PYTHON_MODULE_PATH ${CMAKE_BINARY_DIR}/python_module)
@@ -681,6 +682,41 @@ find_package(LAPACK REQUIRED)
 target_link_libraries(libgetfem PUBLIC ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES})
 set(GMM_USES_BLAS 1)
 set(GMM_USES_LAPACK 1)
+
+# Check the Fortran ABI of the BLAS for functions returning a value
+if(NOT CMAKE_CROSSCOMPILING)
+  set(CMAKE_REQUIRED_LIBRARIES ${BLAS_LIBRARIES})
+  # complex functions returning their value through a first argument
+  # (e.g. Intel MKL, Apple Accelerate)
+  check_cxx_source_runs("
+#include <cmath>
+#include <complex>
+extern \"C\" {
+void cdotu_(std::complex<float>*, const int*, const std::complex<float>*,
+            const int*, const std::complex<float>*, const int*);
+}
+int main() {
+  const int one=1;
+  std::complex<float> x(1.,2.), y(1.,-2.), result;
+  cdotu_(&result, &one, &x, &one, &y, &one);
+  return (std::fabs(result.real()-5.) < 1e-5) ? 0 : 1;
+}" GMM_BLAS_RETURN_COMPLEX_AS_ARGUMENT)
+  # single precision real functions returning a double (f2c ABI,
+  # e.g. Apple Accelerate)
+  check_cxx_source_runs("
+#include <cmath>
+extern \"C\" {
+double sdot_(const int*, const float*, const int*, const float*, const int*);
+double snrm2_(const int*, const float*, const int*);
+}
+int main() {
+  const int two=2, one=1;
+  float x[2] = {1., 2.}, y[2] = {3., 2.}, z[2] = {3., 4.};
+  double d = sdot_(&two, x, &one, y, &one), n = snrm2_(&two, z, &one);
+  return (std::fabs(d-7.) < 1e-5 && std::fabs(n-5.) < 1e-5) ? 0 : 1;
+}" GMM_BLAS_RETURN_REAL_AS_DOUBLE)
+  unset(CMAKE_REQUIRED_LIBRARIES)
+endif()
 
 if(ENABLE_QHULL)
   # Set default to qhull_r, user can override with any Qhull library name

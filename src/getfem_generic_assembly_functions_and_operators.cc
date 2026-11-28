@@ -533,7 +533,7 @@ namespace getfem {
       = ga_predef_function(ga_min, 1, "DER_PDFUNC2_MAX", "DER_PDFUNC1_MAX");
 
     PREDEF_FUNCTIONS["DER_PDFUNC_NEG_PART"]
-      = ga_predef_function(ga_der_neg_part, 2, "-Heaviside(-t)");
+      = ga_predef_function(ga_der_neg_part);
     PREDEF_FUNCTIONS["DER_PDFUNC1_MAX"] = ga_predef_function(ga_der_t_max);
     PREDEF_FUNCTIONS["DER_PDFUNC2_MAX"] = ga_predef_function(ga_der_u_max);
 
@@ -558,6 +558,7 @@ namespace getfem {
     SPEC_OP.insert("element_size");
     SPEC_OP.insert("element_K");
     SPEC_OP.insert("element_B");
+    SPEC_OP.insert("element_curvature");
     SPEC_OP.insert("Normal");
     SPEC_OP.insert("Sym");
     SPEC_OP.insert("Skew");

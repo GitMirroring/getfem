@@ -3,30 +3,32 @@ name: Windows Build
 on:
   push:
     branches: [ master ]
+  workflow_dispatch:
 
 env:
   INSTALL_PREFIX: 'C:\opt'
   BUILD_TYPE: Release
-  GF_VERSION: 5.5
+  GF_VERSION: 5.6rc3
 
 jobs:
   build:
     # this includes the MSVC compiler, python, cmake, ninja
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # all versions only when run manually
+        python: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["3.12", "3.13", "3.14", "3.15"]') || fromJSON('["3.14"]') }}
 
     steps:
-    - name: Cache Intel Fortran & MKL installers
+    - name: Cache Intel oneAPI installation
       id: cache-intel
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
-        path: |
-          C:\temp\intel-fortran-compiler.exe
-          C:\temp\intel-onemkl.exe
-        key: ${{ runner.os }}-intel-installers-2025.3
-        restore-keys: |
-          ${{ runner.os }}-intel-installers-
+        path: C:\Program Files (x86)\Intel\oneAPI
+        key: ${{ runner.os }}-oneapi-ifx-2025.3.2-mkl-2025.3.1
 
-    - name: Download Intel Fortran Essentials (if not cached)
+    - name: Download and install Intel Fortran & MKL
       if: steps.cache-intel.outputs.cache-hit != 'true'
       shell: cmd
       run: |
@@ -35,10 +37,6 @@ jobs:
         set URL2=https://registrationcenter-download.intel.com/akdlm/IRC_NAS/ae472ff5-aa01-4a72-a452-ce7b559ef041/intel-onemkl-2025.3.1.10_offline.exe
         curl.exe --url %URL1% --retry 5 --retry-delay 5 --output C:\temp\intel-fortran-compiler.exe
         curl.exe --url %URL2% --retry 5 --retry-delay 5 --output C:\temp\intel-onemkl.exe
-
-    - name: Install Intel Fortran Essentials
-      shell: cmd
-      run: |
         start /wait C:\temp\intel-fortran-compiler.exe -s --action install --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=0 -p=NEED_VS2022_INTEGRATION=0 --log-dir=C:\temp
         start /wait C:\temp\intel-onemkl.exe -s --action install --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=0 -p=NEED_VS2022_INTEGRATION=0 --log-dir=C:\temp
 
@@ -56,14 +54,15 @@ jobs:
         cd mumps
         cmake -B build ^
           -DMUMPS_parallel=OFF ^
-          -DBUILD_COMPLEX=ON ^
-          -DBUILD_COMPLEX16=ON ^
+          -DMUMPS_BUILD_COMPLEX=ON ^
+          -DMUMPS_BUILD_COMPLEX16=ON ^
           -G Ninja ^
           -DCMAKE_BUILD_TYPE="${{ env.BUILD_TYPE }}" ^
           -DCMAKE_INSTALL_PREFIX="${{ env.INSTALL_PREFIX }}" ^
           -DCMAKE_Fortran_COMPILER=ifx ^
           -DCMAKE_Fortran_STANDARD_LIBRARIES="" ^
-          -DMKL_LINK=static
+          -DMKL_LINK=static ^
+          -DLAPACK_DETERMINE_LIBRARY_VERSION=OFF
         cmake --build build
         cmake --install build
 
@@ -86,9 +85,9 @@ jobs:
         cmake --install build
 
     - name: Set up Python
-      uses: actions/setup-python@v5  # Official action for Python setup
+      uses: actions/setup-python@v7  # Official action for Python setup
       with:
-        python-version: '3.14'
+        python-version: ${{ matrix.python }}
     - name: Install numpy
       shell: cmd
       run: |
@@ -100,7 +99,7 @@ jobs:
         echo PYTAG=%PYTAG%>> "%GITHUB_ENV%"
 
     - name: Checkout GetFEM code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v7
 
     - name: Build and install GetFEM
       shell: cmd
@@ -141,7 +140,7 @@ jobs:
         python -c "lines=open(r'%tt%').readlines(); lines.insert(-1, '%qq%'); open(r'%tt%', 'w').writelines(lines)"
 
     - name: Upload built libraries as artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: getfem-${{ env.GF_VERSION }}-${{ env.PYTAG }}-win_amd64-raw
         path: C:\opt\lib\site-packages
@@ -152,7 +151,7 @@ jobs:
         cd /d C:\opt
         (
         echo [build-system]
-        echo requires = ["setuptools>=61.0", "wheel"]
+        echo requires = ["setuptools>=77.0", "wheel"]
         echo build-backend = "setuptools.build_meta"
         echo.
         echo [project]
@@ -160,8 +159,15 @@ jobs:
         echo version = "${{ env.GF_VERSION }}"
         echo description = "GetFEM python interface"
         echo authors = [{name="Konstantinos Poulios", email="poulios.konstantinos@gmail.com"}]
+        echo license = "LGPL-3.0-or-later WITH GCC-exception-3.1"
         echo requires-python = ">=3.9"
         echo dependencies = ["numpy"]
+        echo readme = {text = "GetFEM is an open-source finite element library written in C++, with interfaces to Python, Scilab and Octave/Matlab. This package is its Python interface.\n\nIt offers a large set of finite element and integration methods, the generic weak form language GWFL for describing models, and solvers for linear and nonlinear problems, among them contact, XFEM and level-set methods.\n\nThe wheels include the sparse direct solver MUMPS and Qhull.\n\nDocumentation: https://getfem.org/python/index.html", content-type = "text/markdown"}
+        echo.
+        echo [project.urls]
+        echo Homepage = "https://getfem.org"
+        echo Documentation = "https://getfem.org/python/index.html"
+        echo Source = "https://git.savannah.nongnu.org/cgit/getfem.git"
         echo.
         echo [tool.setuptools]
         echo package-dir = { "getfem" = "lib/site-packages/getfem" }
@@ -179,7 +185,7 @@ jobs:
           --remove C:\opt\dist\getfem-${{ env.GF_VERSION }}-py3-none-any.whl
 
     - name: Upload wheel as artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: getfem-${{ env.GF_VERSION }}-${{ env.PYTAG }}-win_amd64-whl
         path: C:\opt\dist\*.whl

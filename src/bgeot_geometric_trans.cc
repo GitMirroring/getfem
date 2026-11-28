@@ -641,7 +641,7 @@ namespace bgeot {
                 "Bad type of parameters");
     int n = int(::floor(params[0].num() + 0.01));
     int k = int(::floor(params[1].num() + 0.01));
-    GMM_ASSERT1(n >= 0 && n < 100 && k >= 0 && k <= 150 &&
+    GMM_ASSERT1(n >= 0 && n < 100 && (k > 0 || n == 0) && k <= 150 &&
                 double(n) == params[0].num() && double(k) == params[1].num(),
                 "Bad parameters");
     dependencies.push_back(simplex_of_reference(dim_type(n), dim_type(k)));
@@ -1082,6 +1082,24 @@ namespace bgeot {
     GMM_ASSERT1(c.G().ncols() == c.pgt()->nb_points(), "dimensions mismatch");
     base_small_vector un(c.N());
     gmm::mult(c.B(), c.pgt()->normals()[face], un);
+    return un;
+  }
+
+  base_small_vector
+  compute_unit_element_normal(const geotrans_interpolation_context& c) {
+    size_type N = c.N(), P = c.pgt()->dim();
+    base_small_vector un;
+    if (P+1 != N || (N != 2 && N != 3)) return un;
+    const base_matrix &K = c.K();
+    un.resize(N);
+    if (N == 2) {
+      un[0] = K(1,0); un[1] = -K(0,0);
+    } else {
+      un[0] = K(1,0)*K(2,1) - K(2,0)*K(1,1);
+      un[1] = K(2,0)*K(0,1) - K(0,0)*K(2,1);
+      un[2] = K(0,0)*K(1,1) - K(1,0)*K(0,1);
+    }
+    gmm::scale(un, scalar_type(1)/gmm::vect_norm2(un));
     return un;
   }
 

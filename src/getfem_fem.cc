@@ -977,7 +977,7 @@ namespace getfem {
     if (n == 1)
       name << "FEM_PK_HIERARCHICAL(1," << k << ")";
     else
-      name << "FEM_PRODUCT(FEM_PK_HIERARCHICAL(" << n-1 << "," << k
+      name << "FEM_PRODUCT(FEM_QK_HIERARCHICAL(" << n-1 << "," << k
            << "),FEM_PK_HIERARCHICAL(1," << k << "))";
     return fem_descriptor(name.str());
   }
@@ -1810,7 +1810,7 @@ namespace getfem {
     GMM_ASSERT1(N == nc, "Sorry, this element works only in dimension " << nc);
 
     gmm::mult(G, pgp->grad(0), K); gmm::lu_inverse(K);
-    for (unsigned j = 0; j <= nb_dof(0); ++j) {
+    for (unsigned j = 0; j < nb_dof(0); ++j) {
       
       if (faces_of_dof(0, j).size()) {
         unsigned nf = faces_of_dof(0, j)[0];
@@ -2188,7 +2188,7 @@ namespace getfem {
     GMM_ASSERT1(N == nc, "Sorry, this element works only in dimension " << nc);
 
     gmm::mult(G, pgp->grad(0), K); gmm::lu_inverse(K);
-    for (unsigned j = 0; j <= nb_dof(0); ++j) {
+    for (unsigned j = 0; j < nb_dof(0); ++j) {
       
       if (faces_of_dof(0, j).size()) {
         unsigned nf = faces_of_dof(0, j)[0];
@@ -2340,8 +2340,8 @@ namespace getfem {
     GMM_ASSERT1(params[1].type() == 0, "Bad type of parameters");
     int n = int(::floor(params[0].num() + 0.01));
     int k = int(::floor(params[1].num() + 0.01));
-    GMM_ASSERT1(n > 1 && n < 100 && double(n) == params[0].num(),
-                "Bad parameter n for BDM element");
+    GMM_ASSERT1(n == 2 && double(n) == params[0].num(),
+                "BDM element only available in dimension 2");
     GMM_ASSERT1(k >= 1 && k < 100 && double(k) == params[1].num(),
                 "Bad parameter k for BDM element");
     pfem p = std::make_shared<BDMk_>(dim_type(n), dim_type(k));

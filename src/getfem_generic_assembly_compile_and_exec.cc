@@ -360,8 +360,9 @@ namespace getfem {
     virtual int exec() {
       GA_DEBUG_INFO("Instruction: unit normal vector");
       GMM_ASSERT1(t.size() == vec.size(), "Invalid outward unit normal "
-                  "vector. Possible reasons: not on boundary or "
-                  "transformation failed.");
+                  "vector. Possible reasons: not on boundary (Normal is "
+                  "defined on faces, and inside the elements of curves in "
+                  "2D and surfaces in 3D) or transformation failed.");
       gmm::copy(vec, t.as_vector());
       return 0;
     }
@@ -432,6 +433,76 @@ namespace getfem {
     }
     ga_instruction_element_B(base_tensor &t_,
                              const fem_interpolation_context &ct)
+      : t(t_), ctx(ct)  {}
+  };
+
+  // Curvature tensor of a hypersurface (curve in 2D, surface in 3D)
+  // computed elementwise from the geometric transformation:
+  //   element_curvature = grad_s n = - B b B^T,
+  // where n is the unit normal oriented by the element parametrization
+  // (n = K_1 x K_2 in 3D, n = (K_12, -K_11) in 2D) and
+  // b_ab = n . d^2x/dxi_a dxi_b is the second fundamental form.
+  // The result is a symmetric N x N matrix with n in its kernel; its
+  // nonzero eigenvalues are the principal curvatures (positive for a
+  // sphere/circle with outward normal). Vanishes for linear transformations.
+  struct ga_instruction_element_curvature : public ga_instruction {
+    base_tensor &t;
+    const fem_interpolation_context &ctx;
+    base_matrix PC, Htau, bB;
+    base_small_vector n, bab;
+
+    virtual int exec() {
+      GA_DEBUG_INFO("Instruction: element_curvature");
+      bgeot::pgeometric_trans pgt = ctx.pgt();
+      size_type N = ctx.N(), P = pgt->dim();
+      GMM_ASSERT1(P+1 == N && (N == 2 || N == 3), "element_curvature is "
+                  "only defined for curves in 2D and surfaces in 3D");
+      GMM_ASSERT1(t.size() == N*N, "Invalid tensor size.");
+      gmm::clear(t.as_vector());
+      if (pgt->is_linear()) return 0;
+
+      const base_matrix &K = ctx.K(), &B = ctx.B();
+      n.resize(N);
+      if (N == 2) {
+        n[0] = K(1,0); n[1] = -K(0,0);
+      } else {
+        n[0] = K(1,0)*K(2,1) - K(2,0)*K(1,1);
+        n[1] = K(2,0)*K(0,1) - K(0,0)*K(2,1);
+        n[2] = K(0,0)*K(1,1) - K(1,0)*K(0,1);
+      }
+      gmm::scale(n, scalar_type(1)/gmm::vect_norm2(n));
+
+      // Second derivatives of the geometric transformation (N x P*P)
+      Htau.base_resize(N, P*P);
+      if (ctx.have_pgp() && ctx.ii() != size_type(-1))
+        gmm::mult(ctx.G(), ctx.pgp()->hessian(ctx.ii()), Htau);
+      else {
+        PC.base_resize(pgt->nb_points(), P*P);
+        pgt->poly_vector_hess(ctx.xref(), PC);
+        gmm::mult(ctx.G(), PC, Htau);
+      }
+
+      // b_ab = n . Htau(:, a + P*b)
+      bab.resize(P*P);
+      gmm::mult(gmm::transposed(Htau), n, bab);
+
+      // t = - B b B^T
+      bB.base_resize(P, N);
+      gmm::clear(bB);
+      for (size_type a = 0; a < P; ++a)
+        for (size_type c = 0; c < P; ++c)
+          for (size_type j = 0; j < N; ++j)
+            bB(a, j) += bab[a + P*c] * B(j, c);
+      for (size_type j = 0; j < N; ++j)
+        for (size_type i = 0; i < N; ++i) {
+          scalar_type s(0);
+          for (size_type a = 0; a < P; ++a) s += B(i, a) * bB(a, j);
+          t[i + N*j] = -s;
+        }
+      return 0;
+    }
+    ga_instruction_element_curvature(base_tensor &t_,
+                                     const fem_interpolation_context &ct)
       : t(t_), ctx(ct)  {}
   };
 
@@ -3537,7 +3608,55 @@ namespace getfem {
     }
   };
 
-  // Selects the masked contraction when it visits few enough entries.
+#if defined(GA_USES_BLAS)
+  // Performs Ani Bmi -> Cmn for two tensors symmetric in their two proper
+  // indices of size d, keeping only the entries i <= j (with a weight 2 for
+  // i < j). A single dgemm is much faster here than a loop on the nonzero
+  // entries, the number of which is not small enough to compensate.
+  struct ga_instruction_contraction_sym : public ga_instruction {
+    base_tensor &t;
+    const base_tensor &tc1, &tc2;
+    size_type n;
+    std::vector<size_type> ind;
+    std::vector<scalar_type> weight, packed1, packed2;
+    virtual int exec() {
+      GA_DEBUG_INFO("Instruction: contraction of size " << n
+                    << " of symmetric tensors");
+      size_type s1 = tc1.size()/n, s2 = tc2.size()/n, nb = ind.size();
+      GA_DEBUG_ASSERT(t.size() == s1*s2, "Internal error");
+      packed1.resize(s1*nb);
+      packed2.resize(s2*nb);
+      auto it1 = packed1.begin(), it2 = packed2.begin();
+      for (size_type k = 0; k < nb; ++k) {
+        auto itc1 = tc1.cbegin() + s1*ind[k], itc2 = tc2.cbegin() + s2*ind[k];
+        scalar_type w = weight[k];
+        for (size_type i = 0; i < s1; ++i) *it1++ = w * itc1[i];
+        it2 = std::copy(itc2, itc2 + s2, it2);
+      }
+      BLAS_INT N_ = BLAS_INT(s1), M_ = BLAS_INT(s2), K_ = BLAS_INT(nb);
+      char notrans = 'N', trans = 'T';
+      static const scalar_type one(1), zero(0);
+      gmm::dgemm_(&notrans, &trans, &M_, &N_, &K_, &one, packed2.data(), &M_,
+                  packed1.data(), &N_, &zero, &(t[0]), &M_);
+      return 0;
+    }
+    ga_instruction_contraction_sym(base_tensor &t_, const base_tensor &tc1_,
+                                   const base_tensor &tc2_, size_type n_,
+                                   size_type d)
+      : t(t_), tc1(tc1_), tc2(tc2_), n(n_) {
+      for (size_type j = 0; j < d; ++j)
+        for (size_type i = 0; i <= j; ++i) {
+          ind.push_back(i + d*j);
+          weight.push_back(i == j ? scalar_type(1) : scalar_type(2));
+        }
+    }
+  };
+#endif
+
+  // Selects the instruction for two masked tensors. The masked loop has to
+  // compete with dgemm when a BLAS is used, which requires a very small
+  // proportion of visited entries (11% for the transpose of a gradient in 3D
+  // wins, 19% for a symmetrized gradient loses).
   static pga_instruction ga_masked_contraction_switch
   (assembly_tensor &t_, assembly_tensor &tc1_, assembly_tensor &tc2_,
    size_type n, bool &to_clear) {
@@ -3545,6 +3664,8 @@ namespace getfem {
     // are faster despite visiting more entries.
     if (tc1_.sparsity() != 4 || tc2_.sparsity() != 4)
       return pga_instruction();
+    // In dimension 2, the unrolled dense instructions are faster.
+    if (n <= 4) return pga_instruction();
     size_type Q1 = 0, Q2 = 0;
     std::vector<bool> m1, m2;
     if (!ga_structure_mask(tc1_, Q1, m1) || !ga_structure_mask(tc2_, Q2, m2)
@@ -3553,9 +3674,18 @@ namespace getfem {
     size_type sym_d = 0;
     if (tc1_.mask_symmetric() && tc2_.mask_symmetric())
       sym_d = size_type(round(sqrt(scalar_type(n))));
+#if defined(GA_USES_BLAS)
+    if (sym_d)
+      return std::make_shared<ga_instruction_contraction_sym>
+        (t_.tensor(), tc1_.tensor(), tc2_.tensor(), n, sym_d);
+    const size_type max_percent = 15;
+#else
+    const size_type max_percent = 70;
+#endif
     auto pgai = std::make_shared<ga_instruction_contraction_masked>
       (t_.tensor(), tc1_.tensor(), tc2_.tensor(), Q1, n, m1, m2, sym_d);
-    if (10*pgai->terms.size() > 7*Q1*Q1*n) return pga_instruction();
+    if (100*pgai->terms.size() > max_percent*Q1*Q1*n)
+      return pga_instruction();
     to_clear = true;
     return pgai;
   }
@@ -4760,8 +4890,8 @@ namespace getfem {
           if (face_num != short_type(-1)) {
             inin.Normal = bgeot::compute_normal(inin.ctx, face_num);
             gmm::scale(inin.Normal, 1.0/gmm::vect_norm2(inin.Normal));
-          } else
-            inin.Normal.resize(0);
+          } else // unit normal of a curve in 2D or a surface in 3D
+            inin.Normal = bgeot::compute_unit_element_normal(inin.ctx);
           inin.pt_y = inin.ctx.xreal();
         } else {
           inin.ctx.invalid_convex_num();
@@ -4899,8 +5029,8 @@ namespace getfem {
             if (face_num != short_type(-1)) {
               inin.Normal = bgeot::compute_normal(inin.ctx, face_num);
               gmm::scale(inin.Normal, 1.0/gmm::vect_norm2(inin.Normal));
-            } else
-              inin.Normal.resize(0);
+            } else // unit normal of a curve in 2D or a surface in 3D
+              inin.Normal = bgeot::compute_unit_element_normal(inin.ctx);
             inin.pt_y = inin.ctx.xreal();
           } else {
             inin.ctx.invalid_convex_num();
@@ -6345,6 +6475,14 @@ namespace getfem {
                   "No use of element_B is allowed in functions");
       pgai = std::make_shared<ga_instruction_element_B>(pnode->tensor(),
                                                         gis.ctx);
+      rmi.instructions.push_back(std::move(pgai));
+      break;
+
+    case GA_NODE_ELT_CURVATURE:
+      GMM_ASSERT1(!function_case,
+                  "No use of element_curvature is allowed in functions");
+      pgai = std::make_shared<ga_instruction_element_curvature>
+        (pnode->tensor(), gis.ctx);
       rmi.instructions.push_back(std::move(pgai));
       break;
 
@@ -9031,7 +9169,8 @@ namespace getfem {
                 gmm::scale(up,1.0/nup);
                 gmm::clean(up, 1e-13);
                 gis.Normal = up;
-              } else gis.Normal.resize(0);
+              } else // unit normal of a curve in 2D or a surface in 3D
+                gis.Normal = bgeot::compute_unit_element_normal(gis.ctx);
             }
             gmm::clear(workspace.assembled_tensor().as_vector());
             if (ii == 0) {
@@ -9148,7 +9287,8 @@ namespace getfem {
                     J1 *= nup;
                     gmm::scale(gis.Normal, 1.0/nup);
                     gmm::clean(gis.Normal, 1e-13);
-                  } else gis.Normal.resize(0);
+                  } else // unit normal of a curve in 2D or a surface in 3D
+                    gis.Normal = bgeot::compute_unit_element_normal(gis.ctx);
                 }
                 auto ipt_coeff = pai->coeff(first_ind+gis.ipt);
                 gis.coeff = J1 * ipt_coeff;
@@ -9295,7 +9435,9 @@ namespace getfem {
                           J1 *= nup;
                           gmm::scale(gis.Normal, 1.0/nup);
                           gmm::clean(gis.Normal, 1e-13);
-                        } else gis.Normal.resize(0);
+                        } else // curve in 2D or surface in 3D
+                          gis.Normal
+                            = bgeot::compute_unit_element_normal(gis.ctx);
                       }
 
                       if (gis.ipt == 0 || !(pgt2->is_linear())) {
@@ -9309,7 +9451,9 @@ namespace getfem {
                           J2 *= nup;
                           gmm::scale(sdi.Normal, 1.0/nup);
                           gmm::clean(sdi.Normal, 1e-13);
-                        } else sdi.Normal.resize(0);
+                        } else // curve in 2D or surface in 3D
+                          sdi.Normal
+                            = bgeot::compute_unit_element_normal(sdi.ctx);
                       }
 
                       auto ipt_coeff = pai1->coeff(first_ind1+ipt1)

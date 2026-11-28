@@ -442,6 +442,7 @@ namespace getfem {
     case GA_NODE_PREDEF_FUNC: case GA_NODE_OPERATOR: case GA_NODE_SPEC_FUNC:
     case GA_NODE_CONSTANT:    case GA_NODE_X:        case GA_NODE_ELT_SIZE:
     case GA_NODE_ELT_K:       case GA_NODE_ELT_B:    case GA_NODE_NORMAL:
+    case GA_NODE_ELT_CURVATURE:
     case GA_NODE_RESHAPE:     case GA_NODE_CROSS_PRODUCT:
     case GA_NODE_IND_MOVE_LAST:      case GA_NODE_SWAP_IND:
     case GA_NODE_CONTRACT:           case GA_NODE_INTERPOLATE_X:
@@ -601,7 +602,10 @@ namespace getfem {
       if (pnode->name.compare("element_B") == 0) {
         if (pnode->node_type == GA_NODE_INTERPOLATE) {
           pnode->node_type = GA_NODE_INTERPOLATE_ELT_B;
-          pnode->init_matrix_tensor(ref_elt_dim, meshdim);
+          if (ref_elt_dim == 1)
+            pnode->init_vector_tensor(meshdim);
+          else
+            pnode->init_matrix_tensor(meshdim, ref_elt_dim);
         }
         break;
       }
@@ -1689,7 +1693,15 @@ namespace getfem {
         }
         if (!(name.compare("element_B"))) {
           pnode->node_type = GA_NODE_ELT_B;
-          pnode->init_matrix_tensor(ref_elt_dim, meshdim);
+          if (ref_elt_dim == 1)
+            pnode->init_vector_tensor(meshdim);
+          else
+            pnode->init_matrix_tensor(meshdim, ref_elt_dim);
+          break;
+        }
+        if (!(name.compare("element_curvature"))) {
+          pnode->node_type = GA_NODE_ELT_CURVATURE;
+          pnode->init_matrix_tensor(meshdim, meshdim);
           break;
         }
         if (!(name.compare("Normal"))) {
@@ -2973,6 +2985,7 @@ namespace getfem {
     case GA_NODE_CROSS_PRODUCT:
     case GA_NODE_SWAP_IND: case GA_NODE_IND_MOVE_LAST: case GA_NODE_CONTRACT:
     case GA_NODE_ELT_SIZE: case GA_NODE_ELT_K: case GA_NODE_ELT_B:
+    case GA_NODE_ELT_CURVATURE:
     case GA_NODE_CONSTANT: case GA_NODE_X: case GA_NODE_NORMAL:
     case GA_NODE_SECONDARY_DOMAIN_X: case GA_NODE_SECONDARY_DOMAIN_NORMAL:
     case GA_NODE_OPERATOR:
@@ -4238,10 +4251,10 @@ namespace getfem {
       GMM_ASSERT1(false, "Sorry, Gradient of Normal vector not implemented");
       break;
 
-    case GA_NODE_ELT_K: case GA_NODE_ELT_B:
+    case GA_NODE_ELT_K: case GA_NODE_ELT_B: case GA_NODE_ELT_CURVATURE:
     case GA_NODE_INTERPOLATE_ELT_K: case GA_NODE_INTERPOLATE_ELT_B:
-      GMM_ASSERT1(false, "Sorry, Gradient of element_K or element_B "
-                         "not implemented");
+      GMM_ASSERT1(false, "Sorry, Gradient of element_K, element_B or "
+                         "element_curvature not implemented");
       break;
 
     case GA_NODE_INTERPOLATE_DERIVATIVE:

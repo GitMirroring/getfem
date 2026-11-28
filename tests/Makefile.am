@@ -44,6 +44,7 @@ check_PROGRAMS =             \
   test_assembly_assignment   \
   test_interpolated_fem      \
   test_internal_variables    \
+  test_element_curvature     \
   test_condensation          \
   test_range_basis           \
   laplacian                  \
@@ -101,6 +102,7 @@ geo_trans_inv_SOURCES = geo_trans_inv.cc
 test_int_set_SOURCES = test_int_set.cc
 test_interpolated_fem_SOURCES = test_interpolated_fem.cc
 test_internal_variables_SOURCES = test_internal_variables.cc
+test_element_curvature_SOURCES = test_element_curvature.cc
 test_condensation_SOURCES = test_condensation.cc
 test_tree_sorted_SOURCES = test_tree_sorted.cc
 test_mat_elem_SOURCES = test_mat_elem.cc
@@ -144,6 +146,7 @@ TESTS =                         \
   test_assembly_assignment.pl   \
   test_interpolated_fem.pl      \
   test_internal_variables.pl    \
+  test_element_curvature.pl     \
   test_condensation.pl          \
   test_range_basis.pl           \
   laplacian.pl                  \
@@ -187,6 +190,7 @@ EXTRA_DIST =                                         \
   test_int_set.pl                                    \
   test_interpolated_fem.pl                           \
   test_internal_variables.pl                         \
+  test_element_curvature.pl                          \
   test_condensation.pl                               \
   test_slice.pl                                      \
   test_mesh_im_level_set.pl                          \
